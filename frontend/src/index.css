@@ -1,0 +1,7 @@
+/* Mosaic — terminal-style design system (shared with stellar-mosaic-x).
+ * Layered: tokens (theme vars) → base (resets, typography, frame) → components → app.
+ * See frontend/src/styles/* for each layer. */
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/components.css";
+@import "./styles/app.css";

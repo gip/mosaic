@@ -1,0 +1,295 @@
+{
+  "protocol": "MOSAIC_ZONE_DERIVATION_V1",
+  "zoneRootSecret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "frozen": true,
+  "cases": [
+    {
+      "rootChain": "xrpl",
+      "rootAddress": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+      "zone": "top",
+      "network": "mainnet",
+      "seed": "b8852d8fad0e0c5298177e262b45c8f31cbfa81723da6bf89cadda40766d9fafead06e9c061c2c894e57f7f8e04a54e46cac306dfed0decb0550eacc31be2343",
+      "agents": {
+        "0": {
+          "evm": "0x397B641eE531B74df352e6a124ce8b3566964d78",
+          "xrpl": "rNhnPaESvxbzmkpYfpecUDGUJPGxq8krHc",
+          "stellar": "GDI6V6XSIXSV7P43UER4L7IPU63PFGQINIFP6RLWH5AMPELQBC2JMTBJ"
+        },
+        "1": {
+          "evm": "0xb99B22D689323be1100960EC05716AD03aA092C4",
+          "xrpl": "rGXAuEgwM2pcZhQQGdhA6uDfgX59tAwszt",
+          "stellar": "GBRDL4GAUNMOBKD2RVJUUEES3P5GJLHX4T3Y7Q4L6S7UUPGSRYNCNKBI"
+        },
+        "2": {
+          "evm": "0x7A5eFdf5e5B133512Fb49149A0E735a6BcAf2890",
+          "xrpl": "rHo1wBJEDXryTWqptoYMCEHeF4C1GgSKrY",
+          "stellar": "GAFCEYBMRFRPNDVPJBEKJCPVYQYEO3ABP5XCHKFVI2XMRBD76RIIA666"
+        }
+      }
+    },
+    {
+      "rootChain": "xrpl",
+      "rootAddress": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+      "zone": "top",
+      "network": "testnet",
+      "seed": "927cb0c120e8e116dafe29df76d2764ee5f0d62f5ee705486655a1b42f1a96bdb0ca24c25d935a5407797e651e13d5d1060f0aacd6575bc83dcadf7b4dfdeb23",
+      "agents": {
+        "0": {
+          "evm": "0x6C05a83B3A43ed1D06BDd198F89a95b4d8edaaeD",
+          "xrpl": "rNYSX7gNw41Vi9RBgA1EXVvKbieF6B1L5q",
+          "stellar": "GDXHOY6ZG5NGLXUJM2QLIPXA2KAKJ6ILFHZJLYLV76UEKF7HVQDJUXA4"
+        },
+        "1": {
+          "evm": "0x70c97247403A4183Eb544eCc0ceF0055A4A6d9A6",
+          "xrpl": "r3PU2xRrEKk4jrZZA5DKSAh9Stq1HBMqvJ",
+          "stellar": "GANVVCWCS3IYLAACTFKXOQKG4ECLTGWHUNKEJCUW46WICP3MFTAYPWPL"
+        },
+        "2": {
+          "evm": "0x2fA3dc85dC8dd1695568dEAc45Ca255eA2e7A470",
+          "xrpl": "r37c4ijM1g2ztE4D4JVzLxz2P6dK78kbMU",
+          "stellar": "GC5UAWZ42FVZQDNSW45GWWBBLV2EJRE6NTDOPPVNREXR2NDGZUOL57EL"
+        }
+      }
+    },
+    {
+      "rootChain": "xrpl",
+      "rootAddress": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+      "zone": "agents",
+      "network": "mainnet",
+      "seed": "8ad6d59f8abd765d04c3f38bfcc4e00c7b762e6a4993ed337bf2a8ecc5b2481f25562c9832cef4dec5d61ef6ece78f253d6928716b365187b6d147b0f8cd6b6d",
+      "agents": {
+        "0": {
+          "evm": "0xba9043D0E6028F0562d8DF143424Aa21A25eC84f",
+          "xrpl": "rnG5pU2EXCvqUBwTNHV5hzgpr5ZSE35LXZ",
+          "stellar": "GCEZTEC7JW7QMKHH4VA4RDQZJWDINHPYM3RMDT62FBIH66LX3CW2AZVM"
+        },
+        "1": {
+          "evm": "0xABDD527808A8C39708F5a4d62fD4c3a7F205a3f8",
+          "xrpl": "rKE9t3XjTJadEmKYdVqTFZzHkQQaw3BaZT",
+          "stellar": "GBJBN5U2YOXE7SXGKAIKTRSGGQUUTWMV5YBDETS3BPQQHAIB4GXP23HQ"
+        },
+        "2": {
+          "evm": "0x9a7F11D8439fF21272FC69f4D6A10385B26e3af0",
+          "xrpl": "rH49cZXnUrnWpaAQwRrmfWRgJk5gUYkbiH",
+          "stellar": "GDALEBPCTO3BRY3TQU7HZ7UUZGZJSJXTZ7Z327IFYMRIXX7NVFVV4NFG"
+        }
+      }
+    },
+    {
+      "rootChain": "xrpl",
+      "rootAddress": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+      "zone": "agents",
+      "network": "testnet",
+      "seed": "4709744f471c4cb9c1c25b04343dfb2bab73cf2dab0b2bf57a028c7dc770e3aaae0335352a1ae5dc6a06950188237d02effd404ee88dd9ddccbf9518e87d9a46",
+      "agents": {
+        "0": {
+          "evm": "0xC1112a5fD900D1BF4236c8Fa54687b1f253D0579",
+          "xrpl": "rDE1kZsmNqGwb7Fej2gobdgfATyiHCEc3Y",
+          "stellar": "GDRURVFEX6PHOABPLWVEZJK2P4WP3TKAX5ASETPPYQILG6VLWDVXACIZ"
+        },
+        "1": {
+          "evm": "0xEeACedBd5516A6333593E86F4CE6E9cBc405336A",
+          "xrpl": "rBUJ6xiv36fu52boNR5jhhFjcpK4MmkxQp",
+          "stellar": "GCVZCAD5WLSIC7PD2E4KUY3WUSLEM2ZFN4SO2KF5YDF7GMSBC427A7IH"
+        },
+        "2": {
+          "evm": "0x625589bf1Eb8163E4492FDADFA5C6940f104bDf9",
+          "xrpl": "rKdpZ8Wnfycz6YprN9XCn9rcsdC6mo7nNb",
+          "stellar": "GBABSVNURSFCUHKWHXOFUK5WJYFPQNJNZGRGLZJSJU4EGYJD2G6BNSJL"
+        }
+      }
+    },
+    {
+      "rootChain": "evm",
+      "rootAddress": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+      "zone": "top",
+      "network": "mainnet",
+      "seed": "0e409924057438fb8448a509bfa339f4a42cc13a21d34e14d9b8e11db9e89053a12f5da9ada82612d7f311702f7a27fd9e495b40f132f0f656f136886154b9e4",
+      "agents": {
+        "0": {
+          "evm": "0x39F0EdDe42829af23ea47114A9900627D358C441",
+          "xrpl": "rD4fTcZ9qXKYqmJmBZD6CNxWYHSgmAKCNu",
+          "stellar": "GD4YH2JQJMH47QDGNRATVIAFXR7XY2JDXAE454ZMNS5MM3SWLL5H6VTO"
+        },
+        "1": {
+          "evm": "0x6B36C8D8e187343E66fe77e2264f0ABCe5671399",
+          "xrpl": "rhQS8c7YYY8bVKDkEucqFZpT7GwmpLjVhQ",
+          "stellar": "GDQWUMD5A2A7MAK7VTQKFOFTKUDEM3JS34ERZNA4EPS6733WRFKQHFHG"
+        },
+        "2": {
+          "evm": "0xB4c685356195f8745EB9Df0C02e2eA5c59c279f8",
+          "xrpl": "rt5GqwvLU4CPAyacKKzEpJtqusUBVtQpR",
+          "stellar": "GCKOJ7Z6Z6EOFGUGZ6GSS6XKPCRDWFDKZKPO4EWIC2Q2UWJHWFPDF6OS"
+        }
+      }
+    },
+    {
+      "rootChain": "evm",
+      "rootAddress": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+      "zone": "top",
+      "network": "testnet",
+      "seed": "b1be56c0b03d956d144fa9f6ca5da93bac5c169541b4c7fb00dde41172b4ed91adf7bf77660a94fc1e15e778cad3f0ed2942cc03aa103249e3426db4788612a4",
+      "agents": {
+        "0": {
+          "evm": "0xb66a0989204833fEB9a280A7d07474e07adAF358",
+          "xrpl": "rny8cPhymU6oAapbtpqxgCLhPxF5PQKyH2",
+          "stellar": "GBE5B6BSBLNJDKLKM6R7ZXSR6VVSSZU5TWILCBKGU2DK4YZSUVA5CH4X"
+        },
+        "1": {
+          "evm": "0xEcCf3dFEc39E927d8fBF74c727ADEa515993c323",
+          "xrpl": "rDntBegVMs9qr6i4CwbT7EkBZtSmTjxytF",
+          "stellar": "GAEPHWTU74TCIKPOTRRBDM2AYWU4UJNOYO3JSRECFCRJLQSIN6TB7GVB"
+        },
+        "2": {
+          "evm": "0xF3559e467ADd76280E2D70C996D49c5798de77Dc",
+          "xrpl": "rU3T3H2wTVZDBR5HV3ir2r8q7fvf9wjfHq",
+          "stellar": "GDXCB3EKV3DN22G3RNJCSBN3WFZLJ54NVU46V5T2HG2MQ445RMCMXKV3"
+        }
+      }
+    },
+    {
+      "rootChain": "evm",
+      "rootAddress": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+      "zone": "agents",
+      "network": "mainnet",
+      "seed": "80b6706f20ae63a2a52ce74e5d9354e5f471ce225dbfce0d6ecbdf1b7aa599ec8178d02a87cfc7ee949eca4029f42a603d1011152116a81115a2c883bcdca9fd",
+      "agents": {
+        "0": {
+          "evm": "0xC309605559a2caD452919C421122D00D180c78d0",
+          "xrpl": "rwEHT6escBXfJYuyYHgsoSNDufTsKPuFUm",
+          "stellar": "GD6BPJVGXWU2H2YIUPB4J4KB5JP6EOERH65Z2WUZK2VC7H5GDT6OCHPG"
+        },
+        "1": {
+          "evm": "0xe2a3B26e842DFcbC6927CA6B355Fbe6758D97E24",
+          "xrpl": "rNPE6yd4gMDLUNgGD9moMxHC7xj8dFcT6c",
+          "stellar": "GA3FYRZVWDTVZUNHQNHS5O4MSDLW3XKBDYTJOOVLHILDFU4FMNIQRHHM"
+        },
+        "2": {
+          "evm": "0x576E0d019445EA4A9c0f8f18523D62dEB504E28C",
+          "xrpl": "rMYMLUR9EftKqgNWRyCGW4WFM9sw6jvLfn",
+          "stellar": "GDPTJ5JCFECKPRICXITR4LBSCGSAJYOS3PXWORXSHVUDEXJWQBULNNSD"
+        }
+      }
+    },
+    {
+      "rootChain": "evm",
+      "rootAddress": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+      "zone": "agents",
+      "network": "testnet",
+      "seed": "fd2795f785b60e501a72b549e9e7a1b612de46122888a975d0e9dd8898da56d2a76babf2cfd6fe9e4dfdbac64ce97f9d736742fb284d2376635cd8dd0a3b52af",
+      "agents": {
+        "0": {
+          "evm": "0x5249eb1EE72e87F8F8D050391edf94d086E11DB5",
+          "xrpl": "rnzeibmFjZic7j1jsj4tfN4kmT3ekWiru1",
+          "stellar": "GCXDVKE7MSKFTXGGBSGT6N7LKT2PEA6QP73RBBLBZXVHBZ543T4PD6UV"
+        },
+        "1": {
+          "evm": "0x722f957635227C74ae76F06AbB6f1899Fa1f2815",
+          "xrpl": "rw2nzpqgQmaabEsSmyQ1ZsWudawDicnjRZ",
+          "stellar": "GAM6JUVI3CBUYHPCFY7674O2XDJYRB4M2EF7G7KSH2LITJZZZNLTUBMZ"
+        },
+        "2": {
+          "evm": "0x8692Bf50043eEd1b0d86598d438600335E51B16b",
+          "xrpl": "rsybVtJbUu6xYRfXL1ivSh4x4x1SZdL8nq",
+          "stellar": "GBZBCBBSGWUSV34GVZJUBE2OKPW32F7TM3KAUDLQGDOUIH37Q5VA5NRY"
+        }
+      }
+    },
+    {
+      "rootChain": "stellar",
+      "rootAddress": "GDRXE2BQUC3AZNPVFSCEZ76NJ3WWL25FYFK6RGZGIEKWE4SOOHSUJUJ6",
+      "zone": "top",
+      "network": "mainnet",
+      "seed": "857ce260dbf3c4f9f8653ab80c7aaf70f2612200d43f2111b62b89e6847f9417ef9140c951f20a28b94a5f87ca90b8c1be083b825010c371a26b5592681b4f1a",
+      "agents": {
+        "0": {
+          "evm": "0x9B4C9B76C1D58e237EF546d8A409B9484418e852",
+          "xrpl": "rai6B6JZ2TP1FVNJ9RzNHAVJCi32Z7pj23",
+          "stellar": "GB2FYY7DN2YMDTBUVMDUBH73J6RSNHD22ANY5K7RGU7R66KSGBTIRC24"
+        },
+        "1": {
+          "evm": "0x2FEc2fd0d9Eaae29b781b86F78838358fAD85001",
+          "xrpl": "r4R3xkGMdyLUmAguYHv41TwARrUvvsXmdm",
+          "stellar": "GBL2BMRYDXAK7F7XWAG3PAM5DHUG5DE7XAQFIAYMJH5L4NKOQMHFM2HQ"
+        },
+        "2": {
+          "evm": "0xB88421373c06538f1514c79Cc2d0Fa9b8eab7207",
+          "xrpl": "r9PkGSVhrXYJR3K8E3FiNhULdX9oHZwwNU",
+          "stellar": "GBXLFRSKDOFOFGGTJ5N6NTRZOTI5IPPB6Z3PUSYEA3G5ECN5C4VG2BTB"
+        }
+      }
+    },
+    {
+      "rootChain": "stellar",
+      "rootAddress": "GDRXE2BQUC3AZNPVFSCEZ76NJ3WWL25FYFK6RGZGIEKWE4SOOHSUJUJ6",
+      "zone": "top",
+      "network": "testnet",
+      "seed": "c687786c977b1e52ef32ca2e7545311cd48ebcbcb0528634976e55acf7836b824fa82c58ed7a94de255f779527fb06e93ce54d3169860043ad004154fcb9dbe9",
+      "agents": {
+        "0": {
+          "evm": "0xD0f01f66B66BEE9B5d6e2830854831F16aedE405",
+          "xrpl": "rJy24DVv8gu3B6RLDoDoV21Vi6nh5bE6RP",
+          "stellar": "GD3ZHCUU4GIU3OEPF6KTZVIGYSWTXOEQLEH3TYWNYYV65U2YRCJ5KN66"
+        },
+        "1": {
+          "evm": "0x43a6b5564fc54Ff761F79F5bF6316a46D8235e2e",
+          "xrpl": "r4wsYF8fYbkkMz4EeBTC8NX9c1NqvR5PVr",
+          "stellar": "GD27U3WJUNPNZVWRU5GRDV6ZESVT65IUGE6RBIWGH25WS3K5GAMJ6MTG"
+        },
+        "2": {
+          "evm": "0x9C5BdcEC6848A9A82D7DB646D1feAFa1D4244dE4",
+          "xrpl": "rsYg18wh5WYMmDxyNNZZ27ZC65qDUAESoH",
+          "stellar": "GAYLLUFZKBXHTMTH3TP5KNOBQAWP7WGAFHAIIJQVX5SHVDN6BQUYX563"
+        }
+      }
+    },
+    {
+      "rootChain": "stellar",
+      "rootAddress": "GDRXE2BQUC3AZNPVFSCEZ76NJ3WWL25FYFK6RGZGIEKWE4SOOHSUJUJ6",
+      "zone": "agents",
+      "network": "mainnet",
+      "seed": "dc00f429f18ffaf05fb07f48f8903efc12eddb7993048fbddf0271a4d13069953149d8aebb8f8d126619fcbd975766f6cbabde71eca58d92e6384c714fae45b9",
+      "agents": {
+        "0": {
+          "evm": "0xF46dD31628311BDc6B8DF7679730ec570E26b5F3",
+          "xrpl": "rpeN4LuqSqPFru5aENuzSjtXUk19BDJMEj",
+          "stellar": "GBNEQ7YBPS2SCHV5YVHRV7NHBI2GNRPGCMELUNKGNTYFBGTTYAK4VBJ6"
+        },
+        "1": {
+          "evm": "0x15634Fd7089cFb0A1c0625c3F3E380e9D28991Ef",
+          "xrpl": "rPr7e9QX8HFxDdEczL5DV99VjUi6vnwvgu",
+          "stellar": "GA7IVZCRPLAXLDOGVQR5DFVA4IVJSHZZC47N24DUS67BQ2VB6ENYP77Z"
+        },
+        "2": {
+          "evm": "0x6c323048934Ae6e80e08110aE0285C6150077783",
+          "xrpl": "rJqTELbQAsa3FMx7DEtMDFMQSy6Uzg7Cob",
+          "stellar": "GCRJJ4LQFQH2JNQVIXB5UPXRQSKYAPC5CLPML52KAULPQVPTAATPSEEI"
+        }
+      }
+    },
+    {
+      "rootChain": "stellar",
+      "rootAddress": "GDRXE2BQUC3AZNPVFSCEZ76NJ3WWL25FYFK6RGZGIEKWE4SOOHSUJUJ6",
+      "zone": "agents",
+      "network": "testnet",
+      "seed": "9f921f4403eee9529bc02e4e7f4e3a9d0b45478e99f322441e449aac9888155cb9cd1fe4da4d6f6b85957033b33dae5e85d8bead78268b9987c1f3edc4b35181",
+      "agents": {
+        "0": {
+          "evm": "0x1799eB80723d9F47d35fAe3fb79e796692ACc5F6",
+          "xrpl": "rsfJGnK3QYKXSMbmb4MJgCpRmmYryoDJ6C",
+          "stellar": "GAROKCHDUY5N544VZU2VYTSPQNHHAFH5XRQZNMV32EBWBBZ657Q2QTYR"
+        },
+        "1": {
+          "evm": "0x851948239ad7492Ce93301523E45B4b68A15c63D",
+          "xrpl": "rGUP4JLtK4eJ2zDu8DQ73geuHtMSnbcCMJ",
+          "stellar": "GBWHE55A5R7L76LFVXVEOBNFNP3WLLDWFIZO6TW357XQDM2AN2ZRX5YF"
+        },
+        "2": {
+          "evm": "0xEe259CF831a52b7b48D45f334f4055BE44797a88",
+          "xrpl": "ra8FMMX7QpiqA2EPBQVudupynoTQ6ddFf6",
+          "stellar": "GDXZKOULQHVZHGFSBQ4KEDH42LHVXHKE6G7DGWKYBA5T2YHOLH7M2PGT"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/zone-keys" },
+    { "path": "./packages/web-connector" },
+    { "path": "./packages/mcp" }
+  ]
+}

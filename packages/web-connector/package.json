@@ -1,0 +1,35 @@
+{
+  "name": "@mosaic/web-connector",
+  "version": "0.0.0",
+  "description": "Browser wallet connectivity for Mosaic root wallets: Xaman (payload QR + status wss), EVM (WalletConnect QR to MetaMask mobile by default, EIP-6963 extensions as fallback), Stellar (WalletConnect QR to Freighter mobile by default, Freighter extension as fallback), behind one RootWalletConnector interface. Browser-only; the MCP server must never depend on this package.",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    "./types": "./dist/types.js",
+    "./qr": "./dist/qr.js",
+    "./evm": "./dist/evm/index.js",
+    "./xrpl": "./dist/xrpl/index.js",
+    "./stellar": "./dist/stellar/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mosaic/zone-keys": "workspace:*",
+    "@stellar/freighter-api": "^6.0.1",
+    "@walletconnect/ethereum-provider": "^2.23.1",
+    "@walletconnect/sign-client": "^2.23.1",
+    "uqr": "^0.1.2",
+    "viem": "^2.53.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "typescript": "~6.0.2"
+  }
+}

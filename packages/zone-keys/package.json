@@ -1,0 +1,36 @@
+{
+  "name": "@mosaic/zone-keys",
+  "version": "0.0.0",
+  "description": "Zone-bound key derivation for Mosaic zone-derived agent wallets: canonical messages, HKDF zone seeds, BIP44/SLIP-0010 derivation, address generation (EVM/XRPL/Stellar), recovery blob crypto, signature verification. Pure and isomorphic; no chain SDKs near key material.",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "vectors"
+  ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./verify": "./dist/verify/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.1.1",
+    "@scure/base": "^2.0.0",
+    "@scure/bip32": "^2.0.1",
+    "ripple-binary-codec": "^2.5.0",
+    "ripple-keypairs": "^2.0.0",
+    "viem": "^2.53.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "hash-wasm": "^4.12.0",
+    "typescript": "~6.0.2"
+  }
+}

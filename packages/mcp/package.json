@@ -1,0 +1,34 @@
+{
+  "name": "@mosaic/mcp",
+  "version": "0.0.0",
+  "description": "Authenticated MCP server for Mosaic zone-derived agent wallets. Minimal first release: per-chain wallet session auth, zone registry, and encrypted recovery-blob storage in Postgres. Stores only ciphertext it cannot decrypt.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "mosaic-mcp": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "start": "node dist/bin.js",
+    "http": "node dist/bin.js --http",
+    "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@mosaic/zone-keys": "workspace:*",
+    "postgres": "^3.4.7",
+    "xumm-sdk": "^1.11.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@noble/curves": "^2.2.0",
+    "@types/node": "^24.12.3",
+    "ripple-keypairs": "^2.0.0",
+    "typescript": "~6.0.2",
+    "viem": "^2.54.6"
+  }
+}
