@@ -4,6 +4,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import './index.css';
 import App from './App';
 import Home from './pages/Home';
+import DexPage from './pages/DexPage';
 import SettingsPage from './pages/SettingsPage';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { SettingsProvider } from './contexts/SettingsContext';
@@ -36,6 +37,7 @@ const router = createBrowserRouter([
     element: <AppRoute />,
     children: [
       { index: true, element: <Home /> },
+      { path: 'dex', element: <DexPage /> },
       { path: 'settings', element: <SettingsPage /> },
     ],
   },

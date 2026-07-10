@@ -33,19 +33,6 @@ the secret is always one wallet signature away.
   connectivity behind one `RootWalletConnector` interface. Subpath exports
   (`./evm`, `./xrpl`, `./stellar`, `./qr`) so the frontend lazy-loads per chain.
   The MCP server must never depend on this package.
-- `packages/dex` — `@mosaic/dex`: isomorphic (browser + Node ≥22) DEX market
-  data with zero runtime deps. Two feeds behind one lifecycle interface
-  (`subscribe/start/stop/refresh/latest/status`): `createOrderBookFeed`
-  (CLOB, streamed — Stellar via Horizon SSE over `fetch`, XRPL via native
-  `WebSocket` `subscribe` books + debounced `book_offers` refetch) and
-  `createQuoteSurfaceFeed` (executable quotes at sampled trade sizes via
-  chain pathfinding — XRPL streams WS `path_find` cycles per ledger close,
-  Stellar polls `/paths/strict-send|receive`). EVM throws
-  `UnsupportedChainError`. Subpath exports `./stellar`, `./xrpl`, `./evm`;
-  factories dynamic-import per chain. Prices/amounts are decimal strings
-  (BigInt fixed-point in `src/decimal.ts`), never floats. XRPL gotchas are
-  documented in `src/xrpl/index.ts` (public mainnet servers refuse
-  pathfinding; exact-receive form only; source XRP balance caps results).
 - `packages/mcp` — `@mosaic/mcp`: MCP server (Streamable HTTP) with Postgres.
   Session auth (per-chain signature verification, single-use nonces), zone
   registry, encrypted blob storage, Xaman payload proxy, XRPL

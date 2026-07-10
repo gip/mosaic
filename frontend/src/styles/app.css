@@ -226,3 +226,219 @@
   color: var(--fg-muted);
   margin: 0;
 }
+
+/* ------------------------------------------------------------ dex page */
+
+.dex-page {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--sp-5) var(--sp-5) var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.dex-sub {
+  max-width: 560px;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+.dex-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+
+.dex-add-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+.dex-asset {
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.dex-asset legend {
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.dex-add-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.dex-pairs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: var(--sp-5);
+}
+
+@media (max-width: 520px) {
+  .dex-pairs {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dex-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.dex-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.dex-card-head h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.dex-card-head .status-dot {
+  white-space: nowrap;
+}
+
+.chart-picker {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  overflow: hidden;
+  align-self: flex-start;
+}
+
+.chart-picker button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-3);
+  color: var(--fg-muted);
+}
+
+.chart-picker button + button {
+  border-left: 1px solid var(--line);
+}
+
+.chart-picker button.active {
+  background: var(--accent-dim);
+  color: var(--fg);
+}
+
+.dex-chart {
+  height: 260px;
+  min-width: 0;
+}
+
+.dex-book {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.dex-book th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--fg-dim);
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.dex-book td {
+  text-align: right;
+  padding: 2px var(--sp-2);
+  white-space: nowrap;
+}
+
+.dex-book tr.ask .dex-price {
+  color: var(--sell);
+}
+
+.dex-book tr.bid .dex-price {
+  color: var(--buy);
+}
+
+.dex-book tr.dex-spread td {
+  text-align: center;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.dex-error {
+  font-size: var(--fs-xs);
+  color: var(--err);
+  background: var(--err-dim);
+  border-radius: var(--r-1);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.dex-waiting {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
+/* dex: data-source selection + quote surface */
+
+.dex-sources {
+  gap: var(--sp-2);
+}
+
+.dex-source-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.dex-source-check input {
+  accent-color: var(--accent);
+}
+
+.dex-card-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.dex-statuses {
+  margin-left: auto;
+  display: inline-flex;
+  gap: var(--sp-3);
+}
+
+.dex-card-head .dex-statuses + button,
+.dex-card-head .status-dot + button {
+  margin-left: 0;
+}
+
+.dex-surface td.dex-price {
+  font-weight: 500;
+}
