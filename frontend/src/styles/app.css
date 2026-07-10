@@ -352,6 +352,128 @@
   min-width: 0;
 }
 
+.depth-chart-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.depth-chart-meta,
+.depth-chart-options,
+.depth-market-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.depth-chart-meta {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.depth-market-summary {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.depth-best-bid {
+  color: var(--buy);
+}
+
+.depth-best-ask {
+  color: var(--sell);
+}
+
+.depth-spread-value,
+.depth-axis-note {
+  color: var(--fg-dim);
+}
+
+.depth-spread-value {
+  padding: 0 var(--sp-2);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+
+.depth-chart-frame {
+  position: relative;
+  min-width: 0;
+}
+
+.depth-spread-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.depth-spread-band,
+.depth-boundary {
+  position: absolute;
+  top: 0;
+  bottom: 26px;
+}
+
+.depth-spread-band {
+  min-width: 6px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+}
+
+.depth-boundary {
+  width: 1px;
+  border-left: 1px dashed currentColor;
+}
+
+.depth-boundary.bid {
+  color: var(--buy);
+}
+
+.depth-boundary.ask {
+  color: var(--sell);
+}
+
+.depth-boundary span {
+  position: absolute;
+  top: var(--sp-2);
+  padding: 2px 5px;
+  border: 1px solid currentColor;
+  border-radius: var(--r-1);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.depth-boundary.bid span {
+  right: 5px;
+}
+
+.depth-boundary.ask span {
+  left: 4px;
+}
+
+.depth-axis-note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+}
+
+@media (max-width: 720px) {
+  .depth-chart-options {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .depth-market-summary {
+    white-space: normal;
+  }
+}
+
 .dex-book {
   width: 100%;
   border-collapse: collapse;

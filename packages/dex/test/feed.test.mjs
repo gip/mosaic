@@ -7,6 +7,7 @@ const REQ = {
   network: 'mainnet',
   base: { kind: 'native' },
   quote: { kind: 'issued', code: 'USDC', issuer: 'GA5Z' },
+  fundedAccounts: { base: null, quote: null },
 };
 
 function makeSnapshot(tag) {
@@ -199,6 +200,7 @@ test('createOrderBookFeed: stellar and xrpl construct without network I/O', asyn
     ...REQ,
     chain: 'xrpl',
     quote: { kind: 'issued', code: 'RLUSD', issuer: 'rMxCK' },
+    fundedAccounts: { base: 'rXrpFunded', quote: 'rRlusdFunded' },
   });
   assert.equal(xrpl.status, 'idle');
   assert.equal(xrpl.request.chain, 'xrpl');

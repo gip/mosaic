@@ -9,6 +9,7 @@ export type {
   DexChain,
   FeedEvent,
   FeedStatus,
+  FundedAccounts,
   Network,
   OrderBookFeed,
   OrderBookFeedOptions,

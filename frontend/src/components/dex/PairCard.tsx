@@ -134,6 +134,7 @@ export default function PairCard({ pair, onRemove }: { pair: PairConfig; onRemov
     network: pair.network,
     base: pair.base,
     quote: pair.quote,
+    fundedAccounts: pair.fundedAccounts,
   };
   const book = useOrderBookFeed(request, sources.clob);
   const paths = useQuoteSurfaceFeed(request, sources.paths);
@@ -147,8 +148,11 @@ export default function PairCard({ pair, onRemove }: { pair: PairConfig; onRemov
 
   const [history, setHistory] = useState<PricePoint[]>([]);
   const unsupported = isUnsupportedChain(book.error) || isUnsupportedChain(paths.error);
+  const xrplPathfindingUnavailable =
+    pair.chain === 'xrpl' && (!pair.fundedAccounts.base?.trim() || !pair.fundedAccounts.quote?.trim());
 
   function toggleSource(id: keyof PairSources) {
+    if (id === 'paths' && xrplPathfindingUnavailable) return;
     setSources((s) => {
       const next = { ...s, [id]: !s[id] };
       return next.clob || next.paths ? next : s; // keep at least one source on
@@ -214,6 +218,12 @@ export default function PairCard({ pair, onRemove }: { pair: PairConfig; onRemov
                   aria-pressed={sources[id]}
                   className={sources[id] ? 'active' : ''}
                   onClick={() => toggleSource(id)}
+                  disabled={id === 'paths' && xrplPathfindingUnavailable}
+                  title={
+                    id === 'paths' && xrplPathfindingUnavailable
+                      ? 'Add funded XRPL accounts when creating the pair to enable pathfinding'
+                      : undefined
+                  }
                 >
                   {label}
                 </button>

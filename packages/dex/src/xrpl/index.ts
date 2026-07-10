@@ -94,18 +94,24 @@ function offerToLevel(
   base: XrplAmountSpec,
   quote: XrplAmountSpec,
 ): { side: 'ask' | 'bid'; level: OrderBookLevel } | null {
-  const gets = offer.taker_gets_funded ?? offer.TakerGets;
-  const pays = offer.taker_pays_funded ?? offer.TakerPays;
-  const getsValue = amountValue(gets);
-  const paysValue = amountValue(pays);
-  if (isZeroDecimal(getsValue) || isZeroDecimal(paysValue)) return null;
-  if (matchesSpec(gets, base) && matchesSpec(pays, quote)) {
-    // Offer sells base for quote: an ask. Price = quote/base.
-    return { side: 'ask', level: { price: divDecimals(paysValue, getsValue), amount: getsValue } };
+  const originalGetsValue = amountValue(offer.TakerGets);
+  const originalPaysValue = amountValue(offer.TakerPays);
+  const fundedGetsValue = amountValue(offer.taker_gets_funded ?? offer.TakerGets);
+  const fundedPaysValue = amountValue(offer.taker_pays_funded ?? offer.TakerPays);
+  if (isZeroDecimal(fundedGetsValue) || isZeroDecimal(fundedPaysValue)) return null;
+  if (matchesSpec(offer.TakerGets, base) && matchesSpec(offer.TakerPays, quote)) {
+    // Price always comes from the original offer ratio. Funded amounts are
+    // independently rounded and can wildly distort the ratio for dust offers.
+    return {
+      side: 'ask',
+      level: { price: divDecimals(originalPaysValue, originalGetsValue), amount: fundedGetsValue },
+    };
   }
-  if (matchesSpec(gets, quote) && matchesSpec(pays, base)) {
-    // Offer sells quote for base: a bid. Amount is the base it wants.
-    return { side: 'bid', level: { price: divDecimals(getsValue, paysValue), amount: paysValue } };
+  if (matchesSpec(offer.TakerGets, quote) && matchesSpec(offer.TakerPays, base)) {
+    return {
+      side: 'bid',
+      level: { price: divDecimals(originalGetsValue, originalPaysValue), amount: fundedPaysValue },
+    };
   }
   return null;
 }
@@ -142,17 +148,20 @@ function amountWithValue(spec: XrplAmountSpec, value: string): XrplAmount {
   return 'issuer' in spec ? { ...spec, value } : xrpToDrops(value);
 }
 
-/**
- * Account used to anchor pathfinding requests. Issuers are ideal quoting
- * proxies: an issuer "pays" its own IOU by minting (no balance cap) and
- * "receives" it as redemption (no trust line needed), while the path itself
- * still crosses the real market. For the XRP side any account works, so we
- * borrow the other side's issuer.
- */
-function pathfindAccount(asset: Asset, other: Asset): string {
-  if (asset.kind === 'issued') return asset.issuer;
-  if (other.kind === 'issued') return other.issuer;
-  throw new Error('XRPL pathfinding needs at least one issued asset in the pair');
+/** Reject accountless or whitespace-only XRPL pathfinding requests early. */
+function fundedPathfindAccounts(req: OrderBookRequest): { base: string; quote: string } {
+  const base = req.fundedAccounts?.base?.trim();
+  const quote = req.fundedAccounts?.quote?.trim();
+  if (!base || !quote) {
+    throw new Error('XRPL pathfinding requires a funded account for both the base and quote assets');
+  }
+  if (req.base.kind === 'issued' && base === req.base.issuer) {
+    throw new Error('XRPL pathfinding base funded account must not be the asset issuer');
+  }
+  if (req.quote.kind === 'issued' && quote === req.quote.issuer) {
+    throw new Error('XRPL pathfinding quote funded account must not be the asset issuer');
+  }
+  return { base, quote };
 }
 
 interface PathAlternative {
@@ -174,6 +183,7 @@ interface XrplRpcResult {
   status?: string;
   error?: string;
   error_message?: string;
+  ledger_index?: number;
   offers?: XrplOffer[];
   asks?: XrplOffer[];
   bids?: XrplOffer[];
@@ -323,11 +333,11 @@ export function createAdapter(): DexAdapter {
      * current rippled — so the sell side ladders the quote asset via
      * `referencePrice` and reads the base amount back from the result.
      *
-     * Pathfinding results are capped by the source account's actual balance
-     * when it pays XRP (verified on testnet), so the XRP-paying side anchors
-     * at the owner of the largest funded XRP offer in the book; issued
-     * assets are paid by their issuer (minting — no cap) and received by
-     * their issuer (redemption — no trust line needed, verified working).
+     * XRPL pathfinding models an actual Payment, not a generic market query.
+     * The caller therefore supplies a real account funded in each pair asset:
+     * quote-funded source → base account for buys, and base-funded source →
+     * quote account for sells. Issuers are deliberately not used as synthetic
+     * sources because their mint/redeem privileges distort the route.
      *
      * Note: most public mainnet servers disable pathfinding (`noPermission`);
      * the testnet server allows it. Point `streamEndpoint` at your own
@@ -341,7 +351,7 @@ export function createAdapter(): DexAdapter {
       // All of these throw synchronously on invalid pairs.
       const base = toXrplAmountSpec(req.base);
       const quote = toXrplAmountSpec(req.quote);
-      pathfindAccount(req.base, req.quote); // validates at least one issuer
+      const fundedAccounts = fundedPathfindAccounts(req);
 
       const url = opts.streamEndpoint ?? XRPL_WS_ENDPOINTS[req.network];
       const ws = new opts.webSocket(url);
@@ -368,28 +378,6 @@ export function createAdapter(): DexAdapter {
           rpcWaiters.set(id, { resolve, reject });
           ws.send(JSON.stringify({ id, command, ...params }));
         });
-
-      /** Owner of the largest funded XRP-side offer: a provably XRP-rich payer. */
-      const discoverXrpPayer = async (other: XrplAmountSpec): Promise<string | null> => {
-        const res = await rpcRequest('book_offers', {
-          taker_gets: { currency: 'XRP' },
-          taker_pays: other,
-          limit: 20,
-          ledger_index: 'validated',
-        });
-        let best: string | null = null;
-        let bestFunds = -1;
-        for (const offer of res.offers ?? []) {
-          const { owner_funds, Account } = offer as { owner_funds?: string; Account?: string };
-          if (!owner_funds || !Account) continue;
-          const funds = Number(owner_funds);
-          if (funds > bestFunds) {
-            bestFunds = funds;
-            best = Account;
-          }
-        }
-        return best;
-      };
 
       const settleWaiter = (id: number, r: { alternatives: PathAlternative[] | null; error?: Error }) => {
         const waiter = waiters.get(id);
@@ -492,22 +480,14 @@ export function createAdapter(): DexAdapter {
       ws.onopen = () => {
         void (async () => {
           await rpcRequest('subscribe', { streams: ['ledger'] });
-          // XRP-paying sides are balance-capped: prefer a rich discovered payer.
-          let xrpPayer: string | null = null;
-          if (req.base.kind === 'native' || req.quote.kind === 'native') {
-            const other = req.base.kind === 'native' ? quote : base;
-            xrpPayer = await discoverXrpPayer(other).catch(() => null);
-          }
-          const sourceFor = (asset: Asset, other: Asset) =>
-            asset.kind === 'issued' ? asset.issuer : (xrpPayer ?? pathfindAccount(asset, other));
           accounts = {
             buy: {
-              source_account: sourceFor(req.quote, req.base),
-              destination_account: pathfindAccount(req.base, req.quote),
+              source_account: fundedAccounts.quote,
+              destination_account: fundedAccounts.base,
             },
             sell: {
-              source_account: sourceFor(req.base, req.quote),
-              destination_account: pathfindAccount(req.quote, req.base),
+              source_account: fundedAccounts.base,
+              destination_account: fundedAccounts.quote,
             },
           };
           void runCycle();
@@ -618,10 +598,21 @@ export function createAdapter(): DexAdapter {
       };
 
       const fetchBook = async () => {
-        const [askSide, bidSide] = await Promise.all([
-          request('book_offers', { taker_gets: base, taker_pays: quote, limit: opts.depth, ledger_index: 'validated' }),
-          request('book_offers', { taker_gets: quote, taker_pays: base, limit: opts.depth, ledger_index: 'validated' }),
-        ]);
+        // Pin both halves to one validated ledger. Apart from preventing a
+        // ledger-close race, book_offers supplies funded amounts and omits
+        // fully unfunded offers that can still appear in subscription data.
+        const askSide = await request('book_offers', {
+          taker_gets: base,
+          taker_pays: quote,
+          limit: opts.depth,
+          ledger_index: 'validated',
+        });
+        const bidSide = await request('book_offers', {
+          taker_gets: quote,
+          taker_pays: base,
+          limit: opts.depth,
+          ledger_index: askSide.ledger_index ?? 'validated',
+        });
         const offers = [...(askSide.offers ?? []), ...(bidSide.offers ?? [])];
         if (!closed) {
           emit({ type: 'snapshot', snapshot: buildSnapshot(offers, req, base, quote, opts.depth) });
@@ -656,16 +647,11 @@ export function createAdapter(): DexAdapter {
 
       ws.onopen = () => {
         request('subscribe', {
-          books: [{ taker_gets: base, taker_pays: quote, snapshot: true, both: true }],
+          books: [{ taker_gets: base, taker_pays: quote, both: true }],
         })
-          .then((result) => {
-            // The subscribe snapshot carries both sides as raw Offer objects;
-            // orientation is resolved per offer, not by rippled's labels.
-            const offers = [...(result.asks ?? []), ...(result.bids ?? [])];
-            if (!closed) {
-              emit({ type: 'snapshot', snapshot: buildSnapshot(offers, req, base, quote, opts.depth) });
-            }
-          })
+          // Subscription book data is only a change signal. Always source the
+          // displayed snapshot from book_offers so funding is authoritative.
+          .then(fetchBook)
           .catch(fail);
       };
 

@@ -7,12 +7,15 @@ import { createAdapter as createXrplAdapter } from '../dist/xrpl/index.js';
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 const RLUSD_ISSUER = 'rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De';
 const RLUSD_HEX = `524C555344${'0'.repeat(30)}`;
+const XRP_FUNDED_ACCOUNT = 'rXrpFunded';
+const RLUSD_FUNDED_ACCOUNT = 'rRlusdFunded';
 
 const STELLAR_REQ = {
   chain: 'stellar',
   network: 'mainnet',
   base: { kind: 'native' },
   quote: { kind: 'issued', code: 'USDC', issuer: USDC_ISSUER },
+  fundedAccounts: { base: null, quote: null },
 };
 
 const XRPL_REQ = {
@@ -20,6 +23,7 @@ const XRPL_REQ = {
   network: 'testnet',
   base: { kind: 'native' },
   quote: { kind: 'issued', code: 'RLUSD', issuer: RLUSD_ISSUER },
+  fundedAccounts: { base: XRP_FUNDED_ACCOUNT, quote: RLUSD_FUNDED_ACCOUNT },
 };
 
 const drain = async () => {
@@ -115,7 +119,7 @@ function openXrplSurface(events, opts = {}) {
   return { handle, ws: FakeWebSocket.instances[0] };
 }
 
-test('xrpl surface stream: discovery, exact-receive cycle, surface assembly', async () => {
+test('xrpl surface stream: funded-account exact-receive cycle, surface assembly', async () => {
   const events = [];
   const { handle, ws } = openXrplSurface(events);
   assert.equal(ws.url, 'wss://s.altnet.rippletest.net:51233');
@@ -126,27 +130,14 @@ test('xrpl surface stream: discovery, exact-receive cycle, surface assembly', as
   ws.respond(ws.sent[0].id, {});
   await drain();
 
-  // 2: XRP-payer discovery via the XRP side of the book
-  const bookReq = ws.sent[1];
-  assert.equal(bookReq.command, 'book_offers');
-  assert.deepEqual(bookReq.taker_gets, { currency: 'XRP' });
-  ws.respond(bookReq.id, {
-    status: 'success',
-    offers: [
-      { Account: 'rPOOR', owner_funds: '1000' },
-      { Account: 'rRICH', owner_funds: '999999999999' },
-    ],
-  });
-  await drain();
-
-  // 3: buy — receive 100 XRP (drops), pay RLUSD minted by its issuer
-  const buyReq = ws.sent[2];
+  // 2: buy — receive 100 XRP (drops), pay from the supplied RLUSD account.
+  const buyReq = ws.sent[1];
   assert.equal(buyReq.command, 'path_find');
   assert.equal(buyReq.subcommand, 'create');
   assert.equal(buyReq.destination_amount, '100000000');
   assert.deepEqual(buyReq.source_currencies, [{ currency: RLUSD_HEX, issuer: RLUSD_ISSUER }]);
-  assert.equal(buyReq.source_account, RLUSD_ISSUER);
-  assert.equal(buyReq.destination_account, RLUSD_ISSUER);
+  assert.equal(buyReq.source_account, RLUSD_FUNDED_ACCOUNT);
+  assert.equal(buyReq.destination_account, XRP_FUNDED_ACCOUNT);
   ws.respond(buyReq.id, {
     full_reply: true,
     alternatives: [
@@ -156,12 +147,12 @@ test('xrpl surface stream: discovery, exact-receive cycle, surface assembly', as
   });
   await drain();
 
-  // 4: sell — receive 100 × 2 = 200 RLUSD, pay XRP from the discovered payer
-  const sellReq = ws.sent[3];
+  // 3: sell — receive 100 × 2 = 200 RLUSD, paid by the supplied XRP account.
+  const sellReq = ws.sent[2];
   assert.deepEqual(sellReq.destination_amount, { currency: RLUSD_HEX, issuer: RLUSD_ISSUER, value: '200' });
   assert.deepEqual(sellReq.source_currencies, [{ currency: 'XRP' }]);
-  assert.equal(sellReq.source_account, 'rRICH');
-  assert.equal(sellReq.destination_account, RLUSD_ISSUER);
+  assert.equal(sellReq.source_account, XRP_FUNDED_ACCOUNT);
+  assert.equal(sellReq.destination_account, RLUSD_FUNDED_ACCOUNT);
   // partial reply first, then the async full reply completes the sample
   ws.respond(sellReq.id, { full_reply: false, alternatives: [] });
   await drain();
@@ -170,7 +161,7 @@ test('xrpl surface stream: discovery, exact-receive cycle, surface assembly', as
   await drain();
 
   // cycle ends: path_find close sent, surface emitted
-  assert.equal(ws.sent[4].subcommand, 'close');
+  assert.equal(ws.sent[3].subcommand, 'close');
   assert.equal(events.length, 1);
   const surface = events[0].surface;
   assert.deepEqual(surface.buy, [{ amount: '100', total: '210', avgPrice: '2.1' }]);
@@ -178,7 +169,7 @@ test('xrpl surface stream: discovery, exact-receive cycle, surface assembly', as
 
   // a ledger close triggers the next cycle
   ws.onmessage({ data: JSON.stringify({ type: 'ledgerClosed' }) });
-  assert.equal(ws.sent[5].subcommand, 'create');
+  assert.equal(ws.sent[4].subcommand, 'create');
 
   handle.close();
   assert.equal(ws.closed, true);
@@ -190,12 +181,10 @@ test('xrpl surface stream: settles on the first reply carrying alternatives (no 
   ws.onopen();
   ws.respond(ws.sent[0].id, {});
   await drain();
-  ws.respond(ws.sent[1].id, { status: 'success', offers: [{ Account: 'rRICH', owner_funds: '9' }] });
-  await drain();
 
   // buy: xrplcluster style — the create response has alternatives but
   // full_reply false, and no async update ever follows.
-  const buyReq = ws.sent[2];
+  const buyReq = ws.sent[1];
   ws.respond(buyReq.id, {
     full_reply: false,
     alternatives: [{ source_amount: { currency: RLUSD_HEX, issuer: RLUSD_ISSUER, value: '210' } }],
@@ -203,7 +192,7 @@ test('xrpl surface stream: settles on the first reply carrying alternatives (no 
   await drain();
 
   // sell: empty partial response, then an async *partial* update with routes.
-  const sellReq = ws.sent[3];
+  const sellReq = ws.sent[2];
   ws.respond(sellReq.id, { full_reply: false, alternatives: [] });
   await drain();
   assert.equal(events.length, 0);
@@ -230,16 +219,14 @@ test('xrpl surface stream: all-failed cycle emits error; socket drop emits close
   ws.onopen();
   ws.respond(ws.sent[0].id, {});
   await drain();
-  ws.respond(ws.sent[1].id, { status: 'success', offers: [] });
-  await drain();
   // buy create fails hard
-  const buyReq = ws.sent[2];
+  const buyReq = ws.sent[1];
   ws.onmessage({
     data: JSON.stringify({ id: buyReq.id, type: 'response', status: 'error', error: 'noPermission' }),
   });
   await drain();
   // sell create fails too
-  const sellReq = ws.sent[3];
+  const sellReq = ws.sent[2];
   ws.onmessage({
     data: JSON.stringify({ id: sellReq.id, type: 'response', status: 'error', error: 'noPermission' }),
   });
@@ -250,6 +237,32 @@ test('xrpl surface stream: all-failed cycle emits error; socket drop emits close
 
   ws.onclose(); // server drop
   assert.equal(events.at(-1).type, 'closed');
+});
+
+test('xrpl surface stream: rejects missing funded accounts', () => {
+  const adapter = createXrplAdapter();
+  assert.throws(
+    () =>
+      adapter.openSurfaceStream(
+        { ...XRPL_REQ, fundedAccounts: { base: 'rXrpFunded', quote: null } },
+        { sizes: ['1'], referencePrice: '1', fetch, webSocket: FakeWebSocket },
+        () => {},
+      ),
+    /funded account for both the base and quote assets/,
+  );
+});
+
+test('xrpl surface stream: rejects an issuer as its asset-funded account', () => {
+  const adapter = createXrplAdapter();
+  assert.throws(
+    () =>
+      adapter.openSurfaceStream(
+        { ...XRPL_REQ, fundedAccounts: { base: XRP_FUNDED_ACCOUNT, quote: RLUSD_ISSUER } },
+        { sizes: ['1'], referencePrice: '1', fetch, webSocket: FakeWebSocket },
+        () => {},
+      ),
+    /quote funded account must not be the asset issuer/,
+  );
 });
 
 /* ------------------------------------------------------- surface feed */

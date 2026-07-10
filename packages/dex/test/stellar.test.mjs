@@ -9,6 +9,7 @@ const REQ = {
   network: 'mainnet',
   base: { kind: 'native' },
   quote: { kind: 'issued', code: 'USDC', issuer: USDC_ISSUER },
+  fundedAccounts: { base: null, quote: null },
 };
 
 // Trimmed live capture of GET /order_book (XLM/USDC, July 2026).

@@ -32,11 +32,23 @@ export interface OrderBookLevel {
   amount: string;
 }
 
+/**
+ * Accounts that are funded in the corresponding pair asset. XRPL pathfinding
+ * is account-specific, so it uses the quote-funded account to buy base and
+ * the base-funded account to sell base. Stellar's asset-only path endpoints
+ * use `null` for both fields.
+ */
+export interface FundedAccounts {
+  base: string | null;
+  quote: string | null;
+}
+
 export interface OrderBookRequest {
   chain: DexChain;
   network: Network;
   base: Asset;
   quote: Asset;
+  fundedAccounts: FundedAccounts;
 }
 
 export interface OrderBookSnapshot {
@@ -53,7 +65,7 @@ export interface OrderBookSnapshot {
 }
 
 export interface OrderBookFeedOptions {
-  /** Max levels per side. Default 20. */
+  /** Max levels per side. Default 200. */
   depth?: number;
   /** Override the HTTP endpoint (Horizon base URL / XRPL JSON-RPC URL). */
   httpEndpoint?: string;

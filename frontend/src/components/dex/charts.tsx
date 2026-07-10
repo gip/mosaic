@@ -1,15 +1,20 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
-  AreaSeries,
   ColorType,
   HistogramSeries,
   LineSeries,
   LineStyle,
+  customSeriesDefaultOptions,
   createChart,
   createOptionsChart,
   type DeepPartial,
+  type CustomData,
+  type CustomSeriesOptions,
   type IChartApiBase,
+  type ICustomSeriesPaneRenderer,
+  type ICustomSeriesPaneView,
   type ISeriesApi,
+  type PaneRendererCustomData,
   type PriceChartOptions,
   type UTCTimestamp,
 } from 'lightweight-charts';
@@ -131,7 +136,113 @@ function depthData(snapshot: OrderBookSnapshot) {
     if (last && last.time === price) last.value = cumulative;
     else asks.push({ time: price, value: cumulative });
   }
+
   return { bids, asks };
+}
+
+interface DepthPoint extends CustomData<number> {
+  value: number;
+}
+
+interface DepthSeriesOptions extends CustomSeriesOptions {
+  fillColor: string;
+  lineColor: string;
+}
+
+type DepthViewport = 'near' | 'full';
+type DepthScale = 'linear' | 'sqrt';
+
+const NEAR_MARKET_FRACTION = 0.01;
+const MIN_SPREAD_BAND_PX = 6;
+
+function chartDepth(value: number, scale: DepthScale): number {
+  return scale === 'sqrt' ? Math.sqrt(value) : value;
+}
+
+function actualDepth(value: number, scale: DepthScale): number {
+  return scale === 'sqrt' ? value * value : value;
+}
+
+function marketPrice(value: number): string {
+  return value.toLocaleString(undefined, { maximumSignificantDigits: 9 });
+}
+
+/**
+ * Draw a depth staircase from its own zero baseline. A standard line series
+ * cannot contain two points at the same price, so a custom series is needed
+ * to render the initial vertical order exactly at its price.
+ */
+function createDepthPaneView(
+  side: 'bid' | 'ask',
+): ICustomSeriesPaneView<number, DepthPoint, DepthSeriesOptions> {
+  let data: PaneRendererCustomData<number, DepthPoint> | null = null;
+  let options: DepthSeriesOptions;
+
+  const tracePath = (context: CanvasRenderingContext2D, priceToY: (price: number) => number | null) => {
+    const bars = data?.bars;
+    const zeroY = priceToY(0);
+    if (!bars?.length || zeroY === null) return null;
+
+    const start = side === 'ask' ? 0 : bars.length - 1;
+    const end = side === 'ask' ? bars.length - 1 : 0;
+    const step = side === 'ask' ? 1 : -1;
+    const firstY = priceToY(bars[start].originalData.value);
+    if (firstY === null) return null;
+
+    context.moveTo(bars[start].x, zeroY);
+    context.lineTo(bars[start].x, firstY);
+    let previousY = firstY;
+    for (let index = start + step; side === 'ask' ? index <= end : index >= end; index += step) {
+      const currentY = priceToY(bars[index].originalData.value);
+      if (currentY === null) continue;
+      context.lineTo(bars[index].x, previousY);
+      context.lineTo(bars[index].x, currentY);
+      previousY = currentY;
+    }
+    return { endX: bars[end].x, zeroY };
+  };
+
+  const renderer: ICustomSeriesPaneRenderer = {
+    draw(target, priceToY) {
+      target.useMediaCoordinateSpace(({ context }) => {
+        context.save();
+        context.beginPath();
+        const end = tracePath(context, priceToY);
+        if (end === null) {
+          context.restore();
+          return;
+        }
+        context.lineTo(end.endX, end.zeroY);
+        context.closePath();
+        context.fillStyle = options.fillColor;
+        context.fill();
+
+        context.beginPath();
+        if (tracePath(context, priceToY) !== null) {
+          context.strokeStyle = options.lineColor;
+          context.lineWidth = 2;
+          context.stroke();
+        }
+        context.restore();
+      });
+    },
+  };
+
+  return {
+    renderer: () => renderer,
+    update: (nextData, nextOptions) => {
+      data = nextData;
+      options = nextOptions;
+    },
+    priceValueBuilder: (point) => [0, point.value],
+    isWhitespace: (point): point is { time: number } => !('value' in point),
+    defaultOptions: () => ({
+      ...customSeriesDefaultOptions,
+      color: '#000000',
+      fillColor: 'transparent',
+      lineColor: '#000000',
+    }),
+  };
 }
 
 /**
@@ -178,13 +289,28 @@ function DepthChart({
   snapshot: OrderBookSnapshot | null;
   surface: QuoteSurface | null;
 }) {
+  const [viewport, setViewport] = useState<DepthViewport>('near');
+  const [depthScale, setDepthScale] = useState<DepthScale>('linear');
   const containerRef = useRef<HTMLDivElement>(null);
+  const spreadBandRef = useRef<HTMLDivElement>(null);
+  const bidBoundaryRef = useRef<HTMLDivElement>(null);
+  const askBoundaryRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApiBase<number> | null>(null);
-  const bidsRef = useRef<ISeriesApi<'Area', number> | null>(null);
-  const asksRef = useRef<ISeriesApi<'Area', number> | null>(null);
+  const bidsRef = useRef<ISeriesApi<'Custom', number> | null>(null);
+  const asksRef = useRef<ISeriesApi<'Custom', number> | null>(null);
   const pathSellRef = useRef<ISeriesApi<'Line', number> | null>(null);
   const pathBuyRef = useRef<ISeriesApi<'Line', number> | null>(null);
+  const bestPricesRef = useRef<{ bid: number; ask: number } | null>(null);
+  const positionSpreadRef = useRef<() => void>(() => {});
   const theme = useThemeAttribute();
+
+  const bestBid = snapshot?.bids[0] ? Number(snapshot.bids[0].price) : null;
+  const bestAsk = snapshot?.asks[0] ? Number(snapshot.asks[0].price) : null;
+  const hasSpread =
+    bestBid !== null && bestAsk !== null && Number.isFinite(bestBid) && Number.isFinite(bestAsk);
+  const spread = hasSpread ? bestAsk - bestBid : null;
+  const mid = hasSpread ? (bestAsk + bestBid) / 2 : null;
+  const spreadPercent = spread !== null && mid !== null && mid !== 0 ? (spread / mid) * 100 : null;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -194,25 +320,28 @@ function DepthChart({
     const chart = createOptionsChart(el, {
       ...base,
       // The horizontal scale carries prices, not time.
-      localization: { ...base.localization, timeFormatter: formatAxisNumber },
+      localization: {
+        ...base.localization,
+        priceFormatter: (value: number) => formatAxisNumber(actualDepth(value, depthScale)),
+        timeFormatter: formatAxisNumber,
+      },
     });
-    const sideOptions = {
+    const depthOptions = {
       priceLineVisible: false,
       lastValueVisible: false,
-      lineWidth: 2 as const,
       priceFormat: CUSTOM_PRICE_FORMAT,
     };
-    bidsRef.current = chart.addSeries(AreaSeries, {
-      ...sideOptions,
+    bidsRef.current = chart.addCustomSeries(createDepthPaneView('bid'), {
+      ...depthOptions,
+      color: colors.buy,
+      fillColor: colors.buyDim,
       lineColor: colors.buy,
-      topColor: colors.buyDim,
-      bottomColor: 'transparent',
     });
-    asksRef.current = chart.addSeries(AreaSeries, {
-      ...sideOptions,
+    asksRef.current = chart.addCustomSeries(createDepthPaneView('ask'), {
+      ...depthOptions,
+      color: colors.sell,
+      fillColor: colors.sellDim,
       lineColor: colors.sell,
-      topColor: colors.sellDim,
-      bottomColor: 'transparent',
     });
     const pathOptions = {
       lineWidth: 2 as const,
@@ -225,25 +354,69 @@ function DepthChart({
     pathSellRef.current = chart.addSeries(LineSeries, { ...pathOptions, color: colors.buy });
     pathBuyRef.current = chart.addSeries(LineSeries, { ...pathOptions, color: colors.sell });
     chartRef.current = chart;
+
+    const positionSpread = () => {
+      const prices = bestPricesRef.current;
+      const band = spreadBandRef.current;
+      const bidBoundary = bidBoundaryRef.current;
+      const askBoundary = askBoundaryRef.current;
+      if (!prices || !band || !bidBoundary || !askBoundary) return;
+      const bidX = chart.timeScale().timeToCoordinate(prices.bid);
+      const askX = chart.timeScale().timeToCoordinate(prices.ask);
+      if (bidX === null || askX === null) {
+        band.hidden = true;
+        bidBoundary.hidden = true;
+        askBoundary.hidden = true;
+        return;
+      }
+      const left = Math.min(bidX, askX);
+      const right = Math.max(bidX, askX);
+      const width = Math.max(right - left, MIN_SPREAD_BAND_PX);
+      const center = (left + right) / 2;
+      band.hidden = false;
+      bidBoundary.hidden = false;
+      askBoundary.hidden = false;
+      band.style.left = `${center - width / 2}px`;
+      band.style.width = `${width}px`;
+      bidBoundary.style.left = `${bidX}px`;
+      askBoundary.style.left = `${askX}px`;
+    };
+    positionSpreadRef.current = positionSpread;
+    const resizeObserver = new ResizeObserver(() => requestAnimationFrame(positionSpread));
+    resizeObserver.observe(el);
     return () => {
+      resizeObserver.disconnect();
       chart.remove();
       chartRef.current = null;
       bidsRef.current = null;
       asksRef.current = null;
       pathSellRef.current = null;
       pathBuyRef.current = null;
+      positionSpreadRef.current = () => {};
     };
-  }, [theme]);
+  }, [depthScale, theme]);
 
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !bidsRef.current || !asksRef.current || !pathSellRef.current || !pathBuyRef.current) {
       return;
     }
-    const { bids, asks } = snapshot ? depthData(snapshot) : { bids: [], asks: [] };
+    const raw = snapshot ? depthData(snapshot) : { bids: [], asks: [] };
+    const bids = raw.bids.map((point) => ({ ...point, value: chartDepth(point.value, depthScale) }));
+    const asks = raw.asks.map((point) => ({ ...point, value: chartDepth(point.value, depthScale) }));
     const range = priceRange(bids, asks);
-    const pathSell = surface ? surfaceDepthData(surface.sell, range) : [];
-    const pathBuy = surface ? surfaceDepthData(surface.buy, range) : [];
+    const pathSell = surface
+      ? surfaceDepthData(surface.sell, range).map((point) => ({
+          ...point,
+          value: chartDepth(point.value, depthScale),
+        }))
+      : [];
+    const pathBuy = surface
+      ? surfaceDepthData(surface.buy, range).map((point) => ({
+          ...point,
+          value: chartDepth(point.value, depthScale),
+        }))
+      : [];
     const referencePrice =
       asks[0]?.time ?? bids[bids.length - 1]?.time ?? pathBuy[0]?.time ?? pathSell[pathSell.length - 1]?.time;
     if (referencePrice !== undefined) {
@@ -257,10 +430,93 @@ function DepthChart({
     asksRef.current.setData(asks);
     pathSellRef.current.setData(pathSell);
     pathBuyRef.current.setData(pathBuy);
-    chart.timeScale().fitContent();
-  }, [snapshot, surface, theme]);
+    const bid = snapshot?.bids[0] ? Number(snapshot.bids[0].price) : NaN;
+    const ask = snapshot?.asks[0] ? Number(snapshot.asks[0].price) : NaN;
+    bestPricesRef.current = Number.isFinite(bid) && Number.isFinite(ask) ? { bid, ask } : null;
+    if (viewport === 'near' && Number.isFinite(bid) && Number.isFinite(ask)) {
+      const center = (bid + ask) / 2;
+      chart.timeScale().setVisibleRange({
+        from: center * (1 - NEAR_MARKET_FRACTION),
+        to: center * (1 + NEAR_MARKET_FRACTION),
+      });
+    } else {
+      chart.timeScale().fitContent();
+    }
+    requestAnimationFrame(positionSpreadRef.current);
+  }, [depthScale, snapshot, surface, theme, viewport]);
 
-  return <div ref={containerRef} className="dex-chart" />;
+  return (
+    <div className="depth-chart-shell">
+      <div className="depth-chart-meta">
+        <div className="depth-market-summary" aria-live="polite">
+          {hasSpread ? (
+            <>
+              <span className="depth-best-bid">BID {marketPrice(bestBid)}</span>
+              <span className="depth-spread-value">
+                spread {marketPrice(spread!)} ({spreadPercent!.toFixed(3)}%)
+              </span>
+              <span className="depth-best-ask">ASK {marketPrice(bestAsk)}</span>
+            </>
+          ) : (
+            <span className="depth-spread-value">Waiting for both sides of the book</span>
+          )}
+        </div>
+        <div className="depth-chart-options">
+          <div className="chart-picker" role="group" aria-label="Depth price range">
+            <button
+              type="button"
+              className={viewport === 'near' ? 'active' : ''}
+              aria-pressed={viewport === 'near'}
+              onClick={() => setViewport('near')}
+            >
+              Near market
+            </button>
+            <button
+              type="button"
+              className={viewport === 'full' ? 'active' : ''}
+              aria-pressed={viewport === 'full'}
+              onClick={() => setViewport('full')}
+            >
+              Full depth
+            </button>
+          </div>
+          <div className="chart-picker" role="group" aria-label="Depth axis scale">
+            <button
+              type="button"
+              className={depthScale === 'linear' ? 'active' : ''}
+              aria-pressed={depthScale === 'linear'}
+              onClick={() => setDepthScale('linear')}
+            >
+              Linear
+            </button>
+            <button
+              type="button"
+              className={depthScale === 'sqrt' ? 'active' : ''}
+              aria-pressed={depthScale === 'sqrt'}
+              onClick={() => setDepthScale('sqrt')}
+            >
+              Square root
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="depth-chart-frame">
+        <div ref={containerRef} className="dex-chart" />
+        <div className="depth-spread-overlay" aria-hidden="true">
+          <div ref={spreadBandRef} className="depth-spread-band" hidden />
+          <div ref={bidBoundaryRef} className="depth-boundary bid" hidden>
+            <span>best bid</span>
+          </div>
+          <div ref={askBoundaryRef} className="depth-boundary ask" hidden>
+            <span>best ask</span>
+          </div>
+        </div>
+      </div>
+      <div className="depth-axis-note">
+        Cumulative base-asset depth · {depthScale === 'sqrt' ? 'square-root spacing' : 'linear spacing'}
+      </div>
+    </div>
+  );
 }
 
 /** Ascending, deduped points for one side of the quote surface. */

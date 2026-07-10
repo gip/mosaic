@@ -25,6 +25,7 @@ const PRESETS: { label: string; pair: Omit<PairConfig, 'id'> }[] = [
         code: 'USDC',
         issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
       },
+      fundedAccounts: { base: null, quote: null },
       sources: { clob: true, paths: true },
     },
   },
@@ -36,17 +37,19 @@ const PRESETS: { label: string; pair: Omit<PairConfig, 'id'> }[] = [
       network: 'mainnet',
       base: { kind: 'native' },
       quote: { kind: 'issued', code: 'RLUSD', issuer: RLUSD_ISSUER },
+      fundedAccounts: { base: null, quote: null },
       sources: { clob: true, paths: false },
     },
   },
   {
-    label: 'XRP / RLUSD · XRPL testnet + paths',
+    label: 'XRP / RLUSD · XRPL testnet',
     pair: {
       chain: 'xrpl',
       network: 'testnet',
       base: { kind: 'native' },
       quote: { kind: 'issued', code: 'RLUSD', issuer: RLUSD_ISSUER },
-      sources: { clob: true, paths: true },
+      fundedAccounts: { base: null, quote: null },
+      sources: { clob: true, paths: false },
     },
   },
 ];
@@ -70,6 +73,10 @@ function draftError(draft: AssetDraft): string | null {
   if (!draft.code.trim()) return 'Asset code is required';
   if (!draft.issuer.trim()) return 'Issuer address is required';
   return null;
+}
+
+function draftLabel(draft: AssetDraft, chain: DexChain, fallback: string): string {
+  return draft.kind === 'native' ? NATIVE_SYMBOLS[chain] : draft.code.trim() || fallback;
 }
 
 function AssetEditor({
@@ -130,6 +137,8 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
   const [network, setNetwork] = useState<Network>(defaultNetwork);
   const [base, setBase] = useState<AssetDraft>(NATIVE_DRAFT);
   const [quote, setQuote] = useState<AssetDraft>({ kind: 'issued', code: '', issuer: '' });
+  const [baseFundedAccount, setBaseFundedAccount] = useState('');
+  const [quoteFundedAccount, setQuoteFundedAccount] = useState('');
   const [sources, setSources] = useState<PairSources>({ clob: true, paths: false });
   const [submitted, setSubmitted] = useState(false);
 
@@ -140,16 +149,29 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
       ? 'Base and quote cannot both be the native asset'
       : null;
   const noSource = !sources.clob && !sources.paths ? 'Select at least one data source' : null;
+  const xrplPathfinding = chain === 'xrpl' && sources.paths;
+  const baseFundingError =
+    xrplPathfinding && !baseFundedAccount.trim()
+      ? `A funded ${draftLabel(base, chain, 'base asset')} account is required for XRPL pathfinding`
+      : null;
+  const quoteFundingError =
+    xrplPathfinding && !quoteFundedAccount.trim()
+      ? `A funded ${draftLabel(quote, chain, 'quote asset')} account is required for XRPL pathfinding`
+      : null;
 
   function submit() {
     setSubmitted(true);
-    if (baseError || quoteError || sameAsset || noSource) return;
+    if (baseError || quoteError || sameAsset || noSource || baseFundingError || quoteFundingError) return;
     onAdd({
       id: crypto.randomUUID(),
       chain,
       network,
       base: draftToAsset(base),
       quote: draftToAsset(quote),
+      fundedAccounts:
+        chain === 'xrpl'
+          ? { base: baseFundedAccount.trim() || null, quote: quoteFundedAccount.trim() || null }
+          : { base: null, quote: null },
       sources,
     });
     setSubmitted(false);
@@ -203,6 +225,40 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
           error={submitted ? quoteError : null}
           onChange={setQuote}
         />
+        {chain === 'xrpl' && (
+          <fieldset className="dex-asset">
+            <legend>XRPL pathfinding accounts</legend>
+            <p className="tile-note">
+              Use real, non-issuer accounts funded in each asset. Required when quote-surface pathfinding is enabled.
+            </p>
+            <Field
+              id="dex-base-funded-account"
+              label={`Funded ${draftLabel(base, chain, 'base asset')} account`}
+              error={submitted ? baseFundingError ?? undefined : undefined}
+            >
+              <input
+                type="text"
+                className="mono"
+                placeholder="r…"
+                value={baseFundedAccount}
+                onChange={(e) => setBaseFundedAccount(e.target.value)}
+              />
+            </Field>
+            <Field
+              id="dex-quote-funded-account"
+              label={`Funded ${draftLabel(quote, chain, 'quote asset')} account`}
+              error={submitted ? quoteFundingError ?? undefined : undefined}
+            >
+              <input
+                type="text"
+                className="mono"
+                placeholder="r…"
+                value={quoteFundedAccount}
+                onChange={(e) => setQuoteFundedAccount(e.target.value)}
+              />
+            </Field>
+          </fieldset>
+        )}
         <fieldset className="dex-asset dex-sources">
           <legend>Data sources</legend>
           <label className="dex-source-check">
