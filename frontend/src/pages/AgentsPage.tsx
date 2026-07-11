@@ -4,7 +4,7 @@ import { Bot, LockKeyhole } from 'lucide-react';
 import StatusDot, { type StatusTone } from '../components/ui/StatusDot';
 import { useSettings } from '../contexts/SettingsContext';
 import { useSession } from '../contexts/SessionContext';
-import { ZONE_NAME } from '../config';
+import { useVaults } from '../contexts/VaultContext';
 import { localBridge } from '../local/bridge';
 
 const SERVICE_LABELS: Record<ServiceStatus['name'], string> = {
@@ -23,6 +23,7 @@ export default function AgentsPage() {
   const bridge = localBridge();
   const { session } = useSession();
   const { network } = useSettings();
+  const { activeVault } = useVaults();
   const [services, setServices] = useState<ServiceStatus[]>([]);
 
   useEffect(() => {
@@ -50,7 +51,7 @@ export default function AgentsPage() {
           <h2>Agents</h2>
           <p>Start and monitor agents running locally on this machine.</p>
         </div>
-        <button type="button" className="btn-primary" disabled title="Unlock a zone before starting its agent">
+        <button type="button" className="btn-primary" disabled title="Unlock a vault before starting its agent">
           <Bot size={15} aria-hidden="true" />
           Start agent
         </button>
@@ -59,15 +60,15 @@ export default function AgentsPage() {
       <div className="zone-card agent-zone-card">
         <div className="agent-zone-title">
           <div>
-            <span className="chain-label">Zone</span>
-            <h3 className="mono">{ZONE_NAME} · {session?.network ?? network}</h3>
+            <span className="chain-label">Vault</span>
+            <h3 className="mono">{activeVault?.zone === 'default' ? 'Default' : (activeVault?.zone ?? 'No vault')} · {session?.network ?? network}</h3>
           </div>
-          <StatusDot tone="warn">locked</StatusDot>
+          <StatusDot tone={activeVault?.status === 'unlocked' ? 'ok' : 'warn'}>{activeVault?.status ?? 'unavailable'}</StatusDot>
         </div>
-        <p>The local signer must unlock this zone before its agent can start. Keys remain inside the signer process.</p>
-        <button type="button" className="btn-primary" disabled title="Local zone unlock is the next signer slice">
+        <p>The local signer must unlock this vault before its agent can start. Keys remain inside the signer process.</p>
+        <button type="button" className="btn-primary" disabled title="Local vault unlock is the next signer slice">
           <LockKeyhole size={15} aria-hidden="true" />
-          Unlock zone
+          Unlock vault
         </button>
       </div>
 
@@ -75,7 +76,7 @@ export default function AgentsPage() {
         <div className="zone-card agent-empty">
           <Bot size={26} strokeWidth={1.5} aria-hidden="true" />
           <h3>No agent running</h3>
-          <p>Unlock the zone, then start its locally assigned agent here.</p>
+          <p>Unlock the vault, then start its locally assigned agent here.</p>
         </div>
 
         <div className="zone-card local-services-card">

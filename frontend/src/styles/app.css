@@ -135,6 +135,65 @@
   justify-content: space-between;
 }
 
+.vault-page-head,
+.vault-card-head,
+.vault-badges,
+.vault-page-actions,
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.vault-page-head h3,
+.vault-page-head p,
+.settings-head h2 {
+  margin: 0;
+}
+
+.vault-list,
+.settings-general,
+.settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.vault-card { margin: 0; }
+.vault-badges { justify-content: flex-end; }
+.active-vault-badge {
+  padding: 2px 7px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.vault-meta { margin: 0; }
+.vault-meta div { display: flex; gap: var(--sp-2); }
+.vault-meta dt { color: var(--fg-dim); }
+.vault-meta dd { margin: 0; }
+.vault-lock { align-self: flex-start; }
+
+.settings-head {
+  align-items: flex-end;
+  border-bottom: 1px solid var(--line);
+}
+.settings-nav { display: flex; gap: var(--sp-3); }
+.settings-nav a {
+  padding: var(--sp-2) 0;
+  color: var(--fg-muted);
+  border-bottom: 2px solid transparent;
+}
+.settings-nav a.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+@media (max-width: 720px) {
+  .vault-page-head,
+  .settings-head { align-items: stretch; flex-direction: column; }
+}
+
 /* -------------------------------------------------------- address cards */
 
 .address-cards {
@@ -143,10 +202,36 @@
   gap: var(--sp-3);
 }
 
+.address-groups,
+.address-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.address-group {
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+
+.address-group-head,
+.address-create {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.address-group-head h3,
+.address-card h4 { margin: 0; }
+
+.address-create input { min-width: 180px; }
+
 @media (max-width: 900px) {
   .address-cards {
     grid-template-columns: 1fr;
   }
+  .address-group-head { align-items: stretch; flex-direction: column; }
 }
 
 .address-card {

@@ -12,6 +12,9 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import { SessionProvider } from './contexts/SessionContext';
 import { CatalogProvider } from './contexts/CatalogContext';
+import { VaultProvider } from './contexts/VaultContext';
+import SettingsLayout from './pages/SettingsLayout';
+import VaultsPage from './pages/VaultsPage';
 
 if (import.meta.env.DEV) {
   console.info(
@@ -27,9 +30,11 @@ function AppRoute() {
     <ThemeProvider>
       <SettingsProvider>
         <SessionProvider>
-          <CatalogProvider>
-            <App />
-          </CatalogProvider>
+          <VaultProvider>
+            <CatalogProvider>
+              <App />
+            </CatalogProvider>
+          </VaultProvider>
         </SessionProvider>
       </SettingsProvider>
     </ThemeProvider>
@@ -45,7 +50,14 @@ const router = createBrowserRouter([
       { path: 'dex', element: <DexPage /> },
       { path: 'assets', element: <AssetsPage /> },
       { path: 'agents', element: <AgentsPage /> },
-      { path: 'settings', element: <SettingsPage /> },
+      {
+        path: 'settings',
+        element: <SettingsLayout />,
+        children: [
+          { index: true, element: <SettingsPage /> },
+          { path: 'vaults', element: <VaultsPage /> },
+        ],
+      },
     ],
   },
 ]);

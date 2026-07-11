@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AssetTrustState } from '@mosaic/catalog';
-import { authorizeZoneMessage, backupWrapMessage, type ZoneRef } from '@mosaic/zone-keys';
+import { authorizeZoneMessage, backupWrapMessage, type AgentChain, type Network, type ZoneRef } from '@mosaic/zone-keys';
 import { xrplSignInTxJson } from '@mosaic/zone-keys/verify';
 import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, type Session } from './auth.js';
 import { MosaicMcpError, mcpErrorContent } from './errors.js';
@@ -28,6 +28,7 @@ const fail = (error: unknown): ToolResult => ({
 });
 
 const MAX_BLOB_BYTES = 4 * 1024;
+const zoneNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 const signatureSchema = z.union([
   z.object({ type: z.literal('evm'), signature: z.string().regex(/^0x[0-9a-fA-F]+$/) }),
@@ -123,6 +124,24 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   );
 
   reg(
+    'auth_network_switch',
+    {
+      description: 'Exchange a valid session for the same wallet on another derivation network without another signature.',
+      inputSchema: { token: z.string(), network: z.enum(['mainnet', 'testnet']) },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const network = String(args.network) as Network;
+      if (network === session.network) return ok(session);
+      const { token } = await store.createSession({
+        chain: session.chain, address: session.address, network, expiresAt: session.expiresAt,
+      });
+      await store.deleteSession(session.token);
+      return ok({ token, chain: session.chain, address: session.address, network, expiresAt: session.expiresAt });
+    },
+  );
+
+  reg(
     'catalog_list',
     {
       description: 'List supported chains and assets with trust preferences for the authenticated root wallet.',
@@ -171,14 +190,96 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   );
 
   reg(
-    'zone_begin',
+    'zone_list',
     {
-      description: 'Issue server freshness (nonce, issuedAt, expiresAt) for an authorize-zone signature.',
+      description: 'List zone metadata for the authenticated root wallet and session network.',
+      inputSchema: { token: z.string() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const records = await store.listZones(session.chain, session.address, session.network);
+      return ok(await Promise.all(records.map(async (record) => ({
+        zoneId: record.id,
+        zone: record.zone,
+        commitment: record.commitment,
+        mode: record.policyHash === 'testnet-device-v1' ? 'testnet-device' : 'signed',
+        createdAt: record.createdAt,
+        lastUnlockedAt: record.lastUnlockedAt ?? undefined,
+        addresses: await store.listZoneAddresses(record.id),
+      }))));
+    },
+  );
+
+  reg(
+    'zone_address_create',
+    {
+      description: 'Allocate the next deterministic address index for one chain in an owned zone.',
+      inputSchema: {
+        token: z.string(), zone: z.string().min(1).max(64),
+        chain: z.enum(['evm', 'xrpl', 'stellar']),
+        name: z.string().trim().min(1).max(64).optional(),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const zone = await requireZone(session, String(args.zone));
+      return ok(await store.createZoneAddress(zone.id, String(args.chain) as AgentChain, args.name ? String(args.name) : undefined));
+    },
+  );
+
+  reg(
+    'zone_unlocked',
+    {
+      description: 'Record that the authenticated owner successfully unlocked a zone.',
       inputSchema: { token: z.string(), zone: z.string().min(1).max(64) },
     },
     async (args) => {
       const session = await requireSession(args);
+      const record = await store.markZoneUnlocked(session.chain, session.address, String(args.zone), session.network);
+      if (!record) throw new MosaicMcpError('NOT_FOUND', `zone not found: ${String(args.zone)} (${session.network})`);
+      return ok({ lastUnlockedAt: record.lastUnlockedAt });
+    },
+  );
+
+  reg(
+    'zone_begin',
+    {
+      description: 'Issue server freshness (nonce, issuedAt, expiresAt) for an authorize-zone signature.',
+      inputSchema: { token: z.string(), zone: zoneNameSchema },
+    },
+    async (args) => {
+      const session = await requireSession(args);
       return ok(await auth.zoneBegin(session, String(args.zone)));
+    },
+  );
+
+  reg(
+    'zone_create_testnet',
+    {
+      description: 'Create a Testnet-only vault whose secret is encrypted by a client-held device key.',
+      inputSchema: {
+        token: z.string(), zone: zoneNameSchema,
+        localSignerPublicKey: z.string().min(1).max(512),
+        zoneRootCommitment: z.string().regex(/^[0-9a-f]{64}$/),
+        ciphertextB64: z.string(), header: z.record(z.string(), z.unknown()),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      if (session.network !== 'testnet') throw new MosaicMcpError('VALIDATION_FAILED', 'device-key vault creation is Testnet-only');
+      const ciphertext = Buffer.from(String(args.ciphertextB64), 'base64');
+      if (ciphertext.byteLength === 0 || ciphertext.byteLength > MAX_BLOB_BYTES) {
+        throw new MosaicMcpError('VALIDATION_FAILED', `ciphertext must be 1..${MAX_BLOB_BYTES} bytes`);
+      }
+      const record = await store.createZone({
+        rootChain: session.chain, rootAddress: session.address, zone: String(args.zone), network: 'testnet',
+        commitment: String(args.zoneRootCommitment), policyHash: 'testnet-device-v1',
+        localSignerPublicKey: String(args.localSignerPublicKey),
+        authorizeMessage: { mode: 'testnet-device-v1' }, authorizeSignature: { mode: 'none' },
+        xrplSignInTemplate: null, layer1Enabled: false,
+      });
+      await store.putBlob({ zoneId: record.id, kind: 'device', ciphertext: new Uint8Array(ciphertext), header: args.header as Record<string, unknown> });
+      return ok({ zoneId: record.id, createdAt: record.createdAt });
     },
   );
 
@@ -190,7 +291,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       inputSchema: {
         token: z.string(),
         challengeId: z.string(),
-        zone: z.string().min(1).max(64),
+        zone: zoneNameSchema,
         localSignerPublicKey: z.string().min(1).max(512),
         policyHash: z.string().min(1).max(128),
         zoneRootCommitment: z.string().regex(/^[0-9a-f]{64}$/),
@@ -256,6 +357,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         localSignerPublicKey: record.localSignerPublicKey,
         layer1Enabled: record.layer1Enabled,
         createdAt: record.createdAt,
+        lastUnlockedAt: record.lastUnlockedAt ?? undefined,
         blobs,
       });
     },
@@ -268,7 +370,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       inputSchema: {
         token: z.string(),
         zone: z.string(),
-        kind: z.enum(['sig', 'pass']),
+        kind: z.enum(['sig', 'pass', 'device']),
         ciphertextB64: z.string(),
         header: z.record(z.string(), z.unknown()),
       },
@@ -295,7 +397,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     {
       description:
         'Fetch the latest encrypted recovery blob of a kind. Served only to a session authenticated via session-auth — never ask users to sign backup-wrap to log in.',
-      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass']) },
+      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device']) },
     },
     async (args) => {
       const session = await requireSession(args);
@@ -344,7 +446,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       if (args.purpose === 'backup-wrap') {
         const refs = await opts.xaman.createSignInPayload(
           backupWrapMessage(ref),
-          `Mosaic backup key for zone "${ref.zone}" (${ref.network})`,
+          `Mosaic backup key for vault "${ref.zone}" (${ref.network})`,
         );
         return ok(refs);
       }
@@ -367,7 +469,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       });
       const refs = await opts.xaman.createSignInPayload(
         message,
-        `Authorize Mosaic zone "${ref.zone}" (${ref.network})`,
+        `Authorize Mosaic vault "${ref.zone}" (${ref.network})`,
       );
       return ok(refs);
     },

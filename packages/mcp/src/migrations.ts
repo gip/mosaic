@@ -90,4 +90,25 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX chain_preferences_owner_idx ON chain_preferences (root_chain, root_address);
   CREATE INDEX asset_preferences_owner_idx ON asset_preferences (root_chain, root_address);
   `,
+  `
+  ALTER TABLE zones ADD COLUMN last_unlocked_at TIMESTAMPTZ;
+  `,
+  `
+  CREATE TABLE zone_addresses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
+    chain TEXT NOT NULL CHECK (chain IN ('evm','xrpl','stellar')),
+    derivation_index INT NOT NULL CHECK (derivation_index >= 0),
+    name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (zone_id, chain, derivation_index),
+    UNIQUE (zone_id, chain, name)
+  );
+  INSERT INTO zone_addresses (zone_id, chain, derivation_index, name)
+  SELECT id, chain, 0, '#0' FROM zones CROSS JOIN (VALUES ('evm'), ('xrpl'), ('stellar')) AS chains(chain);
+  `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device'));
+  `,
 ];

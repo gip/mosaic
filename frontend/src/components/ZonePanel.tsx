@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AgentAddresses as Addresses, ZoneRef } from '@mosaic/zone-keys';
+import { useCallback, useEffect, useState } from 'react';
+import type { ZoneRef } from '@mosaic/zone-keys';
 import Modal from './ui/Modal';
 import Banner from './ui/Banner';
 import Field from './ui/Field';
 import ProgressSteps from './ui/ProgressSteps';
 import AgentAddressCards from './AgentAddresses';
-import { api, type XamanRefs } from '../api';
+import { type XamanRefs } from '../api';
 import { errorMessage } from '../errors';
-import { ZONE_NAME } from '../config';
 import { useSession } from '../contexts/SessionContext';
+import { useVaults, type VaultState } from '../contexts/VaultContext';
 import {
   CEREMONY_STEP_LABELS,
   NonDeterministicWalletError,
@@ -16,307 +16,264 @@ import {
   type CeremonySigner,
 } from '../zone/ceremony';
 import { directCeremonySigner, xamanCeremonySigner } from '../zone/signers';
-import { unlockFromCache, unlockWithPassphrase, unlockWithSignature } from '../zone/unlock';
-import { dropCachedZoneSecret } from '../zone/cache';
+import { unlockWithPassphrase, unlockWithSignature } from '../zone/unlock';
+import { createTestnetVault, exportTestnetPairingCode, importTestnetPairingCode, unlockTestnetVault } from '../zone/testnet';
 
-type PanelState =
-  | { status: 'checking' }
-  | { status: 'absent' }
-  | { status: 'creating'; step: string }
-  | { status: 'locked'; commitment: string; hint?: string }
-  | { status: 'unlocking'; commitment: string; step: string }
-  | { status: 'needs-passphrase'; commitment: string; reason: string }
-  | { status: 'unlocked'; addresses: Addresses; commitment: string }
-  | { status: 'rejected'; message: string }
-  | { status: 'error'; message: string };
+interface XamanPrompt { refs: XamanRefs; label: string }
+const VAULT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-interface XamanPrompt {
-  refs: XamanRefs;
-  label: string;
-}
-
-/** The zone "top" lifecycle: check → (ceremony | unlock) → addresses. */
-export default function ZonePanel() {
+function useVaultSigner(ref: ZoneRef | null, setPrompt: (prompt: XamanPrompt | null) => void): () => CeremonySigner {
   const { session, signZoneMessage } = useSession();
-  const [state, setState] = useState<PanelState>({ status: 'checking' });
-  const [xamanPrompt, setXamanPrompt] = useState<XamanPrompt | null>(null);
-  const checkSeq = useRef(0);
-
-  const ref: ZoneRef | null = session
-    ? { rootChain: session.chain, rootAddress: session.address, zone: ZONE_NAME, network: session.network }
-    : null;
-
-  const makeSigner = useCallback((): CeremonySigner => {
+  return useCallback(() => {
     if (!session || !ref) throw new Error('not logged in');
     if (session.chain === 'xrpl') {
       return xamanCeremonySigner({
         token: session.token,
         ref,
-        onPayload: (refs, label) => setXamanPrompt({ refs, label }),
-        onPayloadDone: () => setXamanPrompt(null),
+        onPayload: (refs, label) => setPrompt({ refs, label }),
+        onPayloadDone: () => setPrompt(null),
       });
     }
     return directCeremonySigner(ref, signZoneMessage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, signZoneMessage]);
+  }, [ref, session, setPrompt, signZoneMessage]);
+}
 
-  // Establish zone state whenever the session identity changes.
-  useEffect(() => {
-    if (!session || !ref) return;
-    const seq = ++checkSeq.current;
-    void (async () => {
-      setState({ status: 'checking' });
-      try {
-        const zone = await api.zoneGet(session.token, ZONE_NAME);
-        if (seq !== checkSeq.current) return;
-        if (!zone.exists || !zone.commitment) {
-          setState({ status: 'absent' });
-          return;
-        }
-        const cached = await unlockFromCache(ref, zone.commitment);
-        if (seq !== checkSeq.current) return;
-        setState(
-          cached
-            ? { status: 'unlocked', addresses: cached.addresses, commitment: zone.commitment }
-            : { status: 'locked', commitment: zone.commitment },
-        );
-      } catch (error) {
-        if (seq !== checkSeq.current) return;
-        setState({ status: 'error', message: errorMessage(error) });
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.token, session?.address, session?.network]);
+function XamanPromptModal({ prompt, onClose }: { prompt: XamanPrompt; onClose: () => void }) {
+  return (
+    <Modal title={prompt.label} onClose={onClose}>
+      <div className="qr-box qr-large"><img src={prompt.refs.qrPng} alt="Xaman signing QR code" /></div>
+      <p className="tile-note">
+        Scan with Xaman, or <a href={prompt.refs.deeplink} target="_blank" rel="noreferrer">open the request directly</a>.
+      </p>
+    </Modal>
+  );
+}
 
-  async function create(passphrase: string) {
-    if (!session || !ref) return;
-    try {
-      const result = await runZoneCeremony({
-        token: session.token,
-        ref,
-        passphrase,
-        signer: makeSigner(),
-        onStep: (step) => setState({ status: 'creating', step: CEREMONY_STEP_LABELS[step] }),
-      });
-      setState({ status: 'unlocked', addresses: result.addresses, commitment: result.commitment });
-    } catch (error) {
-      if (error instanceof NonDeterministicWalletError) {
-        setState({ status: 'rejected', message: error.message });
-      } else {
-        setState({ status: 'error', message: errorMessage(error) });
-      }
-    }
-  }
-
-  async function unlock(commitment: string) {
-    if (!session || !ref) return;
-    setState({ status: 'unlocking', commitment, step: 'One backup signature unlocks this zone' });
-    try {
-      const signer = makeSigner();
-      const result = await unlockWithSignature({
-        token: session.token,
-        ref,
-        commitment,
-        signBackupWrap: () => signer.signBackupWrap(),
-      });
-      setState({ status: 'unlocked', addresses: result.addresses, commitment });
-    } catch (error) {
-      // Signature path failed — wallet signing behavior may have changed
-      // (spec §4.2). Offer the passphrase blob.
-      setState({
-        status: 'needs-passphrase',
-        commitment,
-        reason: errorMessage(error),
-      });
-    }
-  }
-
-  async function unlockPassphrase(commitment: string, passphrase: string) {
-    if (!session || !ref) return;
-    setState({ status: 'unlocking', commitment, step: 'Deriving passphrase key (intentionally slow)…' });
-    try {
-      const result = await unlockWithPassphrase({ token: session.token, ref, commitment, passphrase });
-      setState({ status: 'unlocked', addresses: result.addresses, commitment });
-    } catch (error) {
-      setState({
-        status: 'needs-passphrase',
-        commitment,
-        reason: errorMessage(error),
-      });
-    }
-  }
-
-  async function lock() {
-    if (!ref) return;
-    await dropCachedZoneSecret(ref);
-    const commitment = state.status === 'unlocked' ? state.commitment : '';
-    setState({ status: 'locked', commitment });
-  }
-
-  if (!session || !ref) return null;
+export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
+  const { session } = useSession();
+  const { activeVault, loading, error, metadataWarning, createAddress, lockVault } = useVaults();
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [pairOpen, setPairOpen] = useState(false);
+  if (!session) return null;
 
   return (
     <section className="zone-panel">
-      <div className="zone-head">
-        <h2>
-          Zone <span className="mono">{ZONE_NAME}</span> · {session.network}
-        </h2>
+      <div className="zone-head vault-page-head">
+        <div>
+          <h2>{activeVault ? <>Vault <span className="mono">{activeVault.zone === 'default' ? 'Default' : activeVault.zone}</span> · {session.network}</> : 'Vaults'}</h2>
+        </div>
+        <button type="button" className="btn-primary" onClick={onCreate}>Create vault</button>
       </div>
-
-      {state.status === 'checking' && <p className="tile-note">Checking zone…</p>}
-
-      {state.status === 'absent' && <CeremonyForm onCreate={create} />}
-
-      {state.status === 'creating' && (
+      {loading && <p className="tile-note">Loading vaults…</p>}
+      {error && <Banner tone="err">{error}</Banner>}
+      {metadataWarning && <Banner tone="warn">{metadataWarning}</Banner>}
+      {!loading && !error && !activeVault && (
         <div className="zone-card">
-          <h3>Creating zone</h3>
-          <ProgressSteps running step={state.step} />
-          <p className="tile-note">{state.step}</p>
+          <h3>Create your first vault</h3>
+          <p>A vault generates deterministic agent addresses while its secret remains encrypted outside this browser.</p>
+          <button type="button" className="btn-primary" onClick={onCreate}>Create vault</button>
         </div>
       )}
-
-      {state.status === 'locked' && (
+      {activeVault?.status === 'locked' && (
         <div className="zone-card">
-          <h3>Zone locked</h3>
-          <p>
-            The zone secret is not on this device. One wallet signature over the backup message restores it —
-            new device, evicted storage, and recovery are all this same step.
-          </p>
-          <button type="button" className="btn-primary" onClick={() => void unlock(state.commitment)}>
-            Unlock with wallet signature
-          </button>
+          <h3>Vault locked</h3>
+          <p>{activeVault.mode === 'testnet-device' ? 'The vault secret is not available on this device. Unlock with its device key or import a pairing code.' : 'The vault secret is not available on this device. Restore it with your wallet signature or backup passphrase.'}</p>
+          <button type="button" className="btn-primary" onClick={() => setUnlockOpen(true)}>Unlock vault</button>
         </div>
       )}
-
-      {state.status === 'unlocking' && (
-        <div className="zone-card">
-          <h3>Unlocking</h3>
-          <ProgressSteps running step={state.step} />
-          <p className="tile-note">{state.step}</p>
-        </div>
-      )}
-
-      {state.status === 'needs-passphrase' && (
-        <PassphraseUnlock
-          reason={state.reason}
-          onRetrySignature={() => void unlock(state.commitment)}
-          onSubmit={(passphrase) => void unlockPassphrase(state.commitment, passphrase)}
-        />
-      )}
-
-      {state.status === 'unlocked' && (
+      {activeVault?.status === 'unlocked' && activeVault.derivedAddresses && (
         <>
-          <AgentAddressCards addresses={state.addresses} />
+          <AgentAddressCards addresses={activeVault.derivedAddresses} onCreate={(chain, name) => createAddress(activeVault.zone, chain, name)} />
           <div className="zone-actions">
-            <span className="tile-note mono" title="zoneRootCommitment">
-              commitment {state.commitment.slice(0, 16)}…
-            </span>
-            <button type="button" className="btn-ghost btn-sm" onClick={() => void lock()}>
-              Lock zone on this device
-            </button>
+            <span className="tile-note mono" title="zoneRootCommitment">commitment {activeVault.commitment.slice(0, 16)}…</span>
+            <button type="button" className="btn-ghost btn-sm" onClick={() => void lockVault(activeVault.zone)}>Lock vault on this device</button>
+            {activeVault.mode === 'testnet-device' && <button type="button" className="btn-ghost btn-sm" onClick={() => setPairOpen(true)}>Pair another device</button>}
           </div>
         </>
       )}
-
-      {state.status === 'rejected' && (
-        <Banner tone="err">
-          <strong>Wallet rejected for browser zones.</strong> {state.message}
-        </Banner>
-      )}
-
-      {state.status === 'error' && <Banner tone="err">{state.message}</Banner>}
-
-      {xamanPrompt && (
-        <Modal title={xamanPrompt.label} onClose={() => setXamanPrompt(null)}>
-          <div className="qr-box qr-large">
-            <img src={xamanPrompt.refs.qrPng} alt="Xaman signing QR code" />
-          </div>
-          <p className="tile-note">
-            Scan with Xaman, or{' '}
-            <a href={xamanPrompt.refs.deeplink} target="_blank" rel="noreferrer">
-              open the request directly
-            </a>
-            .
-          </p>
-        </Modal>
-      )}
+      {unlockOpen && activeVault && <UnlockVaultModal vault={activeVault} onClose={() => setUnlockOpen(false)} />}
+      {pairOpen && activeVault && <PairTestnetVaultModal vault={activeVault} onClose={() => setPairOpen(false)} />}
     </section>
   );
 }
 
-function CeremonyForm({ onCreate }: { onCreate: (passphrase: string) => void }) {
+export function CreateVaultModal({ onClose }: { onClose: () => void }) {
+  const { session } = useSession();
+  const { vaults, registerCreated } = useVaults();
+  const [name, setName] = useState(vaults.length === 0 ? 'default' : '');
   const [passphrase, setPassphrase] = useState('');
   const [confirm, setConfirm] = useState('');
-  const mismatch = confirm.length > 0 && passphrase !== confirm;
-  const tooShort = passphrase.length > 0 && passphrase.length < 10;
-  const ready = passphrase.length >= 10 && passphrase === confirm;
+  const [step, setStep] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [xamanPrompt, setXamanPrompt] = useState<XamanPrompt | null>(null);
+  const ref: ZoneRef | null = session && name ? {
+    rootChain: session.chain, rootAddress: session.address, zone: name, network: session.network,
+  } : null;
+  const makeSigner = useVaultSigner(ref, setXamanPrompt);
+  const nameValid = name.length <= 64 && VAULT_NAME.test(name);
+  const duplicate = vaults.some((vault) => vault.zone === name);
+  const testnet = session?.network === 'testnet';
+  const ready = nameValid && !duplicate && !step && (testnet || (passphrase.length >= 10 && passphrase === confirm));
+
+  async function create() {
+    if (!session || !ref || !ready) return;
+    setError(null);
+    try {
+      if (testnet) {
+        setStep('Encrypting Testnet vault for this device…');
+        await createTestnetVault(session.token, ref);
+      } else {
+        await runZoneCeremony({ token: session.token, ref, passphrase, signer: makeSigner(), onStep: (next) => setStep(CEREMONY_STEP_LABELS[next]) });
+      }
+      await registerCreated(name);
+      onClose();
+    } catch (cause) {
+      setStep(null);
+      setError(cause instanceof NonDeterministicWalletError
+        ? `Wallet rejected for browser vaults. ${cause.message}`
+        : errorMessage(cause));
+    }
+  }
 
   return (
-    <div className="zone-card">
-      <h3>Create zone “{ZONE_NAME}”</h3>
-      <p>
-        A fresh 32-byte zone secret is generated in this browser and never leaves it unencrypted. Your wallet
-        signs the zone authorization and a backup message (twice — a determinism self-test); a backup
-        passphrase wraps a second recovery blob. Both encrypted blobs are stored on the server and downloaded
-        to this device.
-      </p>
-      <Field id="zone-passphrase" label="Backup passphrase" error={tooShort ? 'Use at least 10 characters.' : undefined}>
-        <input
-          type="password"
-          value={passphrase}
-          autoComplete="new-password"
-          onChange={(e) => setPassphrase(e.target.value)}
-        />
-      </Field>
-      <Field id="zone-passphrase-confirm" label="Confirm passphrase" error={mismatch ? 'Passphrases do not match.' : undefined}>
-        <input
-          type="password"
-          value={confirm}
-          autoComplete="new-password"
-          onChange={(e) => setConfirm(e.target.value)}
-        />
-      </Field>
-      <button type="button" className="btn-primary" disabled={!ready} onClick={() => onCreate(passphrase)}>
-        Create zone
-      </button>
-    </div>
+    <>
+      <Modal title="Create vault" onClose={onClose}>
+        <p>{testnet ? 'Testnet vaults are encrypted with a device key and require no additional wallet signatures.' : 'Vault names are permanent because they are part of key derivation. Use lowercase letters, numbers, and single hyphens.'}</p>
+        {error && <Banner tone="err">{error}</Banner>}
+        {step ? <><ProgressSteps running step={step} /><p className="tile-note">{step}</p></> : (
+          <>
+            <Field id="vault-name" label="Vault name" error={duplicate ? 'A vault with this name already exists.' : (name && !nameValid ? 'Use lowercase letters, numbers, and single hyphens (64 characters maximum).' : undefined)}>
+              <input value={name} maxLength={64} autoComplete="off" onChange={(event) => setName(event.target.value)} placeholder="trading" />
+            </Field>
+            {!testnet && <Field id="vault-passphrase" label="Backup passphrase" error={passphrase && passphrase.length < 10 ? 'Use at least 10 characters.' : undefined}>
+              <input type="password" value={passphrase} autoComplete="new-password" onChange={(event) => setPassphrase(event.target.value)} />
+            </Field>}
+            {!testnet && <Field id="vault-passphrase-confirm" label="Confirm passphrase" error={confirm && passphrase !== confirm ? 'Passphrases do not match.' : undefined}>
+              <input type="password" value={confirm} autoComplete="new-password" onChange={(event) => setConfirm(event.target.value)} />
+            </Field>}
+            <button type="button" className="btn-primary" disabled={!ready} onClick={() => void create()}>Create vault</button>
+          </>
+        )}
+      </Modal>
+      {xamanPrompt && <XamanPromptModal prompt={xamanPrompt} onClose={() => setXamanPrompt(null)} />}
+    </>
   );
 }
 
-function PassphraseUnlock({
-  reason,
-  onRetrySignature,
-  onSubmit,
-}: {
-  reason: string;
-  onRetrySignature: () => void;
-  onSubmit: (passphrase: string) => void;
-}) {
+export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClose: () => void }) {
+  const { session } = useSession();
+  const { markUnlocked } = useVaults();
+  const [phase, setPhase] = useState<'choice' | 'signature' | 'passphrase' | 'pairing'>('choice');
   const [passphrase, setPassphrase] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState('');
+  const [xamanPrompt, setXamanPrompt] = useState<XamanPrompt | null>(null);
+  const ref: ZoneRef | null = session ? {
+    rootChain: session.chain, rootAddress: session.address, zone: vault.zone, network: session.network,
+  } : null;
+  const makeSigner = useVaultSigner(ref, setXamanPrompt);
+
+  async function unlockSignature() {
+    if (!session || !ref) return;
+    setPhase('signature');
+    setError(null);
+    try {
+      const result = await unlockWithSignature({
+        token: session.token, ref, commitment: vault.commitment,
+        entries: vault.addresses,
+        signBackupWrap: () => makeSigner().signBackupWrap(),
+      });
+      await markUnlocked(vault.zone, result.addresses);
+      onClose();
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setPhase('passphrase');
+    }
+  }
+
+  async function unlockPassphrase() {
+    if (!session || !ref || !passphrase) return;
+    setError(null);
+    try {
+      const result = await unlockWithPassphrase({ token: session.token, ref, commitment: vault.commitment, passphrase, entries: vault.addresses });
+      await markUnlocked(vault.zone, result.addresses);
+      onClose();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  }
+
+  async function unlockTestnet() {
+    if (!session || !ref) return;
+    setError(null);
+    try {
+      const addresses = await unlockTestnetVault(session.token, ref, vault.commitment, vault.addresses);
+      await markUnlocked(vault.zone, addresses);
+      onClose();
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setPhase('pairing');
+    }
+  }
+
+  async function importPairing() {
+    if (!ref || !pairingCode.trim()) return;
+    try {
+      await importTestnetPairingCode(ref, vault.commitment, pairingCode);
+      await unlockTestnet();
+    } catch (cause) { setError(errorMessage(cause)); }
+  }
+
   return (
-    <div className="zone-card">
-      <h3>Signature unlock failed</h3>
-      <Banner tone="warn">{reason}</Banner>
-      <p>
-        If your wallet's signing behavior changed (wallet update, different key), the signature blob can no
-        longer unwrap. Use your backup passphrase instead.
-      </p>
-      <Field id="unlock-passphrase" label="Backup passphrase">
-        <input
-          type="password"
-          value={passphrase}
-          autoComplete="current-password"
-          onChange={(e) => setPassphrase(e.target.value)}
-        />
-      </Field>
-      <div className="zone-actions">
-        <button type="button" className="btn-primary" disabled={!passphrase} onClick={() => onSubmit(passphrase)}>
-          Unlock with passphrase
-        </button>
-        <button type="button" className="btn-ghost btn-sm" onClick={onRetrySignature}>
-          Retry wallet signature
-        </button>
-      </div>
-    </div>
+    <>
+      <Modal title={<>Unlock vault <span className="mono">{vault.zone === 'default' ? 'Default' : vault.zone}</span></>} onClose={onClose}>
+        {phase === 'signature' && <><ProgressSteps running step="One backup signature unlocks this vault" /><p className="tile-note">Waiting for wallet signature…</p></>}
+        {phase !== 'signature' && (
+          <>
+            {error && <Banner tone="warn">{error}</Banner>}
+            {phase === 'choice' && <p>{vault.mode === 'testnet-device' ? 'Unlock with this device’s pairing key. A new device needs a pairing code from an unlocked copy.' : 'Restore this vault with one wallet signature. If wallet signing behavior changed, use the backup passphrase.'}</p>}
+            {phase === 'passphrase' && (
+              <Field id={`unlock-passphrase-${vault.zone}`} label="Backup passphrase">
+                <input type="password" value={passphrase} autoComplete="current-password" onChange={(event) => setPassphrase(event.target.value)} />
+              </Field>
+            )}
+            {phase === 'pairing' && <Field id={`pairing-code-${vault.zone}`} label="Pairing code">
+              <textarea value={pairingCode} rows={4} onChange={(event) => setPairingCode(event.target.value)} />
+            </Field>}
+            <div className="zone-actions">
+              {phase === 'passphrase' && <button type="button" className="btn-primary" disabled={!passphrase} onClick={() => void unlockPassphrase()}>Unlock with passphrase</button>}
+              {phase === 'pairing' && <button type="button" className="btn-primary" disabled={!pairingCode.trim()} onClick={() => void importPairing()}>Pair and unlock</button>}
+              {vault.mode === 'testnet-device'
+                ? phase === 'choice' && <button type="button" className="btn-primary" onClick={() => void unlockTestnet()}>Unlock on this device</button>
+                : <button type="button" className={phase === 'choice' ? 'btn-primary' : 'btn-ghost btn-sm'} onClick={() => void unlockSignature()}>{phase === 'choice' ? 'Unlock with wallet signature' : 'Retry wallet signature'}</button>}
+            </div>
+          </>
+        )}
+      </Modal>
+      {xamanPrompt && <XamanPromptModal prompt={xamanPrompt} onClose={() => setXamanPrompt(null)} />}
+    </>
   );
+}
+
+export function PairTestnetVaultModal({ vault, onClose }: { vault: VaultState; onClose: () => void }) {
+  const { session } = useSession();
+  const [code, setCode] = useState('');
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!session) return;
+    const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: vault.zone, network: 'testnet' };
+    void exportTestnetPairingCode(ref, vault.commitment).then(async (value) => {
+      setCode(value);
+      const { qrSvg } = await import('@mosaic/web-connector/qr');
+      setSvg(qrSvg(value));
+    }).catch((cause) => setError(errorMessage(cause)));
+  }, [session, vault.commitment, vault.zone]);
+  return <Modal title="Pair another device" onClose={onClose}>
+    <Banner tone="warn">This one-time code can unlock the Testnet vault. Share it only with your own device.</Banner>
+    {error && <Banner tone="err">{error}</Banner>}
+    {svg && <div className="qr-box qr-large qr-svg" dangerouslySetInnerHTML={{ __html: svg }} />}
+    <textarea className="pairing-code" readOnly rows={5} value={code} />
+    <button type="button" className="btn-primary" disabled={!code} onClick={() => void navigator.clipboard.writeText(code)}>Copy pairing code</button>
+  </Modal>;
 }

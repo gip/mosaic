@@ -1,6 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainWithTrust } from '@mosaic/catalog';
-import type { Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
+import type { AgentChain, Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
 import { MCP_URL } from './config';
 
 export type SignatureEnvelope =
@@ -39,11 +39,31 @@ export interface ZoneGetResult {
   localSignerPublicKey?: string;
   layer1Enabled?: boolean;
   createdAt?: string;
-  blobs?: { kind: 'sig' | 'pass'; version: number }[];
+  lastUnlockedAt?: string;
+  blobs?: { kind: 'sig' | 'pass' | 'device'; version: number }[];
+}
+
+export interface ZoneListItem {
+  zoneId: string;
+  zone: string;
+  commitment: string;
+  mode: 'signed' | 'testnet-device';
+  createdAt: string;
+  lastUnlockedAt?: string;
+  addresses: ZoneAddressItem[];
+}
+
+export interface ZoneAddressItem {
+  id: string;
+  zoneId: string;
+  chain: AgentChain;
+  index: number;
+  name: string;
+  createdAt: string;
 }
 
 export interface BlobGetResult {
-  kind: 'sig' | 'pass';
+  kind: 'sig' | 'pass' | 'device';
   version: number;
   header: Record<string, unknown>;
   ciphertextB64: string;
@@ -93,6 +113,10 @@ class MosaicApi {
     return this.call('auth_logout', { token });
   }
 
+  authNetworkSwitch(token: string, network: Network): Promise<AuthVerifyResult> {
+    return this.call('auth_network_switch', { token, network });
+  }
+
   catalogList(token: string): Promise<CatalogSnapshot> {
     return this.call('catalog_list', { token });
   }
@@ -121,21 +145,40 @@ class MosaicApi {
     return this.call('zone_create', args);
   }
 
+  zoneCreateTestnet(args: {
+    token: string; zone: string; localSignerPublicKey: string; zoneRootCommitment: string;
+    ciphertextB64: string; header: Record<string, unknown>;
+  }): Promise<{ zoneId: string; createdAt: string }> {
+    return this.call('zone_create_testnet', args);
+  }
+
   zoneGet(token: string, zone: string): Promise<ZoneGetResult> {
     return this.call('zone_get', { token, zone });
+  }
+
+  zoneList(token: string): Promise<ZoneListItem[]> {
+    return this.call('zone_list', { token });
+  }
+
+  zoneUnlocked(token: string, zone: string): Promise<{ lastUnlockedAt: string }> {
+    return this.call('zone_unlocked', { token, zone });
+  }
+
+  zoneAddressCreate(token: string, zone: string, chain: AgentChain, name?: string): Promise<ZoneAddressItem> {
+    return this.call('zone_address_create', { token, zone, chain, ...(name ? { name } : {}) });
   }
 
   blobPut(args: {
     token: string;
     zone: string;
-    kind: 'sig' | 'pass';
+    kind: 'sig' | 'pass' | 'device';
     ciphertextB64: string;
     header: Record<string, unknown>;
   }): Promise<{ version: number }> {
     return this.call('blob_put', args);
   }
 
-  blobGet(token: string, zone: string, kind: 'sig' | 'pass'): Promise<BlobGetResult> {
+  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device'): Promise<BlobGetResult> {
     return this.call('blob_get', { token, zone, kind });
   }
 

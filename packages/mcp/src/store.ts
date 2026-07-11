@@ -10,7 +10,7 @@ import {
   type NetworkTag,
   type SupportedChain,
 } from '@mosaic/catalog';
-import type { Network, RootChain } from '@mosaic/zone-keys';
+import type { AgentChain, Network, RootChain } from '@mosaic/zone-keys';
 import { MosaicMcpError } from './errors.js';
 import { MIGRATIONS } from './migrations.js';
 
@@ -20,7 +20,7 @@ import { MIGRATIONS } from './migrations.js';
  * Session tokens are stored hashed.
  */
 
-export type BlobKind = 'sig' | 'pass';
+export type BlobKind = 'sig' | 'pass' | 'device';
 export type ChallengePurpose = 'session-auth' | 'authorize-zone';
 
 export interface ChallengeRecord {
@@ -59,6 +59,7 @@ export interface ZoneRecord {
   xrplSignInTemplate: Record<string, unknown> | null;
   layer1Enabled: boolean;
   createdAt: string;
+  lastUnlockedAt: string | null;
 }
 
 export interface BlobRecord {
@@ -67,6 +68,15 @@ export interface BlobRecord {
   version: number;
   ciphertext: Uint8Array;
   header: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ZoneAddressRecord {
+  id: string;
+  zoneId: string;
+  chain: AgentChain;
+  index: number;
+  name: string;
   createdAt: string;
 }
 
@@ -99,8 +109,12 @@ export interface MosaicStore {
   deleteSession(token: string): Promise<void>;
 
   /** Throws CONFLICT if the (chain,address,zone,network) zone already exists. */
-  createZone(record: Omit<ZoneRecord, 'id' | 'createdAt'>): Promise<ZoneRecord>;
+  createZone(record: Omit<ZoneRecord, 'id' | 'createdAt' | 'lastUnlockedAt'>): Promise<ZoneRecord>;
   getZone(chain: RootChain, address: string, zone: string, network: Network): Promise<ZoneRecord | undefined>;
+  listZones(chain: RootChain, address: string, network: Network): Promise<ZoneRecord[]>;
+  markZoneUnlocked(chain: RootChain, address: string, zone: string, network: Network): Promise<ZoneRecord | undefined>;
+  listZoneAddresses(zoneId: string): Promise<ZoneAddressRecord[]>;
+  createZoneAddress(zoneId: string, chain: AgentChain, name?: string): Promise<ZoneAddressRecord>;
 
   putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'>): Promise<{ version: number }>;
   /** Latest version of the given kind. */
@@ -238,7 +252,7 @@ export class PostgresStore implements MosaicStore {
     await this.sql`DELETE FROM sessions WHERE token_hash = ${hashToken(token)}`;
   }
 
-  async createZone(record: Omit<ZoneRecord, 'id' | 'createdAt'>): Promise<ZoneRecord> {
+  async createZone(record: Omit<ZoneRecord, 'id' | 'createdAt' | 'lastUnlockedAt'>): Promise<ZoneRecord> {
     try {
       const [row] = await this.sql`INSERT INTO zones ${this.sql({
         root_chain: record.rootChain,
@@ -253,6 +267,9 @@ export class PostgresStore implements MosaicStore {
         xrpl_signin_template: record.xrplSignInTemplate ? this.sql.json(record.xrplSignInTemplate as postgres.JSONValue) : null,
         layer1_enabled: record.layer1Enabled,
       })} RETURNING *`;
+      for (const chain of ['evm', 'xrpl', 'stellar'] as const) {
+        await this.sql`INSERT INTO zone_addresses (zone_id, chain, derivation_index, name) VALUES (${row!.id as string}, ${chain}, 0, '#0')`;
+      }
       return rowToZone(row!);
     } catch (error) {
       if ((error as { code?: string }).code === '23505') {
@@ -267,6 +284,44 @@ export class PostgresStore implements MosaicStore {
       SELECT * FROM zones
       WHERE root_chain = ${chain} AND root_address = ${address} AND zone = ${zone} AND network = ${network}`;
     return row ? rowToZone(row) : undefined;
+  }
+
+  async listZones(chain: RootChain, address: string, network: Network): Promise<ZoneRecord[]> {
+    const rows = await this.sql`
+      SELECT * FROM zones
+      WHERE root_chain = ${chain} AND root_address = ${address} AND network = ${network}
+      ORDER BY created_at ASC, zone ASC`;
+    return rows.map(rowToZone);
+  }
+
+  async markZoneUnlocked(chain: RootChain, address: string, zone: string, network: Network): Promise<ZoneRecord | undefined> {
+    const [row] = await this.sql`
+      UPDATE zones SET last_unlocked_at = now()
+      WHERE root_chain = ${chain} AND root_address = ${address} AND zone = ${zone} AND network = ${network}
+      RETURNING *`;
+    return row ? rowToZone(row) : undefined;
+  }
+
+  async listZoneAddresses(zoneId: string): Promise<ZoneAddressRecord[]> {
+    const rows = await this.sql`SELECT * FROM zone_addresses WHERE zone_id = ${zoneId} ORDER BY chain, derivation_index`;
+    return rows.map(rowToZoneAddress);
+  }
+
+  async createZoneAddress(zoneId: string, chain: AgentChain, requestedName?: string): Promise<ZoneAddressRecord> {
+    try {
+      return await this.sql.begin(async (tx) => {
+        const [zone] = await tx`SELECT id FROM zones WHERE id = ${zoneId} FOR UPDATE`;
+        if (!zone) throw new MosaicMcpError('NOT_FOUND', 'zone not found');
+        const [next] = await tx`SELECT COALESCE(MAX(derivation_index), -1) + 1 AS index FROM zone_addresses WHERE zone_id = ${zoneId} AND chain = ${chain}`;
+        const index = Number(next!.index);
+        const name = requestedName?.trim() || `#${index}`;
+        const [row] = await tx`INSERT INTO zone_addresses (zone_id, chain, derivation_index, name) VALUES (${zoneId}, ${chain}, ${index}, ${name}) RETURNING *`;
+        return rowToZoneAddress(row!);
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') throw new MosaicMcpError('CONFLICT', `address name already exists: ${requestedName}`);
+      throw error;
+    }
   }
 
   async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'>): Promise<{ version: number }> {
@@ -438,6 +493,18 @@ function rowToZone(row: postgres.Row): ZoneRecord {
     xrplSignInTemplate: (row.xrpl_signin_template as Record<string, unknown> | null) ?? null,
     layer1Enabled: row.layer1_enabled as boolean,
     createdAt: new Date(row.created_at as string).toISOString(),
+    lastUnlockedAt: row.last_unlocked_at ? new Date(row.last_unlocked_at as string).toISOString() : null,
+  };
+}
+
+function rowToZoneAddress(row: postgres.Row): ZoneAddressRecord {
+  return {
+    id: row.id as string,
+    zoneId: row.zone_id as string,
+    chain: row.chain as AgentChain,
+    index: row.derivation_index as number,
+    name: row.name as string,
+    createdAt: new Date(row.created_at as string).toISOString(),
   };
 }
 
@@ -449,6 +516,7 @@ export class MemoryStore implements MosaicStore {
   private sessions = new Map<string, SessionRecord>();
   private zones = new Map<string, ZoneRecord>();
   private blobs = new Map<string, BlobRecord[]>();
+  private zoneAddresses = new Map<string, ZoneAddressRecord[]>();
   private nonces = new Set<string>();
   private customChains = new Map<string, CustomChainRecord>();
   private chainPreferences = new Map<string, Map<string, boolean>>();
@@ -500,18 +568,51 @@ export class MemoryStore implements MosaicStore {
     this.sessions.delete(hashToken(token));
   }
 
-  async createZone(record: Omit<ZoneRecord, 'id' | 'createdAt'>): Promise<ZoneRecord> {
+  async createZone(record: Omit<ZoneRecord, 'id' | 'createdAt' | 'lastUnlockedAt'>): Promise<ZoneRecord> {
     const key = `${record.rootChain}|${record.rootAddress}|${record.zone}|${record.network}`;
     if (this.zones.has(key)) {
       throw new MosaicMcpError('CONFLICT', `zone already exists: ${record.zone} (${record.network})`);
     }
-    const zone: ZoneRecord = { ...record, id: randomUUID(), createdAt: new Date().toISOString() };
+    const zone: ZoneRecord = { ...record, id: randomUUID(), createdAt: new Date().toISOString(), lastUnlockedAt: null };
     this.zones.set(key, zone);
+    this.zoneAddresses.set(zone.id, (['evm', 'xrpl', 'stellar'] as const).map((chain) => ({
+      id: randomUUID(), zoneId: zone.id, chain, index: 0, name: '#0', createdAt: zone.createdAt,
+    })));
     return zone;
   }
 
   async getZone(chain: RootChain, address: string, zone: string, network: Network): Promise<ZoneRecord | undefined> {
     return this.zones.get(`${chain}|${address}|${zone}|${network}`);
+  }
+
+  async listZones(chain: RootChain, address: string, network: Network): Promise<ZoneRecord[]> {
+    return [...this.zones.values()]
+      .filter((record) => record.rootChain === chain && record.rootAddress === address && record.network === network)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.zone.localeCompare(b.zone));
+  }
+
+  async markZoneUnlocked(chain: RootChain, address: string, zone: string, network: Network): Promise<ZoneRecord | undefined> {
+    const record = await this.getZone(chain, address, zone, network);
+    if (!record) return undefined;
+    record.lastUnlockedAt = new Date().toISOString();
+    return record;
+  }
+
+  async listZoneAddresses(zoneId: string): Promise<ZoneAddressRecord[]> {
+    return [...(this.zoneAddresses.get(zoneId) ?? [])].sort((a, b) => a.chain.localeCompare(b.chain) || a.index - b.index);
+  }
+
+  async createZoneAddress(zoneId: string, chain: AgentChain, requestedName?: string): Promise<ZoneAddressRecord> {
+    const list = this.zoneAddresses.get(zoneId);
+    if (!list) throw new MosaicMcpError('NOT_FOUND', 'zone not found');
+    const index = Math.max(-1, ...list.filter((item) => item.chain === chain).map((item) => item.index)) + 1;
+    const name = requestedName?.trim() || `#${index}`;
+    if (list.some((item) => item.chain === chain && item.name === name)) {
+      throw new MosaicMcpError('CONFLICT', `address name already exists: ${name}`);
+    }
+    const record = { id: randomUUID(), zoneId, chain, index, name, createdAt: new Date().toISOString() };
+    list.push(record);
+    return record;
   }
 
   async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'>): Promise<{ version: number }> {
@@ -530,7 +631,7 @@ export class MemoryStore implements MosaicStore {
 
   async listBlobKinds(zoneId: string): Promise<{ kind: BlobKind; version: number }[]> {
     const out: { kind: BlobKind; version: number }[] = [];
-    for (const kind of ['sig', 'pass'] as const) {
+    for (const kind of ['sig', 'pass', 'device'] as const) {
       const blob = await this.getBlob(zoneId, kind);
       if (blob) out.push({ kind, version: blob.version });
     }

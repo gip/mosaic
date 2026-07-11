@@ -238,6 +238,26 @@ header.topbar {
   align-items: center;
   gap: var(--sp-2);
 }
+.vault-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-elevated);
+}
+.vault-switcher-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.vault-switcher select {
+  min-width: 120px;
+  padding: 4px 24px 4px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
 /* Uniform, compact control sizing so every chip's row lines up. */
 .wallet-controls button,
 .wallet-chain > button {

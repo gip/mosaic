@@ -12,7 +12,7 @@ const NETWORKS: { id: Network; label: string; sub: string }[] = [
 
 export default function SettingsPage() {
   const { network, setNetwork } = useSettings();
-  const { session } = useSession();
+  const { session, networkSwitching, networkSwitchError } = useSession();
   const { chains, error, loading, readOnly, setChainTrusted } = useCatalog();
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -26,13 +26,12 @@ export default function SettingsPage() {
   }
 
   return (
-    <section className="reading">
-      <h2>Settings</h2>
+    <div className="settings-general">
       <div className="zone-card">
         <h3>Network</h3>
         <p>
-          The network is a derivation input: each network has its own zone and its own agent addresses.
-          Sessions are network-bound, so switching logs you out.
+          The network is a derivation input: each network has its own vaults and agent addresses.
+          Your authenticated wallet session follows the selected network without another login.
         </p>
         <div className="network-toggle">
           {NETWORKS.map(({ id, label, sub }) => (
@@ -51,14 +50,13 @@ export default function SettingsPage() {
             </label>
           ))}
         </div>
-        {session && session.network !== network && (
-          <Banner tone="info">Network changed — you have been logged out. Log in again to continue.</Banner>
-        )}
+        {session && networkSwitching && <Banner tone="info">Switching your session to {network}…</Banner>}
+        {networkSwitchError && <Banner tone="err">Could not switch network: {networkSwitchError}</Banner>}
       </div>
       <div className="zone-card catalog-settings">
         <h3>Supported chains</h3>
         <p>
-          Chain trust controls catalog-driven selectors. It does not change the derivation network or existing zones.
+          Chain trust controls catalog-driven selectors. It does not change the derivation network or existing vaults.
         </p>
         {readOnly && <Banner tone="info">Log in to manage chain trust. Built-in defaults are shown.</Banner>}
         {error && <Banner tone="err">{error}</Banner>}
@@ -86,6 +84,6 @@ export default function SettingsPage() {
           </div>
         ))}
       </div>
-    </section>
+    </div>
   );
 }

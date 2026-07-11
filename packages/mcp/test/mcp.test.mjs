@@ -192,6 +192,32 @@ test('catalog preferences default, isolate owners, normalize EVM addresses, and 
   await assert.rejects(() => store.setAssetTrust(upperOwner, 'usdc', 'maybe'), /invalid asset trust state/);
 });
 
+test('MemoryStore lists zones deterministically and scopes unlock metadata to the owner and network', async () => {
+  const store = new MemoryStore();
+  const base = {
+    rootChain: 'evm', rootAddress: evmAccount.address, network: 'testnet',
+    commitment: 'ab'.repeat(32), policyHash: 'policy', localSignerPublicKey: 'browser:test',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  };
+  const later = await store.createZone({ ...base, zone: 'later' });
+  const earlier = await store.createZone({ ...base, zone: 'earlier' });
+  later.createdAt = '2026-02-01T00:00:00.000Z';
+  earlier.createdAt = '2026-01-01T00:00:00.000Z';
+  assert.deepEqual((await store.listZones('evm', evmAccount.address, 'testnet')).map(({ zone }) => zone), ['earlier', 'later']);
+  assert.equal(await store.markZoneUnlocked('evm', '0x0000000000000000000000000000000000000000', 'earlier', 'testnet'), undefined);
+  assert.equal(await store.markZoneUnlocked('evm', evmAccount.address, 'earlier', 'mainnet'), undefined);
+  const unlocked = await store.markZoneUnlocked('evm', evmAccount.address, 'earlier', 'testnet');
+  assert.ok(unlocked.lastUnlockedAt);
+  assert.deepEqual((await store.listZoneAddresses(earlier.id)).map(({ chain, index, name }) => [chain, index, name]), [
+    ['evm', 0, '#0'], ['stellar', 0, '#0'], ['xrpl', 0, '#0'],
+  ]);
+  const evm1 = await store.createZoneAddress(earlier.id, 'evm');
+  const evm2 = await store.createZoneAddress(earlier.id, 'evm', 'treasury');
+  const xrpl1 = await store.createZoneAddress(earlier.id, 'xrpl');
+  assert.deepEqual([evm1.index, evm1.name, evm2.index, evm2.name, xrpl1.index, xrpl1.name], [1, '#1', 2, 'treasury', 1, '#1']);
+  await assert.rejects(() => store.createZoneAddress(earlier.id, 'evm', 'treasury'), /already exists/);
+});
+
 // -------------------------------------------------- end-to-end over HTTP
 
 async function connectClient(url) {
@@ -251,6 +277,7 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     // no zone yet
     const missing = await call(client, 'zone_get', { token, zone: 'top' });
     assert.equal(missing.exists, false);
+    assert.deepEqual(await call(client, 'zone_list', { token }), []);
 
     // authorize-zone
     const begin = await call(client, 'zone_begin', { token, zone: 'top' });
@@ -278,6 +305,39 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
       signature: { type: 'evm', signature: zoneSig },
     });
     assert.ok(created.zoneId);
+
+    const listed = await call(client, 'zone_list', { token });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].zone, 'top');
+    assert.equal(listed[0].commitment, commitment);
+    assert.equal(listed[0].lastUnlockedAt, undefined);
+    assert.deepEqual(listed[0].addresses.map(({ chain, index, name }) => [chain, index, name]), [
+      ['evm', 0, '#0'], ['stellar', 0, '#0'], ['xrpl', 0, '#0'],
+    ]);
+
+    const evmAddress1 = await call(client, 'zone_address_create', { token, zone: 'top', chain: 'evm' });
+    const evmAddress2 = await call(client, 'zone_address_create', { token, zone: 'top', chain: 'evm', name: 'trading' });
+    const xrplAddress1 = await call(client, 'zone_address_create', { token, zone: 'top', chain: 'xrpl' });
+    assert.deepEqual([evmAddress1.index, evmAddress1.name, evmAddress2.index, evmAddress2.name, xrplAddress1.index, xrplAddress1.name], [1, '#1', 2, 'trading', 1, '#1']);
+    await assert.rejects(() => call(client, 'zone_address_create', { token, zone: 'top', chain: 'evm', name: 'trading' }), /already exists/);
+
+    // Testnet device-key vaults require no authorize-zone or backup signatures;
+    // the server receives only commitment metadata and opaque ciphertext.
+    const deviceCiphertext = Buffer.from(new Uint8Array(48).fill(7)).toString('base64');
+    const quick = await call(client, 'zone_create_testnet', {
+      token, zone: 'quick-test', localSignerPublicKey: 'browser-device', zoneRootCommitment: 'ef'.repeat(32),
+      ciphertextB64: deviceCiphertext, header: { v: 1, alg: 'aes-256-gcm-device-v1', ivB64: 'AA==' },
+    });
+    assert.ok(quick.zoneId);
+    const quickRecord = await store.getZone('evm', evmAccount.address, 'quick-test', 'testnet');
+    assert.deepEqual(quickRecord.authorizeSignature, { mode: 'none' });
+    const quickBlob = await call(client, 'blob_get', { token, zone: 'quick-test', kind: 'device' });
+    assert.equal(quickBlob.ciphertextB64, deviceCiphertext);
+
+    const unlocked = await call(client, 'zone_unlocked', { token, zone: 'top' });
+    assert.ok(unlocked.lastUnlockedAt);
+    assert.equal((await call(client, 'zone_list', { token }))[0].lastUnlockedAt, unlocked.lastUnlockedAt);
+    await assert.rejects(() => call(client, 'zone_unlocked', { token, zone: 'missing' }), /not found/);
 
     // duplicate zone rejected
     const begin2 = await call(client, 'zone_begin', { token, zone: 'top' });
@@ -339,9 +399,48 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     const zone = await call(client, 'zone_get', { token, zone: 'top' });
     assert.equal(zone.exists, true);
     assert.deepEqual(zone.blobs, [{ kind: 'sig', version: 1 }]);
+    assert.equal(zone.lastUnlockedAt, unlocked.lastUnlockedAt);
+
+    // A session for another root wallet cannot list or update this wallet's zones.
+    const otherAccount = privateKeyToAccount('0x' + '43'.repeat(32));
+    const otherChallenge = await call(client, 'auth_challenge', {
+      chain: 'evm', network: 'testnet', address: otherAccount.address,
+    });
+    const otherSignature = await otherAccount.signTypedData(eip712TypedData(otherChallenge.message, 84532));
+    const { token: otherToken } = await call(client, 'auth_verify', {
+      challengeId: otherChallenge.challengeId,
+      signature: { type: 'evm', signature: otherSignature },
+    });
+    assert.deepEqual(await call(client, 'zone_list', { token: otherToken }), []);
+    await assert.rejects(() => call(client, 'zone_unlocked', { token: otherToken, zone: 'top' }), /not found/);
+
+    // The same root wallet's zones are also isolated by the session network.
+    const mainnetChallenge = await call(client, 'auth_challenge', {
+      chain: 'evm', network: 'mainnet', address: evmAccount.address,
+    });
+    const mainnetSignature = await evmAccount.signTypedData(eip712TypedData(mainnetChallenge.message, 8453));
+    const { token: mainnetToken } = await call(client, 'auth_verify', {
+      challengeId: mainnetChallenge.challengeId,
+      signature: { type: 'evm', signature: mainnetSignature },
+    });
+    assert.deepEqual(await call(client, 'zone_list', { token: mainnetToken }), []);
+    await assert.rejects(() => call(client, 'zone_create_testnet', {
+      token: mainnetToken, zone: 'not-allowed', localSignerPublicKey: 'browser-device',
+      zoneRootCommitment: 'ef'.repeat(32), ciphertextB64: deviceCiphertext, header: { v: 1 },
+    }), /Testnet-only/i);
+
+    // Network switching preserves the wallet identity without another signature,
+    // rotates the token, and can return to the original network and its zones.
+    const switchedMainnet = await call(client, 'auth_network_switch', { token, network: 'mainnet' });
+    assert.equal(switchedMainnet.address, evmAccount.address);
+    assert.equal(switchedMainnet.network, 'mainnet');
+    assert.deepEqual(await call(client, 'zone_list', { token: switchedMainnet.token }), []);
+    await assert.rejects(() => call(client, 'zone_list', { token }), /invalid or expired/);
+    const switchedBack = await call(client, 'auth_network_switch', { token: switchedMainnet.token, network: 'testnet' });
+    assert.equal((await call(client, 'zone_list', { token: switchedBack.token }))[0].zone, 'top');
 
     // logout kills the session
-    await call(client, 'auth_logout', { token });
+    await call(client, 'auth_logout', { token: switchedBack.token });
     await assert.rejects(() => call(client, 'zone_get', { token, zone: 'top' }), /invalid or expired/);
   } finally {
     await client.close();

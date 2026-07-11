@@ -5,9 +5,11 @@ import ThemeToggle from './components/ui/ThemeToggle';
 import StatusDot from './components/ui/StatusDot';
 import { useSession } from './contexts/SessionContext';
 import { useSettings } from './contexts/SettingsContext';
+import { useVaults, type VaultState } from './contexts/VaultContext';
 import { isLocalApp } from './local/bridge';
 
 const LoginModal = lazy(() => import('./components/LoginModal'));
+const UnlockVaultModal = lazy(() => import('./components/ZonePanel').then((module) => ({ default: module.UnlockVaultModal })));
 
 function short(addr: string): string {
   return addr.length > 12 ? `${addr.slice(0, 5)}…${addr.slice(-4)}` : addr;
@@ -18,8 +20,10 @@ const CHAIN_LABELS = { evm: 'EVM', xrpl: 'XRPL', stellar: 'Stellar' } as const;
 export default function App() {
   const { session, logout } = useSession();
   const { network } = useSettings();
+  const { vaults, activeVault, selectVault } = useVaults();
   const [loginOpen, setLoginOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [unlockVault, setUnlockVault] = useState<VaultState | null>(null);
   const navigate = useNavigate();
   const localApp = isLocalApp();
 
@@ -32,6 +36,13 @@ export default function App() {
     } catch {
       /* clipboard unavailable */
     }
+  }
+
+  function switchVault(zone: string) {
+    const vault = vaults.find((item) => item.zone === zone);
+    if (!vault) return;
+    selectVault(zone);
+    if (vault.status === 'locked') setUnlockVault(vault);
   }
 
   return (
@@ -60,6 +71,20 @@ export default function App() {
           )}
         </nav>
         <div className="topbar-spacer" />
+        {session && (
+          <div className="vault-switcher">
+            <span className="chain-label">Active vault</span>
+            <div className="vault-switcher-controls">
+              <StatusDot tone={activeVault?.status === 'unlocked' ? 'ok' : 'idle'}>
+                <select aria-label="Active vault" value={activeVault?.zone ?? ''} disabled={vaults.length === 0} onChange={(event) => switchVault(event.target.value)}>
+                  {vaults.length === 0 && <option value="">No vaults</option>}
+                  {vaults.map((vault) => <option value={vault.zone} key={vault.zone}>{vault.zone === 'default' ? 'Default' : vault.zone}</option>)}
+                </select>
+              </StatusDot>
+              {activeVault?.status === 'locked' && <button type="button" className="btn-sm" onClick={() => setUnlockVault(activeVault)}>Unlock</button>}
+            </div>
+          </div>
+        )}
         <div className="wallet-stack">
           <div className="wallet-chain">
             <span className="chain-label">{session ? `${CHAIN_LABELS[session.chain]} · ${network}` : network}</span>
@@ -107,6 +132,11 @@ export default function App() {
       {loginOpen && (
         <Suspense fallback={null}>
           <LoginModal onClose={() => setLoginOpen(false)} />
+        </Suspense>
+      )}
+      {unlockVault && (
+        <Suspense fallback={null}>
+          <UnlockVaultModal vault={vaults.find(({ zone }) => zone === unlockVault.zone) ?? unlockVault} onClose={() => setUnlockVault(null)} />
         </Suspense>
       )}
     </>
