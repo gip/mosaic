@@ -1,10 +1,12 @@
 /**
- * Shared order-book types for @mosaic/dex.
+ * Shared chain-service types for @mosaic/chain-core: DEX order books, quote
+ * surfaces, and asset balances, implemented per chain by @mosaic/xrpl,
+ * @mosaic/stellar, and @mosaic/evm.
  *
  * `DexChain` uses the same literals as `RootChain` in @mosaic/zone-keys, but is
- * declared locally: this package is market data only and must not pull the
- * custody/derivation package into its build graph. Structural typing keeps the
- * two interchangeable at call sites.
+ * declared locally: this package is public chain data only and must not pull
+ * the custody/derivation package into its build graph. Structural typing keeps
+ * the two interchangeable at call sites.
  */
 
 export type DexChain = 'stellar' | 'xrpl' | 'evm';
@@ -214,7 +216,7 @@ export interface AdapterStreamOptions {
   webSocket: typeof WebSocket;
 }
 
-/** Implemented by each chain module (./stellar, ./xrpl, ./evm). */
+/** Implemented by each chain package (@mosaic/stellar, @mosaic/xrpl, @mosaic/evm). */
 export interface DexAdapter {
   fetchOrderBook(req: OrderBookRequest, opts: AdapterFetchOptions): Promise<OrderBookSnapshot>;
   openStream(
@@ -233,4 +235,87 @@ export interface DexAdapter {
     opts: AdapterSurfaceOptions,
     emit: (event: AdapterSurfaceEvent) => void,
   ): StreamHandle;
+}
+
+/**
+ * An asset whose balance a consumer tracks. Extends `Asset` with a display
+ * symbol so results stay self-describing; for EVM `issued` assets `issuer` is
+ * the ERC-20 contract address (as documented on `Asset`).
+ */
+export type KnownAsset = { symbol: string } & Asset;
+
+export interface BalancesRequest {
+  network: Network;
+  /** Chain-native account addresses (r…, G…, 0x…). */
+  addresses: string[];
+  assets: KnownAsset[];
+}
+
+export interface AssetBalance {
+  asset: KnownAsset;
+  /** Decimal string; '0' when the account holds none of the asset. */
+  amount: string;
+}
+
+export interface AccountBalances {
+  address: string;
+  /**
+   * False when the account does not exist on-ledger (XRPL actNotFound,
+   * Horizon 404). EVM accounts always report true.
+   */
+  funded: boolean;
+  /** One entry per requested asset, in request order. */
+  balances: AssetBalance[];
+}
+
+export interface BalancesSnapshot {
+  network: Network;
+  /** One entry per requested address, in request order. */
+  accounts: AccountBalances[];
+  /** Date.now() when the snapshot was assembled. */
+  timestamp: number;
+}
+
+export type BalancesEvent =
+  | { type: 'balances'; balances: BalancesSnapshot }
+  | { type: 'status'; status: FeedStatus }
+  | { type: 'error'; error: Error };
+
+export interface BalancesFeedOptions {
+  /** Poll interval. Default 30000. */
+  intervalMs?: number;
+  /** Override the HTTP endpoint (Horizon base URL / EVM JSON-RPC URL). */
+  httpEndpoint?: string;
+  /** Override the stream endpoint (XRPL WS URL). */
+  streamEndpoint?: string;
+  fetch?: typeof fetch;
+  webSocket?: typeof WebSocket;
+}
+
+export interface BalancesFetchOptions {
+  httpEndpoint?: string;
+  streamEndpoint?: string;
+  fetch: typeof fetch;
+  webSocket?: typeof WebSocket;
+  signal?: AbortSignal;
+}
+
+/** One-shot per-chain balance fetch; the polling feed wraps one of these. */
+export type BalancesFetcher = (
+  req: BalancesRequest,
+  opts: BalancesFetchOptions,
+) => Promise<BalancesSnapshot>;
+
+export interface BalancesFeed {
+  readonly request: BalancesRequest;
+  /** Last good snapshot; survives failed polls. */
+  readonly latest: BalancesSnapshot | null;
+  readonly status: FeedStatus;
+  /** One-shot fetch; works whether or not polling is running. */
+  refresh(): Promise<BalancesSnapshot>;
+  subscribe(cb: (event: BalancesEvent) => void): () => void;
+  /** Start polling. Idempotent. */
+  start(): void;
+  /** Stop polling. */
+  stop(): void;
 }

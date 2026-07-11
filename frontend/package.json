@@ -5,15 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "pnpm --filter @mosaic/zone-keys build && pnpm --filter @mosaic/web-connector build && pnpm --filter @mosaic/dex build && tsc -b && vite build",
+    "build": "pnpm --filter @mosaic/zone-keys build && pnpm --filter @mosaic/web-connector build && pnpm --filter @mosaic/xrpl build && pnpm --filter @mosaic/stellar build && pnpm --filter @mosaic/evm build && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@mosaic/catalog": "workspace:*",
-    "@mosaic/dex": "workspace:*",
+    "@mosaic/chain-core": "workspace:*",
+    "@mosaic/evm": "workspace:*",
     "@mosaic/local-runtime": "workspace:*",
+    "@mosaic/stellar": "workspace:*",
+    "@mosaic/xrpl": "workspace:*",
     "@mosaic/ui-theme": "workspace:*",
     "@mosaic/web-connector": "workspace:*",
     "@mosaic/zone-keys": "workspace:*",

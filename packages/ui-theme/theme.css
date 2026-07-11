@@ -38,6 +38,7 @@
   --bg-hover: #1c150d;
 
   --fg: #ece3d4;
+  --fg-bright: #fffaf0;
   --fg-muted: #9a8f7d;
   --fg-dim: #6f6555;
   --fg-onaccent: #1a1206;
@@ -84,6 +85,7 @@
   --bg-hover: #eceef2;
 
   --fg: #111419;
+  --fg-bright: #000000;
   --fg-muted: #5b6470;
   --fg-dim: #8a93a0;
   --fg-onaccent: #04130f;

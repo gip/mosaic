@@ -20,18 +20,27 @@ importers:
       '@mosaic/catalog':
         specifier: workspace:*
         version: link:../packages/catalog
-      '@mosaic/dex':
+      '@mosaic/chain-core':
         specifier: workspace:*
-        version: link:../packages/dex
+        version: link:../packages/chain-core
+      '@mosaic/evm':
+        specifier: workspace:*
+        version: link:../packages/mosaic-evm
       '@mosaic/local-runtime':
         specifier: workspace:*
         version: link:../packages/local-runtime
+      '@mosaic/stellar':
+        specifier: workspace:*
+        version: link:../packages/mosaic-stellar
       '@mosaic/ui-theme':
         specifier: workspace:*
         version: link:../packages/ui-theme
       '@mosaic/web-connector':
         specifier: workspace:*
         version: link:../packages/web-connector
+      '@mosaic/xrpl':
+        specifier: workspace:*
+        version: link:../packages/mosaic-xrpl
       '@mosaic/zone-keys':
         specifier: workspace:*
         version: link:../packages/zone-keys
@@ -141,7 +150,7 @@ importers:
         specifier: ~6.0.2
         version: 6.0.3
 
-  packages/dex:
+  packages/chain-core:
     devDependencies:
       '@types/node':
         specifier: ^24.12.3
@@ -208,6 +217,45 @@ importers:
       viem:
         specifier: ^2.54.6
         version: 2.54.6(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@5.0.10)(zod@3.25.76)
+
+  packages/mosaic-evm:
+    dependencies:
+      '@mosaic/chain-core':
+        specifier: workspace:*
+        version: link:../chain-core
+    devDependencies:
+      '@types/node':
+        specifier: ^24.12.3
+        version: 24.13.2
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+
+  packages/mosaic-stellar:
+    dependencies:
+      '@mosaic/chain-core':
+        specifier: workspace:*
+        version: link:../chain-core
+    devDependencies:
+      '@types/node':
+        specifier: ^24.12.3
+        version: 24.13.2
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+
+  packages/mosaic-xrpl:
+    dependencies:
+      '@mosaic/chain-core':
+        specifier: workspace:*
+        version: link:../chain-core
+    devDependencies:
+      '@types/node':
+        specifier: ^24.12.3
+        version: 24.13.2
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
 
   packages/ui-theme: {}
 

@@ -169,27 +169,55 @@ test('catalog preferences default, isolate owners, normalize EVM addresses, and 
 
   const defaults = await store.listCatalog(upperOwner);
   assert.equal(defaults.chains.length, 6);
-  assert.ok(defaults.chains.every((chain) => chain.trusted));
+  assert.ok(defaults.chains.every((chain) => chain.enabled));
   assert.ok(defaults.assets.every((asset) => asset.trustState === 'allowed'));
 
-  await store.setChainTrust(upperOwner, 'xrpl-mainnet', false);
+  // One toggle flips every network variant of the logical chain.
+  const updated = await store.setChainEnabled(upperOwner, 'xrpl', false);
+  assert.deepEqual(updated.map(({ id, enabled }) => [id, enabled]).sort(), [['xrpl-mainnet', false], ['xrpl-testnet', false]]);
   await store.setAssetTrust(upperOwner, 'rlusd', 'hidden');
-  assert.equal((await store.listCatalog(lowerOwner)).chains.find((chain) => chain.id === 'xrpl-mainnet').trusted, false);
-  assert.equal((await store.listCatalog(lowerOwner)).assets.find((asset) => asset.id === 'rlusd').trustState, 'hidden');
+  const lower = await store.listCatalog(lowerOwner);
+  assert.equal(lower.chains.find((chain) => chain.id === 'xrpl-mainnet').enabled, false);
+  assert.equal(lower.chains.find((chain) => chain.id === 'xrpl-testnet').enabled, false);
+  assert.equal(lower.assets.find((asset) => asset.id === 'rlusd').trustState, 'hidden');
+  assert.equal((await store.listCatalog(otherOwner)).chains.find((chain) => chain.id === 'xrpl-mainnet').enabled, true);
   assert.equal((await store.listCatalog(otherOwner)).assets.find((asset) => asset.id === 'rlusd').trustState, 'allowed');
 
+  // Custom chains are single-network singletons keyed by their own id.
   await store.upsertCustomChain({ id: 'optimism-mainnet', name: 'Optimism', network: 'mainnet', evmChainId: 10, enabled: true });
   const withCustom = await store.listCatalog(upperOwner);
   const optimism = withCustom.chains.find((chain) => chain.id === 'optimism-mainnet');
   assert.equal(optimism.source, 'database');
-  assert.equal(optimism.trusted, false);
+  assert.equal(optimism.chainKey, 'optimism-mainnet');
+  assert.equal(optimism.enabled, false);
+  const customUpdated = await store.setChainEnabled(upperOwner, 'optimism-mainnet', true);
+  assert.deepEqual(customUpdated.map(({ id, enabled }) => [id, enabled]), [['optimism-mainnet', true]]);
   await assert.rejects(
     () => store.upsertCustomChain({ id: 'base-mainnet', name: 'Fake Base', network: 'mainnet', evmChainId: 999, enabled: true }),
     /conflicts with built-in/,
   );
-  await assert.rejects(() => store.setChainTrust(upperOwner, 'unknown', true), /unknown chain/);
+  await assert.rejects(
+    () => store.upsertCustomChain({ id: 'base', name: 'Fake Base Key', network: 'mainnet', evmChainId: 998, enabled: true }),
+    /conflicts with built-in/,
+  );
+  await assert.rejects(() => store.setChainEnabled(upperOwner, 'unknown', true), /unknown chain/);
   await assert.rejects(() => store.setAssetTrust(upperOwner, 'unknown', 'allowed'), /unknown asset/);
   await assert.rejects(() => store.setAssetTrust(upperOwner, 'usdc', 'maybe'), /invalid asset trust state/);
+});
+
+test('the root wallet family keeps at least one enabled chain', async () => {
+  const store = new MemoryStore();
+  const evmOwner = { chain: 'evm', address: '0xabcdef' };
+  const stellarOwner = { chain: 'stellar', address: stellarAddress };
+
+  await assert.rejects(() => store.setChainEnabled(evmOwner, 'base', false), /cannot disable every evm chain/);
+  await assert.rejects(() => store.setChainEnabled(stellarOwner, 'stellar', false), /cannot disable every stellar chain/);
+  // Other families toggle freely, and a second enabled evm chain unlocks base — per network.
+  await store.setChainEnabled(evmOwner, 'stellar', false);
+  await store.upsertCustomChain({ id: 'optimism-mainnet', name: 'Optimism', network: 'mainnet', evmChainId: 10, enabled: true });
+  await store.setChainEnabled(evmOwner, 'optimism-mainnet', true);
+  // base-sepolia would still be the last enabled testnet evm chain.
+  await assert.rejects(() => store.setChainEnabled(evmOwner, 'base', false), /cannot disable every evm chain on testnet/);
 });
 
 test('wallet settings default to 3 minutes, validate options, normalize EVM addresses, and isolate owners', async () => {
@@ -198,36 +226,63 @@ test('wallet settings default to 3 minutes, validate options, normalize EVM addr
   const lowerOwner = { chain: 'evm', address: '0xabcdef' };
   const otherOwner = { chain: 'stellar', address: stellarAddress };
 
-  assert.deepEqual(await store.getWalletSettings(upperOwner), { lockReminderMinutes: 3, hiddenChains: [] });
-  await store.setWalletSettings(upperOwner, { lockReminderMinutes: 10, hiddenChains: [] });
-  assert.deepEqual(await store.getWalletSettings(lowerOwner), { lockReminderMinutes: 10, hiddenChains: [] });
-  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 3, hiddenChains: [] });
-  await store.setWalletSettings(otherOwner, { lockReminderMinutes: 0, hiddenChains: [] });
-  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 0, hiddenChains: [] });
-  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: 2, hiddenChains: [] }), /invalid lockReminderMinutes/);
-  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: -1, hiddenChains: [] }), /invalid lockReminderMinutes/);
+  assert.deepEqual(await store.getWalletSettings(upperOwner), { lockReminderMinutes: 3 });
+  await store.setWalletSettings(upperOwner, { lockReminderMinutes: 10 });
+  assert.deepEqual(await store.getWalletSettings(lowerOwner), { lockReminderMinutes: 10 });
+  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 3 });
+  await store.setWalletSettings(otherOwner, { lockReminderMinutes: 0 });
+  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 0 });
+  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: 2 }), /invalid lockReminderMinutes/);
+  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: -1 }), /invalid lockReminderMinutes/);
 });
 
-test('hidden chains normalize to catalog order, drop unknown ids, and keep the root family active', async () => {
+test('vault chain settings copy the account settings at creation and diverge independently', async () => {
   const store = new MemoryStore();
-  const evmOwner = { chain: 'evm', address: '0xabcdef' };
-  const stellarOwner = { chain: 'stellar', address: stellarAddress };
+  const owner = { chain: 'evm', address: '0xabcdef' };
+  await store.setChainEnabled(owner, 'xrpl', false);
 
-  const saved = await store.setWalletSettings(evmOwner, {
-    lockReminderMinutes: 3,
-    hiddenChains: ['stellar-testnet', 'xrpl-mainnet', 'stellar-testnet', 'not-a-chain'],
+  const zone = await store.createZone({
+    rootChain: 'evm', rootAddress: '0xAbCdEf', zone: 'top', network: 'testnet',
+    commitment: 'ab'.repeat(32), policyHash: 'ph', localSignerPublicKey: 'k',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
   });
-  assert.deepEqual(saved.hiddenChains, ['xrpl-mainnet', 'stellar-testnet']);
-  assert.deepEqual((await store.getWalletSettings(evmOwner)).hiddenChains, ['xrpl-mainnet', 'stellar-testnet']);
-  await assert.rejects(
-    () => store.setWalletSettings(evmOwner, { lockReminderMinutes: 3, hiddenChains: ['base-mainnet'] }),
-    /cannot hide every evm chain on mainnet/,
+
+  // Only the vault-network chains are copied, with the account values, in product order.
+  const settings = await store.listZoneChainSettings(zone.id);
+  assert.deepEqual(
+    settings.map(({ chainId, chainKey, enabled }) => [chainId, chainKey, enabled]),
+    [['xrpl-testnet', 'xrpl', false], ['stellar-testnet', 'stellar', true], ['base-sepolia', 'base', true]],
   );
-  await assert.rejects(
-    () => store.setWalletSettings(stellarOwner, { lockReminderMinutes: 3, hiddenChains: ['stellar-testnet'] }),
-    /cannot hide every stellar chain on testnet/,
-  );
-  assert.deepEqual((await store.getWalletSettings(stellarOwner)).hiddenChains, []);
+  assert.ok(settings.every(({ network }) => network === 'testnet'));
+
+  // Vault toggles do not touch the account settings, and vice versa.
+  const toggled = await store.setZoneChainEnabled(zone.id, 'xrpl', true);
+  assert.equal(toggled.find(({ chainKey }) => chainKey === 'xrpl').enabled, true);
+  assert.equal((await store.listCatalog(owner)).chains.find(({ id }) => id === 'xrpl-testnet').enabled, false);
+  await store.setChainEnabled(owner, 'stellar', false);
+  assert.equal((await store.listZoneChainSettings(zone.id)).find(({ chainKey }) => chainKey === 'stellar').enabled, true);
+
+  await assert.rejects(() => store.setZoneChainEnabled(zone.id, 'unknown', true), /unknown chain/);
+  await assert.rejects(() => store.listZoneChainSettings('00000000-0000-0000-0000-000000000000'), /zone not found/);
+});
+
+test('vaults without stored chain settings lazily copy the account settings on first read', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: '0xabcdef' };
+  const zone = await store.createZone({
+    rootChain: 'evm', rootAddress: '0xabcdef', zone: 'legacy', network: 'testnet',
+    commitment: 'ab'.repeat(32), policyHash: 'ph', localSignerPublicKey: 'k',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  });
+  // Simulate a vault that predates zone_chain_settings (TS-private, runtime-visible).
+  store.zoneChainSettings.delete(zone.id);
+
+  await store.setChainEnabled(owner, 'xrpl', false);
+  const seeded = await store.listZoneChainSettings(zone.id);
+  assert.equal(seeded.find(({ chainKey }) => chainKey === 'xrpl').enabled, false);
+  // The first read pins the copy; later account changes no longer apply.
+  await store.setChainEnabled(owner, 'xrpl', true);
+  assert.equal((await store.listZoneChainSettings(zone.id)).find(({ chainKey }) => chainKey === 'xrpl').enabled, false);
 });
 
 test('MemoryStore lists zones deterministically and scopes unlock metadata to the owner and network', async () => {
@@ -304,8 +359,8 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     assert.equal(catalog.assets.find((asset) => asset.id === 'rlusd').trustState, 'allowed');
     const hidden = await call(client, 'asset_trust_set', { token, assetId: 'rlusd', state: 'hidden' });
     assert.equal(hidden.trustState, 'hidden');
-    const untrusted = await call(client, 'chain_trust_set', { token, chainId: 'xrpl-mainnet', trusted: false });
-    assert.equal(untrusted.trusted, false);
+    const disabled = await call(client, 'chain_enabled_set', { token, chainKey: 'xrpl', enabled: false });
+    assert.deepEqual(disabled.map(({ id, enabled }) => [id, enabled]).sort(), [['xrpl-mainnet', false], ['xrpl-testnet', false]]);
     await assert.rejects(() => call(client, 'catalog_list', {}), /missing session token|invalid/i);
     await assert.rejects(
       () => call(client, 'asset_trust_set', { token, assetId: 'rlusd', state: 'maybe' }),
@@ -352,6 +407,19 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     assert.deepEqual(listed[0].addresses.map(({ chain, index, name }) => [chain, index, name]), [
       ['evm', 0, '#0'], ['stellar', 0, '#0'], ['xrpl', 0, '#0'],
     ]);
+    // Vault chains copied the account settings (xrpl disabled above) at creation, in product order.
+    assert.deepEqual(listed[0].chains.map(({ chainId, enabled }) => [chainId, enabled]), [
+      ['xrpl-testnet', false], ['stellar-testnet', true], ['base-sepolia', true],
+    ]);
+
+    // Per-vault toggles are independent of the account settings.
+    const vaultChains = await call(client, 'zone_chain_set', { token, zone: 'top', chainKey: 'xrpl', enabled: true });
+    assert.equal(vaultChains.find(({ chainKey }) => chainKey === 'xrpl').enabled, true);
+    assert.equal(
+      (await call(client, 'catalog_list', { token })).chains.find(({ id }) => id === 'xrpl-testnet').enabled,
+      false,
+    );
+    await assert.rejects(() => call(client, 'zone_chain_set', { token, zone: 'top', chainKey: 'nope', enabled: true }), /unknown chain/);
 
     const evmAddress1 = await call(client, 'zone_address_create', { token, zone: 'top', chain: 'evm' });
     const evmAddress2 = await call(client, 'zone_address_create', { token, zone: 'top', chain: 'evm', name: 'trading' });
@@ -565,15 +633,18 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     await store.upsertCustomChain({ id: customId, name: 'Test EVM', network: 'testnet', evmChainId: 4_000_000_000_000 + Date.now(), enabled: true });
     const custom = (await store.listCatalog({ chain: 'evm', address: ownerAddress })).chains.find((chain) => chain.id === customId);
     assert.equal(custom?.source, 'database');
-    assert.equal(custom?.trusted, false);
+    assert.equal(custom?.chainKey, customId);
+    assert.equal(custom?.enabled, false);
 
-    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 3, hiddenChains: [] });
-    await store.setWalletSettings({ chain: 'evm', address: ownerAddress.toUpperCase() }, { lockReminderMinutes: 30, hiddenChains: ['stellar-testnet', 'xrpl-mainnet', 'not-a-chain'] });
-    assert.deepEqual(
-      await store.getWalletSettings({ chain: 'evm', address: ownerAddress }),
-      { lockReminderMinutes: 30, hiddenChains: ['xrpl-mainnet', 'stellar-testnet'] },
-    );
-    await assert.rejects(() => store.setWalletSettings({ chain: 'evm', address: ownerAddress }, { lockReminderMinutes: 7, hiddenChains: [] }), /invalid lockReminderMinutes/);
+    // One toggle flips both network variants of a builtin chain.
+    const updated = await store.setChainEnabled({ chain: 'evm', address: ownerAddress.toUpperCase() }, 'xrpl', false);
+    assert.deepEqual(updated.map(({ id, enabled }) => [id, enabled]).sort(), [['xrpl-mainnet', false], ['xrpl-testnet', false]]);
+    await assert.rejects(() => store.setChainEnabled({ chain: 'evm', address: ownerAddress }, 'base', false), /cannot disable every evm chain/);
+
+    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 3 });
+    await store.setWalletSettings({ chain: 'evm', address: ownerAddress.toUpperCase() }, { lockReminderMinutes: 30 });
+    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 30 });
+    await assert.rejects(() => store.setWalletSettings({ chain: 'evm', address: ownerAddress }, { lockReminderMinutes: 7 }), /invalid lockReminderMinutes/);
 
     const zoneName = `top-${id}`;
     const zone = await store.createZone({
@@ -605,6 +676,17 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
           layer1Enabled: true,
         }),
       /already exists/,
+    );
+
+    // Vault chain settings: copied at creation, toggled independently of the account.
+    const zoneChains = await store.listZoneChainSettings(zone.id);
+    assert.equal(zoneChains.find(({ chainId }) => chainId === 'xrpl-testnet')?.enabled, true);
+    assert.ok(zoneChains.every(({ network }) => network === 'testnet'));
+    const vaultToggled = await store.setZoneChainEnabled(zone.id, 'xrpl', false);
+    assert.equal(vaultToggled.find(({ chainId }) => chainId === 'xrpl-testnet')?.enabled, false);
+    assert.equal(
+      (await store.listCatalog({ chain: 'evm', address: '0xabc' })).chains.find(({ id }) => id === 'xrpl-testnet')?.enabled,
+      true,
     );
 
     const data = new Uint8Array(48).fill(3);

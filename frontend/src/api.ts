@@ -1,5 +1,5 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainWithTrust } from '@mosaic/catalog';
+import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainFamily, ChainWithEnabled, NetworkTag } from '@mosaic/catalog';
 import type { AgentChain, Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
 import { MCP_URL } from './config';
 
@@ -31,6 +31,17 @@ export interface AuthVerifyResult {
   expiresAt: number;
 }
 
+/** Per-vault chain support; copied from the account settings at creation, then independent. */
+export interface ZoneChainSetting {
+  chainId: string;
+  chainKey: string;
+  name: string;
+  family: ChainFamily;
+  network: NetworkTag;
+  evmChainId?: number;
+  enabled: boolean;
+}
+
 export interface ZoneGetResult {
   exists: boolean;
   zoneId?: string;
@@ -41,6 +52,7 @@ export interface ZoneGetResult {
   createdAt?: string;
   lastUnlockedAt?: string;
   blobs?: { kind: 'sig' | 'pass' | 'device'; version: number }[];
+  chains?: ZoneChainSetting[];
 }
 
 export interface ZoneListItem {
@@ -51,6 +63,7 @@ export interface ZoneListItem {
   createdAt: string;
   lastUnlockedAt?: string;
   addresses: ZoneAddressItem[];
+  chains: ZoneChainSetting[];
 }
 
 export interface ZoneAddressItem {
@@ -73,8 +86,6 @@ export interface BlobGetResult {
 export interface WalletSettingsResult {
   /** 0 disables the Mainnet lock reminder. */
   lockReminderMinutes: number;
-  /** Catalog chain ids hidden everywhere in the UI except settings. */
-  hiddenChains: string[];
 }
 
 export class ApiError extends Error {
@@ -138,8 +149,9 @@ class MosaicApi {
     return this.call('catalog_list', { token });
   }
 
-  chainTrustSet(token: string, chainId: string, trusted: boolean): Promise<ChainWithTrust> {
-    return this.call('chain_trust_set', { token, chainId, trusted });
+  /** Toggles every network variant of the logical chain; returns the updated variants. */
+  chainEnabledSet(token: string, chainKey: string, enabled: boolean): Promise<ChainWithEnabled[]> {
+    return this.call('chain_enabled_set', { token, chainKey, enabled });
   }
 
   assetTrustSet(token: string, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
@@ -191,6 +203,11 @@ class MosaicApi {
 
   zoneAddressCreate(token: string, zone: string, chain: AgentChain, name?: string): Promise<ZoneAddressItem> {
     return this.call('zone_address_create', { token, zone, chain, ...(name ? { name } : {}) });
+  }
+
+  /** Returns the vault's full chain list after the toggle. */
+  zoneChainSet(token: string, zone: string, chainKey: string, enabled: boolean): Promise<ZoneChainSetting[]> {
+    return this.call('zone_chain_set', { token, zone, chainKey, enabled });
   }
 
   blobPut(args: {

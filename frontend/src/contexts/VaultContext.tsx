@@ -21,6 +21,7 @@ interface VaultValue {
   registerCreated: (zone: string) => Promise<void>;
   markUnlocked: (zone: string, addresses: DerivedVaultAddress[]) => Promise<void>;
   createAddress: (zone: string, chain: AgentChain, name?: string) => Promise<void>;
+  setVaultChainEnabled: (zone: string, chainKey: string, enabled: boolean) => Promise<void>;
   lockVault: (zone: string) => Promise<void>;
 }
 
@@ -132,6 +133,13 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     await refreshVaults();
   }, [refreshVaults, session]);
 
+  const setVaultChainEnabled = useCallback(async (zone: string, chainKey: string, enabled: boolean) => {
+    if (!session) throw new Error('Log in to change vault settings.');
+    // Patch from the response instead of a full refresh so the toggle feels instant.
+    const chains = await api.zoneChainSet(session.token, zone, chainKey, enabled);
+    setVaults((current) => current.map((vault) => (vault.zone === zone ? { ...vault, chains } : vault)));
+  }, [session]);
+
   const lockVault = useCallback(async (zone: string) => {
     if (!session) return;
     const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone, network: session.network };
@@ -144,8 +152,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const activeVault = vaults.find(({ zone }) => zone === activeName) ?? null;
   const value = useMemo(() => ({
     vaults, activeVault, loading, error, metadataWarning, selectVault, refreshVaults,
-    registerCreated, markUnlocked, createAddress, lockVault,
-  }), [vaults, activeVault, loading, error, metadataWarning, selectVault, refreshVaults, registerCreated, markUnlocked, createAddress, lockVault]);
+    registerCreated, markUnlocked, createAddress, setVaultChainEnabled, lockVault,
+  }), [vaults, activeVault, loading, error, metadataWarning, selectVault, refreshVaults, registerCreated, markUnlocked, createAddress, setVaultChainEnabled, lockVault]);
   return <VaultContext.Provider value={value}>{children}</VaultContext.Provider>;
 }
 

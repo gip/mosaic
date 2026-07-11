@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { ZoneRef } from '@mosaic/zone-keys';
 import Modal from './ui/Modal';
 import Banner from './ui/Banner';
@@ -17,7 +17,7 @@ import {
 } from '../zone/ceremony';
 import { directCeremonySigner, xamanCeremonySigner } from '../zone/signers';
 import { unlockWithPassphrase, unlockWithSignature } from '../zone/unlock';
-import { createTestnetVault, exportTestnetPairingCode, importTestnetPairingCode, unlockTestnetVault } from '../zone/testnet';
+import { createTestnetVault, unlockTestnetVault } from '../zone/testnet';
 
 interface XamanPrompt { refs: XamanRefs; label: string }
 const VAULT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -53,7 +53,6 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
   const { session } = useSession();
   const { activeVault, loading, error, metadataWarning, createAddress, lockVault } = useVaults();
   const [unlockOpen, setUnlockOpen] = useState(false);
-  const [pairOpen, setPairOpen] = useState(false);
   if (!session) return null;
 
   return (
@@ -77,22 +76,24 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
       {activeVault?.status === 'locked' && (
         <div className="zone-card">
           <h3>Vault locked</h3>
-          <p>{activeVault.mode === 'testnet-device' ? 'The vault secret is not available on this device. Unlock with its device key or import a pairing code.' : 'The vault secret is not available on this device. Restore it with your wallet signature or backup passphrase.'}</p>
+          <p>{activeVault.mode === 'testnet-device' ? 'The vault secret is not available on this device. Unlock with this device’s key.' : 'The vault secret is not available on this device. Restore it with your wallet signature or backup passphrase.'}</p>
           <button type="button" onClick={() => setUnlockOpen(true)}>Unlock vault</button>
         </div>
       )}
       {activeVault?.status === 'unlocked' && activeVault.derivedAddresses && (
         <>
-          <AgentAddressCards addresses={activeVault.derivedAddresses} onCreate={(chain, name) => createAddress(activeVault.zone, chain, name)} />
+          <AgentAddressCards
+            addresses={activeVault.derivedAddresses}
+            chains={activeVault.chains}
+            onCreate={(chain, name) => createAddress(activeVault.zone, chain, name)}
+          />
           <div className="zone-actions">
             <span className="tile-note mono" title="zoneRootCommitment">commitment {activeVault.commitment.slice(0, 16)}…</span>
             <button type="button" className="btn-sm" onClick={() => void lockVault(activeVault.zone)}>Lock vault on this device</button>
-            {activeVault.mode === 'testnet-device' && <button type="button" className="btn-sm" onClick={() => setPairOpen(true)}>Pair another device</button>}
           </div>
         </>
       )}
       {unlockOpen && activeVault && <UnlockVaultModal vault={activeVault} onClose={() => setUnlockOpen(false)} />}
-      {pairOpen && activeVault && <PairTestnetVaultModal vault={activeVault} onClose={() => setPairOpen(false)} />}
     </section>
   );
 }
@@ -163,10 +164,9 @@ export function CreateVaultModal({ onClose }: { onClose: () => void }) {
 export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClose: () => void }) {
   const { session } = useSession();
   const { markUnlocked } = useVaults();
-  const [phase, setPhase] = useState<'choice' | 'signature' | 'passphrase' | 'pairing'>('choice');
+  const [phase, setPhase] = useState<'choice' | 'signature' | 'passphrase'>('choice');
   const [passphrase, setPassphrase] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [pairingCode, setPairingCode] = useState('');
   const [xamanPrompt, setXamanPrompt] = useState<XamanPrompt | null>(null);
   const ref: ZoneRef | null = session ? {
     rootChain: session.chain, rootAddress: session.address, zone: vault.zone, network: session.network,
@@ -212,16 +212,7 @@ export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClos
       onClose();
     } catch (cause) {
       setError(errorMessage(cause));
-      setPhase('pairing');
     }
-  }
-
-  async function importPairing() {
-    if (!ref || !pairingCode.trim()) return;
-    try {
-      await importTestnetPairingCode(ref, vault.commitment, pairingCode);
-      await unlockTestnet();
-    } catch (cause) { setError(errorMessage(cause)); }
   }
 
   return (
@@ -231,18 +222,14 @@ export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClos
         {phase !== 'signature' && (
           <>
             {error && <Banner tone="warn">{error}</Banner>}
-            {phase === 'choice' && <p>{vault.mode === 'testnet-device' ? 'Unlock with this device’s pairing key. A new device needs a pairing code from an unlocked copy.' : 'Restore this vault with one wallet signature. If wallet signing behavior changed, use the backup passphrase.'}</p>}
+            {phase === 'choice' && <p>{vault.mode === 'testnet-device' ? 'Unlock with this device’s key. Testnet vaults can only be unlocked on the device that created them.' : 'Restore this vault with one wallet signature. If wallet signing behavior changed, use the backup passphrase.'}</p>}
             {phase === 'passphrase' && (
               <Field id={`unlock-passphrase-${vault.zone}`} label="Backup passphrase">
                 <input type="password" value={passphrase} autoComplete="current-password" onChange={(event) => setPassphrase(event.target.value)} />
               </Field>
             )}
-            {phase === 'pairing' && <Field id={`pairing-code-${vault.zone}`} label="Pairing code">
-              <textarea value={pairingCode} rows={4} onChange={(event) => setPairingCode(event.target.value)} />
-            </Field>}
             <div className="zone-actions">
               {phase === 'passphrase' && <button type="button" className="btn-primary" disabled={!passphrase} onClick={() => void unlockPassphrase()}>Unlock with passphrase</button>}
-              {phase === 'pairing' && <button type="button" className="btn-primary" disabled={!pairingCode.trim()} onClick={() => void importPairing()}>Pair and unlock</button>}
               {vault.mode === 'testnet-device'
                 ? phase === 'choice' && <button type="button" className="btn-primary" onClick={() => void unlockTestnet()}>Unlock on this device</button>
                 : <button type="button" className={phase === 'choice' ? 'btn-primary' : 'btn-ghost btn-sm'} onClick={() => void unlockSignature()}>{phase === 'choice' ? 'Unlock with wallet signature' : 'Retry wallet signature'}</button>}
@@ -253,27 +240,4 @@ export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClos
       {xamanPrompt && <XamanPromptModal prompt={xamanPrompt} onClose={() => setXamanPrompt(null)} />}
     </>
   );
-}
-
-export function PairTestnetVaultModal({ vault, onClose }: { vault: VaultState; onClose: () => void }) {
-  const { session } = useSession();
-  const [code, setCode] = useState('');
-  const [svg, setSvg] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!session) return;
-    const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: vault.zone, network: 'testnet' };
-    void exportTestnetPairingCode(ref, vault.commitment).then(async (value) => {
-      setCode(value);
-      const { qrSvg } = await import('@mosaic/web-connector/qr');
-      setSvg(qrSvg(value));
-    }).catch((cause) => setError(errorMessage(cause)));
-  }, [session, vault.commitment, vault.zone]);
-  return <Modal title="Pair another device" onClose={onClose}>
-    <Banner tone="warn">This one-time code can unlock the Testnet vault. Share it only with your own device.</Banner>
-    {error && <Banner tone="err">{error}</Banner>}
-    {svg && <div className="qr-box qr-large qr-svg" dangerouslySetInnerHTML={{ __html: svg }} />}
-    <textarea className="pairing-code" readOnly rows={5} value={code} />
-    <button type="button" className="btn-primary" disabled={!code} onClick={() => void navigator.clipboard.writeText(code)}>Copy pairing code</button>
-  </Modal>;
 }

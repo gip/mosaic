@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  addDecimals,
   cmpDecimals,
   divDecimals,
   dropsToXrp,
@@ -50,6 +51,14 @@ test('dropsToXrp is exact', () => {
   assert.equal(dropsToXrp('100000000000000001'), '100000000000.000001');
   assert.throws(() => dropsToXrp('1.5'));
   assert.throws(() => dropsToXrp('-3'));
+});
+
+test('addDecimals sums exactly at working precision', () => {
+  assert.equal(addDecimals('0.1', '0.2'), '0.3');
+  assert.equal(addDecimals('9169.26031', '0.000001'), '9169.260311');
+  assert.equal(addDecimals('-1.5', '1.5'), '0');
+  // Beyond float53: 100 billion XRP + 1 drop.
+  assert.equal(addDecimals('100000000000', '0.000001'), '100000000000.000001');
 });
 
 test('cmpDecimals and isZeroDecimal', () => {

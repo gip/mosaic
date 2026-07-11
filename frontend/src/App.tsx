@@ -5,6 +5,7 @@ import ThemeToggle from './components/ui/ThemeToggle';
 import StatusDot from './components/ui/StatusDot';
 import Banner from './components/ui/Banner';
 import MainnetLockReminder from './components/MainnetLockReminder';
+import BalancesStrip from './components/balances/BalancesStrip';
 import { useSession } from './contexts/SessionContext';
 import { useSettings } from './contexts/SettingsContext';
 import { useVaults, type VaultState } from './contexts/VaultContext';
@@ -156,6 +157,7 @@ export default function App() {
           </button>
         </div>
       </header>
+      <BalancesStrip />
       {networkSwitching && <Banner tone="info" className="app-banner">Switching your session to {network}…</Banner>}
       {!networkSwitching && networkSwitchError && <Banner tone="err" className="app-banner">Could not switch network: {networkSwitchError}</Banner>}
       <MainnetLockReminder key={`${network}|${session?.address ?? ''}`} />

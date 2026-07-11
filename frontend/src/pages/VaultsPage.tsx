@@ -1,13 +1,13 @@
 import { lazy, Suspense, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import AgentAddressCards from '../components/AgentAddresses';
+import ChainSettingsModal from '../components/ChainSettingsModal';
 import Banner from '../components/ui/Banner';
 import StatusDot from '../components/ui/StatusDot';
 import { useSession } from '../contexts/SessionContext';
 import { useVaults, type VaultState } from '../contexts/VaultContext';
 
 const CreateVaultModal = lazy(() => import('../components/ZonePanel').then((module) => ({ default: module.CreateVaultModal })));
-const PairTestnetVaultModal = lazy(() => import('../components/ZonePanel').then((module) => ({ default: module.PairTestnetVaultModal })));
 
 function date(value?: string): string {
   return value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : 'Never';
@@ -15,13 +15,18 @@ function date(value?: string): string {
 
 export default function VaultsPage() {
   const { session } = useSession();
-  const { vaults, activeVault, loading, error, metadataWarning, createAddress, lockVault, refreshVaults } = useVaults();
+  const {
+    vaults, activeVault, loading, error, metadataWarning, createAddress, setVaultChainEnabled, lockVault, refreshVaults,
+  } = useVaults();
   const [createOpen, setCreateOpen] = useState(false);
-  const [pairVault, setPairVault] = useState<VaultState | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [chainModalZone, setChainModalZone] = useState<string | null>(null);
 
   const isOpen = (vault: VaultState) => expanded[vault.zone] ?? (activeVault?.zone === vault.zone);
   const toggle = (vault: VaultState) => setExpanded((current) => ({ ...current, [vault.zone]: !isOpen(vault) }));
+
+  // Resolved from the list so the modal reflects toggles as soon as state updates.
+  const chainModalVault = vaults.find(({ zone }) => zone === chainModalZone) ?? null;
 
   return (
     <section className="reading vaults-page">
@@ -59,12 +64,26 @@ export default function VaultsPage() {
                         <div><dt>Created</dt><dd>{date(vault.createdAt)}</dd></div>
                         <div><dt>Last unlocked</dt><dd>{date(vault.lastUnlockedAt)}</dd></div>
                       </dl>
+                      <div className="chain-summary">
+                        <span>
+                          <span className="tile-note">Chains </span>
+                          {vault.chains.filter(({ enabled }) => enabled).map(({ name }) => name).join(' · ') || 'None enabled'}
+                        </span>
+                        <button type="button" className="btn-sm" onClick={() => setChainModalZone(vault.zone)}>
+                          Change
+                        </button>
+                      </div>
                       {vault.status === 'locked' && <p className="tile-note">This vault is locked on this device. Unlock it from the vault switcher in the top bar.</p>}
-                      {vault.status === 'unlocked' && vault.derivedAddresses && <AgentAddressCards addresses={vault.derivedAddresses} onCreate={(chain, name) => createAddress(vault.zone, chain, name)} />}
+                      {vault.status === 'unlocked' && vault.derivedAddresses && (
+                        <AgentAddressCards
+                          addresses={vault.derivedAddresses}
+                          chains={vault.chains}
+                          onCreate={(chain, name) => createAddress(vault.zone, chain, name)}
+                        />
+                      )}
                       {vault.status === 'unlocked' && (
                         <div className="vault-actions">
                           <button type="button" className="btn-sm" onClick={() => void lockVault(vault.zone)}>Lock vault on this device</button>
-                          {vault.mode === 'testnet-device' && <button type="button" className="btn-sm" onClick={() => setPairVault(vault)}>Pair another device</button>}
                         </div>
                       )}
                     </div>
@@ -76,7 +95,20 @@ export default function VaultsPage() {
         </>
       )}
       {createOpen && <Suspense fallback={null}><CreateVaultModal onClose={() => setCreateOpen(false)} /></Suspense>}
-      {pairVault && <Suspense fallback={null}><PairTestnetVaultModal vault={pairVault} onClose={() => setPairVault(null)} /></Suspense>}
+      {chainModalVault && (
+        <ChainSettingsModal
+          title={`Chains · ${chainModalVault.zone === 'default' ? 'Default' : chainModalVault.zone}`}
+          description="Copied from your global settings when the vault was created; changes here affect only this vault."
+          options={chainModalVault.chains.map((chain) => ({
+            key: chain.chainKey,
+            name: chain.name,
+            note: chain.family.toUpperCase(),
+            enabled: chain.enabled,
+          }))}
+          onToggle={(key, enabled) => setVaultChainEnabled(chainModalVault.zone, key, enabled)}
+          onClose={() => setChainModalZone(null)}
+        />
+      )}
     </section>
   );
 }

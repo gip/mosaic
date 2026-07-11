@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
-import type { Asset, DexChain } from '@mosaic/dex';
-import type { AssetDeployment, AssetWithTrust, ChainWithTrust } from '@mosaic/catalog';
+import type { Asset, DexChain } from '@mosaic/chain-core';
+import type { AssetDeployment, AssetWithTrust, ChainWithEnabled } from '@mosaic/catalog';
 import Button from '../ui/Button';
 import Field from '../ui/Field';
 import Banner from '../ui/Banner';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useCatalog } from '../../contexts/CatalogContext';
-import { useActiveChains } from '../../hooks/useActiveChains';
+import { useEnabledChains } from '../../hooks/useEnabledChains';
 import type { PairConfig, PairSources } from './types';
 
 interface SelectableAsset {
@@ -20,16 +20,15 @@ function toDexAsset(entry: SelectableAsset): Asset {
   return { kind: 'issued', code: entry.deployment.symbol, issuer: entry.deployment.address };
 }
 
-function dexCapable(chain: ChainWithTrust): chain is ChainWithTrust & { family: DexChain } {
+function dexCapable(chain: ChainWithEnabled): chain is ChainWithEnabled & { family: DexChain } {
   return chain.family === 'stellar' || chain.family === 'xrpl';
 }
 
 export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => void }) {
   const { network: defaultNetwork } = useSettings();
   const { assets } = useCatalog();
-  const { activeChains } = useActiveChains();
-  const visibleChains = useMemo(() => activeChains.filter((chain) => chain.trusted), [activeChains]);
-  const capableChains = useMemo(() => visibleChains.filter(dexCapable), [visibleChains]);
+  const { enabledChains } = useEnabledChains();
+  const capableChains = useMemo(() => enabledChains.filter(dexCapable), [enabledChains]);
   const preferredId = `stellar-${defaultNetwork}`;
   const [chainId, setChainId] = useState(preferredId);
   const [baseId, setBaseId] = useState('');
@@ -76,12 +75,12 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
       { chainId: 'xrpl-testnet', baseId: 'xrp', quoteId: 'rlusd', label: 'XRP / RLUSD · XRPL Testnet', paths: false },
     ];
     return specs.flatMap((spec) => {
-      const chain = activeChains.find((item) => item.id === spec.chainId);
+      const chain = enabledChains.find((item) => item.id === spec.chainId);
       const baseAsset = assets.find((item) => item.id === spec.baseId && item.trustState !== 'hidden');
       const quoteAsset = assets.find((item) => item.id === spec.quoteId && item.trustState !== 'hidden');
       const baseDeployment = baseAsset?.deployments.find((item) => item.chainId === spec.chainId);
       const quoteDeployment = quoteAsset?.deployments.find((item) => item.chainId === spec.chainId);
-      if (!chain?.trusted || !dexCapable(chain) || !baseAsset || !quoteAsset || !baseDeployment || !quoteDeployment) return [];
+      if (!chain || !dexCapable(chain) || !baseAsset || !quoteAsset || !baseDeployment || !quoteDeployment) return [];
       return [{
         label: spec.label,
         pair: {
@@ -94,7 +93,7 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
         },
       }];
     });
-  }, [assets, activeChains]);
+  }, [assets, enabledChains]);
 
   function submit() {
     setSubmitted(true);
@@ -127,7 +126,7 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
         </div>
       )}
       {capableChains.length === 0 ? (
-        <Banner tone="warn">Trust an XRPL or Stellar chain in Settings before adding a pair.</Banner>
+        <Banner tone="warn">Enable an XRPL or Stellar chain in Settings before adding a pair.</Banner>
       ) : (
         <form
           className="dex-add-form"
@@ -145,7 +144,7 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
                 setQuoteId('');
               }}
             >
-              {visibleChains.map((chain) => (
+              {enabledChains.map((chain) => (
                 <option key={chain.id} value={chain.id} disabled={!dexCapable(chain)}>
                   {chain.name}{dexCapable(chain) ? '' : ' · DEX support pending'}
                 </option>

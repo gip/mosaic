@@ -18,7 +18,7 @@ import {
   type PriceChartOptions,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import type { OrderBookSnapshot, QuoteSurface } from '@mosaic/dex';
+import type { OrderBookSnapshot, QuoteSurface } from '@mosaic/chain-core';
 import type { ChartKind } from './types';
 
 /**

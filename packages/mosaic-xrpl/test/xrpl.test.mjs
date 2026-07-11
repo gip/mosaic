@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createAdapter, normalizeCurrency, toXrplAmountSpec } from '../dist/xrpl/index.js';
+import { createAdapter, normalizeCurrency, toXrplAmountSpec } from '../dist/index.js';
 
 const ISSUER = 'rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De';
 const RLUSD_HEX = `524C555344${'0'.repeat(30)}`;

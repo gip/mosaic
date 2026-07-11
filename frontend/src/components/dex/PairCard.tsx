@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
-import type { OrderBookLevel, OrderBookSnapshot, QuoteSample, QuoteSurface } from '@mosaic/dex';
+import type { OrderBookLevel, OrderBookSnapshot, QuoteSample, QuoteSurface } from '@mosaic/chain-core';
 import type { UTCTimestamp } from 'lightweight-charts';
 import Banner from '../ui/Banner';
 import Button from '../ui/Button';

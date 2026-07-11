@@ -6,7 +6,8 @@ import {
   type AssetTrustState,
   type AssetWithTrust,
   type CatalogSnapshot,
-  type ChainWithTrust,
+  type ChainFamily,
+  type ChainWithEnabled,
   type NetworkTag,
   type SupportedChain,
 } from '@mosaic/catalog';
@@ -85,26 +86,23 @@ export interface CatalogOwner {
   address: string;
 }
 
-/**
- * Per-wallet UX settings. `lockReminderMinutes: 0` disables the Mainnet lock
- * reminder. `hiddenChains` lists catalog chain ids the UI hides everywhere
- * except settings; the root wallet's chain family keeps at least one active
- * chain per network so the login chain can never disappear.
- */
+/** Per-wallet UX settings. `lockReminderMinutes: 0` disables the Mainnet lock reminder. */
 export interface WalletSettings {
   lockReminderMinutes: number;
-  hiddenChains: string[];
 }
 
 export const LOCK_REMINDER_MINUTES_OPTIONS = [0, 1, 3, 5, 10, 30] as const;
 export const DEFAULT_LOCK_REMINDER_MINUTES = 3;
 
-type KnownChain = Pick<SupportedChain, 'id' | 'family' | 'network'>;
-
-/** Drops ids the catalog no longer knows (e.g. removed custom chains) and dedupes in catalog order. */
-function normalizeHiddenChains(hiddenChains: string[], chains: KnownChain[]): string[] {
-  const hidden = new Set(hiddenChains);
-  return chains.filter((chain) => hidden.has(chain.id)).map((chain) => chain.id);
+/** Per-vault chain support, denormalized with catalog metadata for the UI. */
+export interface ZoneChainSetting {
+  chainId: string;
+  chainKey: string;
+  name: string;
+  family: ChainFamily;
+  network: NetworkTag;
+  evmChainId?: number;
+  enabled: boolean;
 }
 
 export interface CustomChainRecord {
@@ -145,8 +143,13 @@ export interface MosaicStore {
 
   ensureCatalogPreferences(owner: CatalogOwner): Promise<void>;
   listCatalog(owner: CatalogOwner): Promise<CatalogSnapshot>;
-  setChainTrust(owner: CatalogOwner, chainId: string, trusted: boolean): Promise<ChainWithTrust>;
+  /** Enables/disables every network variant of the logical chain; returns the updated variants. */
+  setChainEnabled(owner: CatalogOwner, chainKey: string, enabled: boolean): Promise<ChainWithEnabled[]>;
   setAssetTrust(owner: CatalogOwner, assetId: string, state: AssetTrustState): Promise<AssetWithTrust>;
+
+  /** Vault chain support; lazily seeded from the owner's account-level settings. */
+  listZoneChainSettings(zoneId: string): Promise<ZoneChainSetting[]>;
+  setZoneChainEnabled(zoneId: string, chainKey: string, enabled: boolean): Promise<ZoneChainSetting[]>;
 
   getWalletSettings(owner: CatalogOwner): Promise<WalletSettings>;
   setWalletSettings(owner: CatalogOwner, settings: WalletSettings): Promise<WalletSettings>;
@@ -175,21 +178,31 @@ export function normalizeCatalogOwner(owner: CatalogOwner): CatalogOwner {
   };
 }
 
-/** Expects an already-normalized hiddenChains list (known ids only). */
-function validateWalletSettings(owner: CatalogOwner, settings: WalletSettings, chains: KnownChain[]): void {
+function validateWalletSettings(settings: WalletSettings): void {
   if (!(LOCK_REMINDER_MINUTES_OPTIONS as readonly number[]).includes(settings.lockReminderMinutes)) {
     throw new MosaicMcpError(
       'VALIDATION_FAILED',
       `invalid lockReminderMinutes: ${settings.lockReminderMinutes} (allowed: ${LOCK_REMINDER_MINUTES_OPTIONS.join(', ')})`,
     );
   }
-  const hidden = new Set(settings.hiddenChains);
+}
+
+/** The root wallet's family keeps at least one enabled chain per network so the login chain never disappears. */
+function assertRootFamilyStaysEnabled(
+  owner: CatalogOwner,
+  chains: ChainWithEnabled[],
+  targets: ChainWithEnabled[],
+  enabled: boolean,
+): void {
+  if (enabled) return;
+  const targetIds = new Set(targets.map(({ id }) => id));
   for (const tag of ['mainnet', 'testnet'] as const) {
     const familyChains = chains.filter((chain) => chain.family === owner.chain && chain.network === tag);
-    if (familyChains.length > 0 && familyChains.every((chain) => hidden.has(chain.id))) {
+    if (!familyChains.some((chain) => targetIds.has(chain.id))) continue;
+    if (!familyChains.some((chain) => !targetIds.has(chain.id) && chain.enabled)) {
       throw new MosaicMcpError(
         'VALIDATION_FAILED',
-        `cannot hide every ${owner.chain} chain on ${tag}: the root wallet chain must stay active`,
+        `cannot disable every ${owner.chain} chain on ${tag}: the root wallet chain must stay enabled`,
       );
     }
   }
@@ -203,7 +216,7 @@ function validateCustomChain(record: CustomChainRecord): void {
   if (!Number.isSafeInteger(record.evmChainId) || record.evmChainId <= 0) {
     throw new MosaicMcpError('VALIDATION_FAILED', `invalid EVM chain id: ${record.evmChainId}`);
   }
-  if (BUILTIN_CHAINS.some(({ id }) => id === record.id)) {
+  if (BUILTIN_CHAINS.some(({ id, chainKey }) => id === record.id || chainKey === record.id)) {
     throw new MosaicMcpError('CONFLICT', `custom chain conflicts with built-in: ${record.id}`);
   }
 }
@@ -316,6 +329,14 @@ export class PostgresStore implements MosaicStore {
       for (const chain of ['evm', 'xrpl', 'stellar'] as const) {
         await this.sql`INSERT INTO zone_addresses (zone_id, chain, derivation_index, name) VALUES (${row!.id as string}, ${chain}, 0, '#0')`;
       }
+      // The vault starts with a copy of the account-level chain settings and diverges independently.
+      const catalog = await this.listCatalog({ chain: record.rootChain, address: record.rootAddress });
+      for (const chain of catalog.chains.filter((chain) => chain.network === record.network)) {
+        await this.sql`
+          INSERT INTO zone_chain_settings (zone_id, chain_id, enabled)
+          VALUES (${row!.id as string}, ${chain.id}, ${chain.enabled})
+          ON CONFLICT DO NOTHING`;
+      }
       return rowToZone(row!);
     } catch (error) {
       if ((error as { code?: string }).code === '23505') {
@@ -406,12 +427,12 @@ export class PostgresStore implements MosaicStore {
     const owner = normalizeCatalogOwner(rawOwner);
     for (const chain of BUILTIN_CHAINS) {
       await this.sql`
-        INSERT INTO chain_preferences (root_chain, root_address, chain_id, trusted)
+        INSERT INTO chain_preferences (root_chain, root_address, chain_id, enabled)
         VALUES (${owner.chain}, ${owner.address}, ${chain.id}, TRUE)
         ON CONFLICT DO NOTHING`;
     }
     await this.sql`
-      INSERT INTO chain_preferences (root_chain, root_address, chain_id, trusted)
+      INSERT INTO chain_preferences (root_chain, root_address, chain_id, enabled)
       SELECT ${owner.chain}, ${owner.address}, id, FALSE FROM custom_chains WHERE enabled = TRUE
       ON CONFLICT DO NOTHING`;
     for (const asset of BUILTIN_ASSETS) {
@@ -435,6 +456,7 @@ export class PostgresStore implements MosaicStore {
       }
       return [{
         id,
+        chainKey: id,
         name: row.name as string,
         family: 'evm' as const,
         network: row.network as NetworkTag,
@@ -443,15 +465,15 @@ export class PostgresStore implements MosaicStore {
       }];
     });
     const chainRows = await this.sql`
-      SELECT chain_id, trusted FROM chain_preferences
+      SELECT chain_id, enabled FROM chain_preferences
       WHERE root_chain = ${owner.chain} AND root_address = ${owner.address}`;
-    const chainTrust = new Map(chainRows.map((row) => [row.chain_id as string, row.trusted as boolean]));
+    const chainEnabled = new Map(chainRows.map((row) => [row.chain_id as string, row.enabled as boolean]));
     const assetRows = await this.sql`
       SELECT asset_id, trust_state FROM asset_preferences
       WHERE root_chain = ${owner.chain} AND root_address = ${owner.address}`;
     const assetTrust = new Map(assetRows.map((row) => [row.asset_id as string, row.trust_state as AssetTrustState]));
     return {
-      chains: [...BUILTIN_CHAINS, ...customChains].map((chain) => ({ ...chain, trusted: chainTrust.get(chain.id) ?? false })),
+      chains: [...BUILTIN_CHAINS, ...customChains].map((chain) => ({ ...chain, enabled: chainEnabled.get(chain.id) ?? false })),
       assets: BUILTIN_ASSETS.map((asset) => ({
         ...asset,
         deployments: [...asset.deployments],
@@ -460,17 +482,20 @@ export class PostgresStore implements MosaicStore {
     };
   }
 
-  async setChainTrust(owner: CatalogOwner, chainId: string, trusted: boolean): Promise<ChainWithTrust> {
+  async setChainEnabled(owner: CatalogOwner, chainKey: string, enabled: boolean): Promise<ChainWithEnabled[]> {
     const catalog = await this.listCatalog(owner);
-    const chain = catalog.chains.find(({ id }) => id === chainId);
-    if (!chain) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainId}`);
+    const targets = catalog.chains.filter((chain) => chain.chainKey === chainKey);
+    if (targets.length === 0) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainKey}`);
+    assertRootFamilyStaysEnabled(owner, catalog.chains, targets, enabled);
     const normalized = normalizeCatalogOwner(owner);
-    await this.sql`
-      INSERT INTO chain_preferences (root_chain, root_address, chain_id, trusted, updated_at)
-      VALUES (${normalized.chain}, ${normalized.address}, ${chainId}, ${trusted}, now())
-      ON CONFLICT (root_chain, root_address, chain_id)
-      DO UPDATE SET trusted = EXCLUDED.trusted, updated_at = now()`;
-    return { ...chain, trusted };
+    for (const chain of targets) {
+      await this.sql`
+        INSERT INTO chain_preferences (root_chain, root_address, chain_id, enabled, updated_at)
+        VALUES (${normalized.chain}, ${normalized.address}, ${chain.id}, ${enabled}, now())
+        ON CONFLICT (root_chain, root_address, chain_id)
+        DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`;
+    }
+    return targets.map((chain) => ({ ...chain, enabled }));
   }
 
   async setAssetTrust(owner: CatalogOwner, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
@@ -492,26 +517,57 @@ export class PostgresStore implements MosaicStore {
   async getWalletSettings(owner: CatalogOwner): Promise<WalletSettings> {
     const normalized = normalizeCatalogOwner(owner);
     const [row] = await this.sql`
-      SELECT lock_reminder_minutes, hidden_chains FROM wallet_settings
+      SELECT lock_reminder_minutes FROM wallet_settings
       WHERE root_chain = ${normalized.chain} AND root_address = ${normalized.address}`;
-    if (!row) return { lockReminderMinutes: DEFAULT_LOCK_REMINDER_MINUTES, hiddenChains: [] };
-    return {
-      lockReminderMinutes: Number(row.lock_reminder_minutes),
-      hiddenChains: String(row.hidden_chains).split(',').filter(Boolean),
-    };
+    if (!row) return { lockReminderMinutes: DEFAULT_LOCK_REMINDER_MINUTES };
+    return { lockReminderMinutes: Number(row.lock_reminder_minutes) };
   }
 
   async setWalletSettings(owner: CatalogOwner, settings: WalletSettings): Promise<WalletSettings> {
-    const { chains } = await this.listCatalog(owner);
-    const hiddenChains = normalizeHiddenChains(settings.hiddenChains, chains);
-    validateWalletSettings(owner, { ...settings, hiddenChains }, chains);
+    validateWalletSettings(settings);
     const normalized = normalizeCatalogOwner(owner);
     await this.sql`
-      INSERT INTO wallet_settings (root_chain, root_address, lock_reminder_minutes, hidden_chains, updated_at)
-      VALUES (${normalized.chain}, ${normalized.address}, ${settings.lockReminderMinutes}, ${hiddenChains.join(',')}, now())
+      INSERT INTO wallet_settings (root_chain, root_address, lock_reminder_minutes, updated_at)
+      VALUES (${normalized.chain}, ${normalized.address}, ${settings.lockReminderMinutes}, now())
       ON CONFLICT (root_chain, root_address)
-      DO UPDATE SET lock_reminder_minutes = EXCLUDED.lock_reminder_minutes, hidden_chains = EXCLUDED.hidden_chains, updated_at = now()`;
-    return { lockReminderMinutes: settings.lockReminderMinutes, hiddenChains };
+      DO UPDATE SET lock_reminder_minutes = EXCLUDED.lock_reminder_minutes, updated_at = now()`;
+    return { lockReminderMinutes: settings.lockReminderMinutes };
+  }
+
+  async listZoneChainSettings(zoneId: string): Promise<ZoneChainSetting[]> {
+    const [zoneRow] = await this.sql`SELECT * FROM zones WHERE id = ${zoneId}`;
+    if (!zoneRow) throw new MosaicMcpError('NOT_FOUND', 'zone not found');
+    const zone = rowToZone(zoneRow);
+    const catalog = await this.listCatalog({ chain: zone.rootChain, address: zone.rootAddress });
+    const rows = await this.sql`SELECT chain_id, enabled FROM zone_chain_settings WHERE zone_id = ${zoneId}`;
+    const existing = new Map(rows.map((row) => [row.chain_id as string, row.enabled as boolean]));
+    const out: ZoneChainSetting[] = [];
+    for (const chain of catalog.chains.filter((chain) => chain.network === zone.network)) {
+      let enabled = existing.get(chain.id);
+      if (enabled === undefined) {
+        // Pre-existing vaults and chains added after creation copy the account-level value.
+        enabled = chain.enabled;
+        await this.sql`
+          INSERT INTO zone_chain_settings (zone_id, chain_id, enabled)
+          VALUES (${zoneId}, ${chain.id}, ${enabled})
+          ON CONFLICT DO NOTHING`;
+      }
+      out.push({
+        chainId: chain.id, chainKey: chain.chainKey, name: chain.name,
+        family: chain.family, network: chain.network, evmChainId: chain.evmChainId, enabled,
+      });
+    }
+    return out;
+  }
+
+  async setZoneChainEnabled(zoneId: string, chainKey: string, enabled: boolean): Promise<ZoneChainSetting[]> {
+    const settings = await this.listZoneChainSettings(zoneId);
+    const targetIds = settings.filter((setting) => setting.chainKey === chainKey).map(({ chainId }) => chainId);
+    if (targetIds.length === 0) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainKey}`);
+    await this.sql`
+      UPDATE zone_chain_settings SET enabled = ${enabled}, updated_at = now()
+      WHERE zone_id = ${zoneId} AND chain_id = ANY(${this.sql.array(targetIds)})`;
+    return settings.map((setting) => (setting.chainKey === chainKey ? { ...setting, enabled } : setting));
   }
 
   async upsertCustomChain(record: CustomChainRecord): Promise<void> {
@@ -590,9 +646,12 @@ export class MemoryStore implements MosaicStore {
   private zoneAddresses = new Map<string, ZoneAddressRecord[]>();
   private nonces = new Set<string>();
   private customChains = new Map<string, CustomChainRecord>();
+  /** owner key → chain id → enabled */
   private chainPreferences = new Map<string, Map<string, boolean>>();
   private assetPreferences = new Map<string, Map<string, AssetTrustState>>();
   private walletSettings = new Map<string, WalletSettings>();
+  /** zone id → chain id → enabled */
+  private zoneChainSettings = new Map<string, Map<string, boolean>>();
 
   async init(): Promise<void> {}
   async healthCheck(): Promise<{ ok: true }> {
@@ -650,6 +709,11 @@ export class MemoryStore implements MosaicStore {
     this.zoneAddresses.set(zone.id, (['evm', 'xrpl', 'stellar'] as const).map((chain) => ({
       id: randomUUID(), zoneId: zone.id, chain, index: 0, name: '#0', createdAt: zone.createdAt,
     })));
+    // The vault starts with a copy of the account-level chain settings and diverges independently.
+    const catalog = await this.listCatalog({ chain: record.rootChain, address: record.rootAddress });
+    this.zoneChainSettings.set(zone.id, new Map(
+      catalog.chains.filter((chain) => chain.network === record.network).map((chain) => [chain.id, chain.enabled]),
+    ));
     return zone;
   }
 
@@ -726,13 +790,13 @@ export class MemoryStore implements MosaicStore {
     const owner = normalizeCatalogOwner(rawOwner);
     await this.ensureCatalogPreferences(owner);
     const key = `${owner.chain}|${owner.address}`;
-    const trusts = this.chainPreferences.get(key)!;
+    const enabledById = this.chainPreferences.get(key)!;
     const custom: SupportedChain[] = [...this.customChains.values()]
       .filter(({ enabled }) => enabled)
-      .map(({ id, name, network, evmChainId }) => ({ id, name, family: 'evm', network, source: 'database', evmChainId }));
+      .map(({ id, name, network, evmChainId }) => ({ id, chainKey: id, name, family: 'evm', network, source: 'database', evmChainId }));
     const states = this.assetPreferences.get(key)!;
     return {
-      chains: [...BUILTIN_CHAINS, ...custom].map((chain) => ({ ...chain, trusted: trusts.get(chain.id) ?? false })),
+      chains: [...BUILTIN_CHAINS, ...custom].map((chain) => ({ ...chain, enabled: enabledById.get(chain.id) ?? false })),
       assets: BUILTIN_ASSETS.map((asset) => ({
         ...asset,
         deployments: [...asset.deployments],
@@ -741,13 +805,15 @@ export class MemoryStore implements MosaicStore {
     };
   }
 
-  async setChainTrust(owner: CatalogOwner, chainId: string, trusted: boolean): Promise<ChainWithTrust> {
+  async setChainEnabled(owner: CatalogOwner, chainKey: string, enabled: boolean): Promise<ChainWithEnabled[]> {
     const catalog = await this.listCatalog(owner);
-    const chain = catalog.chains.find(({ id }) => id === chainId);
-    if (!chain) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainId}`);
+    const targets = catalog.chains.filter((chain) => chain.chainKey === chainKey);
+    if (targets.length === 0) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainKey}`);
+    assertRootFamilyStaysEnabled(owner, catalog.chains, targets, enabled);
     const normalized = normalizeCatalogOwner(owner);
-    this.chainPreferences.get(`${normalized.chain}|${normalized.address}`)!.set(chainId, trusted);
-    return { ...chain, trusted };
+    const preferences = this.chainPreferences.get(`${normalized.chain}|${normalized.address}`)!;
+    for (const chain of targets) preferences.set(chain.id, enabled);
+    return targets.map((chain) => ({ ...chain, enabled }));
   }
 
   async setAssetTrust(owner: CatalogOwner, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
@@ -765,19 +831,45 @@ export class MemoryStore implements MosaicStore {
   async getWalletSettings(owner: CatalogOwner): Promise<WalletSettings> {
     const normalized = normalizeCatalogOwner(owner);
     const settings = this.walletSettings.get(`${normalized.chain}|${normalized.address}`);
-    return settings
-      ? { ...settings, hiddenChains: [...settings.hiddenChains] }
-      : { lockReminderMinutes: DEFAULT_LOCK_REMINDER_MINUTES, hiddenChains: [] };
+    return settings ? { ...settings } : { lockReminderMinutes: DEFAULT_LOCK_REMINDER_MINUTES };
   }
 
   async setWalletSettings(owner: CatalogOwner, settings: WalletSettings): Promise<WalletSettings> {
-    const { chains } = await this.listCatalog(owner);
-    const hiddenChains = normalizeHiddenChains(settings.hiddenChains, chains);
-    validateWalletSettings(owner, { ...settings, hiddenChains }, chains);
+    validateWalletSettings(settings);
     const normalized = normalizeCatalogOwner(owner);
-    const stored = { ...settings, hiddenChains };
-    this.walletSettings.set(`${normalized.chain}|${normalized.address}`, stored);
-    return { ...stored, hiddenChains: [...hiddenChains] };
+    this.walletSettings.set(`${normalized.chain}|${normalized.address}`, { ...settings });
+    return { ...settings };
+  }
+
+  async listZoneChainSettings(zoneId: string): Promise<ZoneChainSetting[]> {
+    const zone = [...this.zones.values()].find((record) => record.id === zoneId);
+    if (!zone) throw new MosaicMcpError('NOT_FOUND', 'zone not found');
+    const catalog = await this.listCatalog({ chain: zone.rootChain, address: zone.rootAddress });
+    const settings = this.zoneChainSettings.get(zoneId) ?? new Map<string, boolean>();
+    this.zoneChainSettings.set(zoneId, settings);
+    const out: ZoneChainSetting[] = [];
+    for (const chain of catalog.chains.filter((chain) => chain.network === zone.network)) {
+      let enabled = settings.get(chain.id);
+      if (enabled === undefined) {
+        // Pre-existing vaults and chains added after creation copy the account-level value.
+        enabled = chain.enabled;
+        settings.set(chain.id, enabled);
+      }
+      out.push({
+        chainId: chain.id, chainKey: chain.chainKey, name: chain.name,
+        family: chain.family, network: chain.network, evmChainId: chain.evmChainId, enabled,
+      });
+    }
+    return out;
+  }
+
+  async setZoneChainEnabled(zoneId: string, chainKey: string, enabled: boolean): Promise<ZoneChainSetting[]> {
+    const settings = await this.listZoneChainSettings(zoneId);
+    const targets = settings.filter((setting) => setting.chainKey === chainKey);
+    if (targets.length === 0) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainKey}`);
+    const stored = this.zoneChainSettings.get(zoneId)!;
+    for (const target of targets) stored.set(target.chainId, enabled);
+    return settings.map((setting) => (setting.chainKey === chainKey ? { ...setting, enabled } : setting));
   }
 
   async upsertCustomChain(record: CustomChainRecord): Promise<void> {

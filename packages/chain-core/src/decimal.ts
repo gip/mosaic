@@ -72,6 +72,11 @@ export function mulRatio(a: string, n: bigint, d: bigint, decimals = PRICE_DECIM
   return formatScaled((parseScaled(a, decimals) * n) / d, decimals);
 }
 
+/** a + b as a decimal string (exact at `decimals` fractional digits). */
+export function addDecimals(a: string, b: string, decimals = PRICE_DECIMALS): string {
+  return formatScaled(parseScaled(a, decimals) + parseScaled(b, decimals), decimals);
+}
+
 /** Compare two decimal strings numerically: -1, 0, or 1. */
 export function cmpDecimals(a: string, b: string): number {
   const aScaled = parseScaled(a, PRICE_DECIMALS);

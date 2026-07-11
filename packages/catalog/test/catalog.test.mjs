@@ -6,6 +6,12 @@ test('built-in chain and asset IDs and deployments are unique', () => {
   assert.equal(BUILTIN_CHAINS.length, 6);
   assert.equal(BUILTIN_ASSETS.length, 5);
   assert.equal(new Set(BUILTIN_CHAINS.map(({ id }) => id)).size, BUILTIN_CHAINS.length);
+  // Each chainKey groups exactly one chain per network.
+  for (const { chainKey } of BUILTIN_CHAINS) {
+    const group = BUILTIN_CHAINS.filter((chain) => chain.chainKey === chainKey);
+    assert.equal(new Set(group.map(({ network }) => network)).size, group.length);
+    assert.ok(group.every(({ family }) => family === group[0].family));
+  }
   assert.equal(new Set(BUILTIN_ASSETS.map(({ id }) => id)).size, BUILTIN_ASSETS.length);
   for (const asset of BUILTIN_ASSETS) {
     assert.equal(new Set(asset.deployments.map(({ chainId }) => chainId)).size, asset.deployments.length);
@@ -25,8 +31,8 @@ test('official stablecoin deployment addresses are pinned', () => {
   assert.deepEqual(rlusd.deployments.map(({ chainId }) => chainId), ['xrpl-mainnet', 'xrpl-testnet']);
 });
 
-test('anonymous defaults trust every built-in', () => {
+test('anonymous defaults enable every built-in chain and allow every asset', () => {
   const catalog = defaultCatalogSnapshot();
-  assert.ok(catalog.chains.every(({ trusted }) => trusted));
+  assert.ok(catalog.chains.every(({ enabled }) => enabled));
   assert.ok(catalog.assets.every(({ trustState }) => trustState === 'allowed'));
 });

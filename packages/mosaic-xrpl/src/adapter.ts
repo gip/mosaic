@@ -5,7 +5,7 @@ import {
   isZeroDecimal,
   mulDecimals,
   xrpToDrops,
-} from '../decimal.js';
+} from '@mosaic/chain-core';
 import type {
   AdapterFetchOptions,
   AdapterStreamEvent,
@@ -21,7 +21,7 @@ import type {
   QuoteSample,
   QuoteSurface,
   StreamHandle,
-} from '../types.js';
+} from '@mosaic/chain-core';
 
 export const XRPL_HTTP_ENDPOINTS: Record<Network, string> = {
   mainnet: 'https://xrplcluster.com',
@@ -179,7 +179,7 @@ function bestSourceAmount(alternatives: PathAlternative[]): string | null {
   return best;
 }
 
-interface XrplRpcResult {
+export interface XrplRpcResult {
   status?: string;
   error?: string;
   error_message?: string;
@@ -187,6 +187,8 @@ interface XrplRpcResult {
   offers?: XrplOffer[];
   asks?: XrplOffer[];
   bids?: XrplOffer[];
+  /** Command-specific payload fields (account_data, lines, …). */
+  [key: string]: unknown;
 }
 
 function assertRpcSuccess(result: XrplRpcResult | undefined): XrplRpcResult {
@@ -197,21 +199,30 @@ function assertRpcSuccess(result: XrplRpcResult | undefined): XrplRpcResult {
   return result;
 }
 
+/** Per-request outcome of a settled WS batch: a result or the rippled error code. */
+export interface XrplBatchOutcome {
+  result?: XrplRpcResult;
+  error?: string;
+}
+
 /**
- * Fire a batch of commands over an ephemeral WebSocket and resolve with the
- * id-ordered results. Used for one-shot fetches: browsers cannot reach most
- * XRPL JSON-RPC endpoints (no CORS headers), while the WS endpoints work
- * everywhere.
+ * Fire a batch of commands over an ephemeral WebSocket and resolve with
+ * id-ordered per-request outcomes once every request has been answered.
+ * Used for one-shot fetches: browsers cannot reach most XRPL JSON-RPC
+ * endpoints (no CORS headers), while the WS endpoints work everywhere.
+ * Per-request errors (e.g. `actNotFound`) are outcomes, not rejections;
+ * only transport failures reject.
  */
-function wsRequestBatch(
+export function wsRequestBatchSettled(
   webSocket: typeof WebSocket,
   url: string,
   requests: Record<string, unknown>[],
   signal: AbortSignal | undefined,
-): Promise<XrplRpcResult[]> {
+): Promise<XrplBatchOutcome[]> {
+  if (requests.length === 0) return Promise.resolve([]);
   return new Promise((resolve, reject) => {
     const ws = new webSocket(url);
-    const results: XrplRpcResult[] = new Array(requests.length) as XrplRpcResult[];
+    const outcomes: XrplBatchOutcome[] = new Array(requests.length) as XrplBatchOutcome[];
     let remaining = requests.length;
     let settled = false;
     const finish = (fn: () => void) => {
@@ -236,17 +247,29 @@ function wsRequestBatch(
         return;
       }
       if (typeof msg.id !== 'number' || msg.id < 1 || msg.id > requests.length) return;
-      if (msg.status !== 'success' || !msg.result) {
-        finish(() =>
-          reject(new Error(`XRPL request failed: ${msg.error_message ?? msg.error ?? 'unknown error'}`)),
-        );
-        return;
-      }
-      results[msg.id - 1] = { ...msg.result, status: 'success' };
-      if (--remaining === 0) finish(() => resolve(results));
+      if (outcomes[msg.id - 1] !== undefined) return;
+      outcomes[msg.id - 1] =
+        msg.status === 'success' && msg.result
+          ? { result: { ...msg.result, status: 'success' } }
+          : { error: msg.error ?? msg.error_message ?? 'unknown error' };
+      if (--remaining === 0) finish(() => resolve(outcomes));
     };
     ws.onerror = () => finish(() => reject(new Error('XRPL WebSocket error')));
     ws.onclose = () => finish(() => reject(new Error('XRPL WebSocket closed')));
+  });
+}
+
+/** Strict batch: any per-request error rejects the whole batch. */
+async function wsRequestBatch(
+  webSocket: typeof WebSocket,
+  url: string,
+  requests: Record<string, unknown>[],
+  signal: AbortSignal | undefined,
+): Promise<XrplRpcResult[]> {
+  const outcomes = await wsRequestBatchSettled(webSocket, url, requests, signal);
+  return outcomes.map((outcome) => {
+    if (!outcome.result) throw new Error(`XRPL request failed: ${outcome.error ?? 'unknown error'}`);
+    return outcome.result;
   });
 }
 

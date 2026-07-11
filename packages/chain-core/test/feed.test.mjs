@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { StreamingFeed, UnsupportedChainError, createOrderBookFeed } from '../dist/index.js';
+import { StreamingFeed } from '../dist/index.js';
 
 const REQ = {
   chain: 'stellar',
@@ -177,31 +177,4 @@ test('a synchronously-throwing adapter stops the feed with an error event', () =
     ['status', 'error', 'status'],
   );
   assert.match(events[1].error.message, /bad asset spec/);
-});
-
-test('createOrderBookFeed: evm rejects with UnsupportedChainError at creation', async () => {
-  await assert.rejects(
-    createOrderBookFeed({ ...REQ, chain: 'evm' }),
-    (err) => {
-      assert.ok(err instanceof UnsupportedChainError);
-      assert.equal(err.code, 'UNSUPPORTED_CHAIN');
-      assert.equal(err.chain, 'evm');
-      assert.match(err.message, /not supported on chain 'evm'/);
-      return true;
-    },
-  );
-});
-
-test('createOrderBookFeed: stellar and xrpl construct without network I/O', async () => {
-  const stellar = await createOrderBookFeed(REQ);
-  assert.equal(stellar.status, 'idle');
-  assert.equal(stellar.latest, null);
-  const xrpl = await createOrderBookFeed({
-    ...REQ,
-    chain: 'xrpl',
-    quote: { kind: 'issued', code: 'RLUSD', issuer: 'rMxCK' },
-    fundedAccounts: { base: 'rXrpFunded', quote: 'rRlusdFunded' },
-  });
-  assert.equal(xrpl.status, 'idle');
-  assert.equal(xrpl.request.chain, 'xrpl');
 });

@@ -123,4 +123,30 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE wallet_settings ADD COLUMN hidden_chains TEXT NOT NULL DEFAULT '';
   `,
+  `
+  ALTER TABLE chain_preferences RENAME COLUMN trusted TO enabled;
+
+  -- Fold the retired "Active" flag (wallet_settings.hidden_chains) into enabled.
+  UPDATE chain_preferences cp SET enabled = FALSE
+  FROM wallet_settings ws
+  WHERE ws.root_chain = cp.root_chain AND ws.root_address = cp.root_address
+    AND cp.chain_id = ANY(string_to_array(ws.hidden_chains, ','));
+
+  -- One flag per logical chain: builtin testnet variants take the mainnet value.
+  UPDATE chain_preferences cp SET enabled = m.enabled, updated_at = now()
+  FROM chain_preferences m
+  WHERE m.root_chain = cp.root_chain AND m.root_address = cp.root_address
+    AND (cp.chain_id, m.chain_id) IN (('base-sepolia','base-mainnet'),
+        ('xrpl-testnet','xrpl-mainnet'),('stellar-testnet','stellar-mainnet'));
+
+  ALTER TABLE wallet_settings DROP COLUMN hidden_chains;
+
+  CREATE TABLE zone_chain_settings (
+    zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
+    chain_id TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (zone_id, chain_id)
+  );
+  `,
 ];

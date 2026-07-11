@@ -1,4 +1,4 @@
-import type { Asset, DexChain, OrderBookRequest } from '@mosaic/dex';
+import type { Asset, DexChain, OrderBookRequest } from '@mosaic/chain-core';
 
 /** Which market-data sources a pair card displays. */
 export interface PairSources {

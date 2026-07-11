@@ -33,19 +33,30 @@ the secret is always one wallet signature away.
   connectivity behind one `RootWalletConnector` interface. Subpath exports
   (`./evm`, `./xrpl`, `./stellar`, `./qr`) so the frontend lazy-loads per chain.
   The MCP server must never depend on this package.
-- `packages/dex` — `@mosaic/dex`: isomorphic (browser + Node ≥22) DEX market
-  data with zero runtime deps. Two feeds behind one lifecycle interface
-  (`subscribe/start/stop/refresh/latest/status`): `createOrderBookFeed`
-  (CLOB, streamed — Stellar via Horizon SSE over `fetch`, XRPL via native
-  `WebSocket` `subscribe` books + debounced `book_offers` refetch) and
-  `createQuoteSurfaceFeed` (executable quotes at sampled trade sizes via
+- `packages/chain-core` — `@mosaic/chain-core`: chain-agnostic interfaces and
+  feed lifecycle shared by the chain packages; isomorphic (browser + Node ≥22),
+  zero runtime deps. Types for order books, quote surfaces, and balances plus
+  the feed classes (`StreamingFeed`, `SurfaceFeed`, `PollingBalancesFeed`)
+  behind one lifecycle interface (`subscribe/start/stop/refresh/latest/status`).
+  Prices/amounts are decimal strings (BigInt fixed-point in `src/decimal.ts`),
+  never floats. No chain-specific code here, ever.
+- `packages/mosaic-xrpl` / `packages/mosaic-stellar` / `packages/mosaic-evm` —
+  `@mosaic/xrpl`, `@mosaic/stellar`, `@mosaic/evm`: all chain-specific code
+  lives in these packages; isomorphic, no runtime deps beyond
+  `@mosaic/chain-core`. Each exports the same factory surface:
+  `createOrderBookFeed` (CLOB, streamed — Stellar via Horizon SSE over
+  `fetch`, XRPL via native `WebSocket` `subscribe` books + debounced
+  `book_offers` refetch), `createQuoteSurfaceFeed` (executable quotes via
   chain pathfinding — XRPL streams WS `path_find` cycles per ledger close,
-  Stellar polls `/paths/strict-send|receive`). EVM throws
-  `UnsupportedChainError`. Subpath exports `./stellar`, `./xrpl`, `./evm`;
-  factories dynamic-import per chain. Prices/amounts are decimal strings
-  (BigInt fixed-point in `src/decimal.ts`), never floats. XRPL gotchas are
-  documented in `src/xrpl/index.ts` (public mainnet servers refuse
-  pathfinding; exact-receive form only; source XRP balance caps results).
+  Stellar polls `/paths/strict-send|receive`), and `createBalancesFeed`
+  (polled balances for known assets — XRPL `account_info`/`account_lines`
+  over an ephemeral WS, Stellar Horizon `/accounts/{id}`, EVM
+  `eth_getBalance` + ERC-20 `balanceOf` on Base). EVM dex factories throw
+  `UnsupportedChainError`. The frontend picks the package per chain via
+  `frontend/src/chains/load.ts` (dynamic import, one lazy chunk per chain).
+  XRPL gotchas are documented in `packages/mosaic-xrpl/src/adapter.ts`
+  (public mainnet servers refuse pathfinding; exact-receive form only;
+  source XRP balance caps results).
 - `packages/mcp` — `@mosaic/mcp`: MCP server (Streamable HTTP) with Postgres.
   Session auth (per-chain signature verification, single-use nonces), zone
   registry, encrypted blob storage, Xaman payload proxy, XRPL

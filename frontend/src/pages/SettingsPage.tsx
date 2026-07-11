@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Network } from '@mosaic/zone-keys';
 import Banner from '../components/ui/Banner';
+import ChainSettingsModal from '../components/ChainSettingsModal';
 import { useSettings } from '../contexts/SettingsContext';
 import { useSession } from '../contexts/SessionContext';
 import { useCatalog } from '../contexts/CatalogContext';
@@ -8,37 +9,51 @@ import { useWalletSettings } from '../contexts/WalletSettingsContext';
 import { LOCK_REMINDER_OPTIONS } from '../lockReminderOptions';
 
 const NETWORKS: { id: Network; label: string; sub: string }[] = [
-  { id: 'mainnet', label: 'Mainnet', sub: 'Base · XRPL · Stellar pubnet' },
-  { id: 'testnet', label: 'Testnet', sub: 'Base Sepolia · XRPL testnet · Stellar testnet' },
+  { id: 'mainnet', label: 'Mainnet', sub: 'XRPL · Stellar pubnet · Base' },
+  { id: 'testnet', label: 'Testnet', sub: 'XRPL testnet · Stellar testnet · Base Sepolia' },
 ];
 
 export default function SettingsPage() {
   const { network, setNetwork } = useSettings();
   const { session } = useSession();
-  const { chains, error, loading, readOnly, setChainTrusted } = useCatalog();
-  const {
-    lockReminderMinutes, setLockReminderMinutes, hiddenChains, setChainHidden, readOnly: lockReadOnly,
-  } = useWalletSettings();
-  const [actionError, setActionError] = useState<string | null>(null);
+  const { chains, error, loading, readOnly, setChainEnabled } = useCatalog();
+  const { lockReminderMinutes, setLockReminderMinutes, readOnly: lockReadOnly } = useWalletSettings();
+  const [chainsOpen, setChainsOpen] = useState(false);
   const [lockError, setLockError] = useState<string | null>(null);
 
-  async function updateChain(chainId: string, trusted: boolean) {
-    setActionError(null);
-    try {
-      await setChainTrusted(chainId, trusted);
-    } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause));
+  // One row per logical chain: the network variants share a chainKey and
+  // always carry the same enabled flag; custom chains are single-network.
+  const chainGroups = useMemo(() => {
+    const byKey = new Map<string, typeof chains>();
+    for (const chain of chains) {
+      const group = byKey.get(chain.chainKey);
+      if (group) group.push(chain);
+      else byKey.set(chain.chainKey, [chain]);
     }
-  }
+    return [...byKey.entries()].map(([chainKey, variants]) => ({
+      chainKey,
+      name: (variants.find(({ network: tag }) => tag === 'mainnet') ?? variants[0]!).name,
+      family: variants[0]!.family,
+      source: variants[0]!.source,
+      networks: variants.map(({ network: tag }) => tag),
+      enabled: variants.every(({ enabled }) => enabled),
+    }));
+  }, [chains]);
 
-  async function updateChainActive(chainId: string, active: boolean) {
-    setActionError(null);
-    try {
-      await setChainHidden(chainId, !active);
-    } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause));
-    }
-  }
+  const chainOptions = chainGroups.map((group) => {
+    const enabledFamilyGroups = chainGroups.filter((peer) => peer.family === group.family && peer.enabled);
+    // The root wallet's family always keeps one enabled chain (the server also enforces this per network).
+    const loginLocked = session?.chain === group.family && group.enabled && enabledFamilyGroups.length <= 1;
+    return {
+      key: group.chainKey,
+      name: group.name,
+      note: `${group.family.toUpperCase()}${group.source === 'database' ? ' · custom' : ''}${
+        group.networks.length === 1 ? ` · ${group.networks[0]} only` : ''}`,
+      enabled: group.enabled,
+      lockedReason: loginLocked ? 'The chain you logged in with cannot be disabled.' : undefined,
+    };
+  });
+  const enabledNames = chainGroups.filter(({ enabled }) => enabled).map(({ name }) => name);
 
   async function updateLockReminder(minutes: number) {
     setLockError(null);
@@ -100,57 +115,28 @@ export default function SettingsPage() {
       <div className="zone-card catalog-settings">
         <h3>Supported chains</h3>
         <p>
-          Inactive chains are hidden everywhere in Mosaic except here. Chain trust controls catalog-driven
-          selectors. Neither changes the derivation network or existing vaults.
+          Disabled chains are hidden everywhere in Mosaic. A toggle applies to both Mainnet and Testnet;
+          new vaults copy these settings at creation, and existing vaults keep their own.
         </p>
-        {readOnly && <Banner tone="info">Log in to manage chain visibility and trust. Built-in defaults are shown.</Banner>}
+        {readOnly && <Banner tone="info">Log in to manage supported chains. Built-in defaults are shown.</Banner>}
         {error && <Banner tone="err">{error}</Banner>}
-        {actionError && <Banner tone="err">{actionError}</Banner>}
         {loading && <span className="tile-note">Loading wallet preferences…</span>}
-        {(['mainnet', 'testnet'] as const).map((tag) => (
-          <div className="chain-group" key={tag}>
-            <h4>{tag === 'mainnet' ? 'Mainnet' : 'Testnet'}</h4>
-            {chains.filter((chain) => chain.network === tag).map((chain) => {
-              const hidden = hiddenChains.includes(chain.id);
-              const activeFamilyPeers = chains.filter(
-                (peer) => peer.network === tag && peer.family === chain.family && !hiddenChains.includes(peer.id),
-              );
-              // The root wallet's family always keeps one active chain per network.
-              const loginLocked = session?.chain === chain.family && !hidden && activeFamilyPeers.length <= 1;
-              return (
-                <div className="chain-trust-row" key={chain.id}>
-                  <span>
-                    <strong>{chain.name}</strong>
-                    <span className="tile-note">
-                      {chain.family.toUpperCase()}{chain.source === 'database' ? ' · custom' : ''}{hidden ? ' · hidden' : ''}
-                    </span>
-                  </span>
-                  <div className="chain-row-toggles">
-                    <label title={loginLocked ? 'The chain you logged in with stays active.' : undefined}>
-                      Active
-                      <input
-                        type="checkbox"
-                        checked={!hidden}
-                        disabled={lockReadOnly || loginLocked}
-                        onChange={(event) => void updateChainActive(chain.id, event.target.checked)}
-                      />
-                    </label>
-                    <label>
-                      Trusted
-                      <input
-                        type="checkbox"
-                        checked={chain.trusted}
-                        disabled={readOnly}
-                        onChange={(event) => void updateChain(chain.id, event.target.checked)}
-                      />
-                    </label>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ))}
+        <div className="chain-summary">
+          <span>{enabledNames.length > 0 ? enabledNames.join(' · ') : 'No chains enabled'}</span>
+          <button type="button" className="btn-sm" disabled={readOnly} onClick={() => setChainsOpen(true)}>
+            Change
+          </button>
+        </div>
       </div>
+      {chainsOpen && (
+        <ChainSettingsModal
+          title="Supported chains"
+          description="A toggle applies to both Mainnet and Testnet. The chain you logged in with cannot be disabled. New vaults copy these settings; existing vaults keep their own."
+          options={chainOptions}
+          onToggle={setChainEnabled}
+          onClose={() => setChainsOpen(false)}
+        />
+      )}
     </div>
   );
 }

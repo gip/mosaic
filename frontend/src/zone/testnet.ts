@@ -5,7 +5,6 @@ import { cacheTestnetDeviceKey, cacheZoneSecret, readTestnetDeviceKey } from './
 import type { DerivedVaultAddress } from './unlock';
 
 interface DeviceHeader { v: 1; alg: 'aes-256-gcm-device-v1'; ivB64: string }
-interface PairingPayload { v: 1; ref: ZoneRef; commitment: string; keyB64: string }
 
 function b64(bytes: Uint8Array): string {
   let value = '';
@@ -48,7 +47,7 @@ export async function createTestnetVault(token: string, ref: ZoneRef): Promise<v
 
 export async function unlockTestnetVault(token: string, ref: ZoneRef, commitment: string, entries: ZoneAddressItem[]): Promise<DerivedVaultAddress[]> {
   const deviceKey = await readTestnetDeviceKey(ref);
-  if (!deviceKey) throw new Error('Pair this device with an already unlocked copy of the vault.');
+  if (!deviceKey) throw new Error('This device does not hold the vault key. Testnet vaults unlock only on the device that created them.');
   try {
     const blob = await api.blobGet(token, ref.zone, 'device');
     const header = blob.header as unknown as DeviceHeader;
@@ -62,27 +61,4 @@ export async function unlockTestnetVault(token: string, ref: ZoneRef, commitment
       return derive(secret, ref, entries);
     } finally { secret.fill(0); }
   } finally { deviceKey.fill(0); }
-}
-
-export async function exportTestnetPairingCode(ref: ZoneRef, commitment: string): Promise<string> {
-  const key = await readTestnetDeviceKey(ref);
-  if (!key) throw new Error('This device does not hold the pairing key.');
-  try {
-    const payload: PairingPayload = { v: 1, ref, commitment, keyB64: b64(key) };
-    return btoa(JSON.stringify(payload)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-  } finally { key.fill(0); }
-}
-
-export async function importTestnetPairingCode(ref: ZoneRef, commitment: string, code: string): Promise<void> {
-  const normalized = code.trim().replaceAll('-', '+').replaceAll('_', '/');
-  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
-  const payload = JSON.parse(atob(padded)) as PairingPayload;
-  if (payload.v !== 1 || canonicalJson(payload.ref) !== canonicalJson(ref) || payload.commitment !== commitment) {
-    throw new Error('Pairing code belongs to a different vault, wallet, or network.');
-  }
-  const key = unb64(payload.keyB64);
-  try {
-    if (key.length !== 32) throw new Error('Invalid pairing key');
-    await cacheTestnetDeviceKey(ref, key);
-  } finally { key.fill(0); }
 }

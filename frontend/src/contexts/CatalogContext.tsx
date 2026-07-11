@@ -20,7 +20,7 @@ interface CatalogValue extends CatalogSnapshot {
   error: string | null;
   readOnly: boolean;
   refresh: () => Promise<void>;
-  setChainTrusted: (chainId: string, trusted: boolean) => Promise<void>;
+  setChainEnabled: (chainKey: string, enabled: boolean) => Promise<void>;
   setAssetState: (assetId: string, state: AssetTrustState) => Promise<void>;
 }
 
@@ -92,13 +92,15 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
     };
   }, [session]);
 
-  const setChainTrusted = useCallback(
-    async (chainId: string, trusted: boolean) => {
-      if (!session) throw new Error('Log in to change chain trust.');
-      const updated = await api.chainTrustSet(session.token, chainId, trusted);
+  const setChainEnabled = useCallback(
+    async (chainKey: string, enabled: boolean) => {
+      if (!session) throw new Error('Log in to change chain support.');
+      // One toggle updates every network variant of the logical chain.
+      const updated = await api.chainEnabledSet(session.token, chainKey, enabled);
+      const byId = new Map(updated.map((chain) => [chain.id, chain]));
       setCatalog((current) => ({
         ...current,
-        chains: current.chains.map((chain) => (chain.id === updated.id ? updated : chain)),
+        chains: current.chains.map((chain) => byId.get(chain.id) ?? chain),
       }));
     },
     [session],
@@ -123,10 +125,10 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
       error,
       readOnly: !session,
       refresh,
-      setChainTrusted,
+      setChainEnabled,
       setAssetState,
     }),
-    [catalog, loading, error, session, refresh, setChainTrusted, setAssetState],
+    [catalog, loading, error, session, refresh, setChainEnabled, setAssetState],
   );
 
   return <CatalogContext.Provider value={value}>{children}</CatalogContext.Provider>;

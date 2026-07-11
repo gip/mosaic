@@ -737,6 +737,48 @@ tbody tr:hover {
 .app-banner {
   margin: var(--sp-3) var(--sp-5) 0;
 }
+/* Trusted-asset totals for unlocked vaults, directly under the top bar. */
+.balances-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-5);
+  padding: var(--sp-2) var(--sp-5);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+  font-size: var(--fs-sm);
+}
+.balances-strip-group {
+  display: inline-flex;
+  align-items: baseline;
+  /* Matches the dot's inner gap so spacing around each dot is symmetric. */
+  gap: var(--sp-1);
+}
+.balances-strip-group[data-status='connecting'],
+.balances-strip-group[data-status='reconnecting'] {
+  opacity: 0.6;
+}
+.balances-strip-chain {
+  margin-right: var(--sp-2);
+  color: var(--fg-muted);
+}
+.balances-strip-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+}
+/* "0 XRP · 1.2 USDC": a dot between entries, amounts brighter than symbols. */
+.balances-strip-item + .balances-strip-item::before {
+  content: '·';
+  color: var(--fg-dim);
+}
+.balances-strip-item > .mono {
+  color: var(--fg-bright);
+}
+.balances-strip-symbol,
+.balances-strip-pending {
+  color: var(--fg-muted);
+}
 .lock-reminder-field {
   display: inline-flex;
   align-items: center;

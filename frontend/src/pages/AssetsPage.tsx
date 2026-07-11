@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { AssetTrustState } from '@mosaic/catalog';
 import Banner from '../components/ui/Banner';
 import { useCatalog } from '../contexts/CatalogContext';
-import { useActiveChains } from '../hooks/useActiveChains';
+import { useEnabledChains } from '../hooks/useEnabledChains';
 
 const STATES: { id: AssetTrustState; label: string }[] = [
   { id: 'hidden', label: 'Hidden' },
@@ -16,11 +16,11 @@ function shortAddress(address: string): string {
 
 export default function AssetsPage() {
   const { assets, loading, error, readOnly, setAssetState } = useCatalog();
-  const { activeChains } = useActiveChains();
+  const { enabledChains } = useEnabledChains();
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const chainNames = new Map(activeChains.map((chain) => [chain.id, chain.name]));
-  // Deployments on hidden chains never render; an asset with none left disappears too.
+  const chainNames = new Map(enabledChains.map((chain) => [chain.id, chain.name]));
+  // Deployments on disabled chains never render; an asset with none left disappears too.
   const visibleAssets = assets
     .map((asset) => ({ ...asset, deployments: asset.deployments.filter((item) => chainNames.has(item.chainId)) }))
     .filter((asset) => asset.deployments.length > 0);

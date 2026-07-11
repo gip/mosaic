@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { FeedStatus, OrderBookRequest, OrderBookSnapshot } from '@mosaic/dex';
+import type { FeedStatus, OrderBookRequest, OrderBookSnapshot } from '@mosaic/chain-core';
+import { loadChainModule } from '../../chains/load';
 
 export interface OrderBookFeedState {
   snapshot: OrderBookSnapshot | null;
@@ -8,9 +9,9 @@ export interface OrderBookFeedState {
 }
 
 /**
- * Subscribe to a streaming order-book feed for the given pair. `@mosaic/dex`
- * is imported dynamically so it stays out of the entry chunk; the feed is
- * stopped on unmount, when the request changes, or when `enabled` is false.
+ * Subscribe to a streaming order-book feed for the given pair. The chain
+ * package is imported dynamically so it stays out of the entry chunk; the feed
+ * is stopped on unmount, when the request changes, or when `enabled` is false.
  */
 const INITIAL_STATE: OrderBookFeedState = { snapshot: null, status: 'idle', error: null };
 
@@ -35,8 +36,9 @@ export function useOrderBookFeed(request: OrderBookRequest, enabled = true): Ord
 
     void (async () => {
       try {
-        const { createOrderBookFeed } = await import('@mosaic/dex');
-        const feed = await createOrderBookFeed(JSON.parse(requestKey) as OrderBookRequest);
+        const request = JSON.parse(requestKey) as OrderBookRequest;
+        const { createOrderBookFeed } = await loadChainModule(request.chain);
+        const feed = createOrderBookFeed(request);
         const unsubscribe = feed.subscribe((event) => {
           if (event.type === 'snapshot') {
             setState((s) => ({ ...s, snapshot: event.snapshot, error: null }));

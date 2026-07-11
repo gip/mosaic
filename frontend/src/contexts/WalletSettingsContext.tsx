@@ -9,15 +9,11 @@ interface WalletSettingsValue {
   /** 0 disables the Mainnet lock reminder. */
   lockReminderMinutes: number;
   setLockReminderMinutes: (minutes: number) => Promise<void>;
-  /** Catalog chain ids hidden everywhere in the UI except settings. */
-  hiddenChains: string[];
-  setChainHidden: (chainId: string, hidden: boolean) => Promise<void>;
   readOnly: boolean;
 }
 
 const DEFAULT_SETTINGS: WalletSettingsResult = {
   lockReminderMinutes: DEFAULT_LOCK_REMINDER_MINUTES,
-  hiddenChains: [],
 };
 
 const WalletSettingsContext = createContext<WalletSettingsValue | null>(null);
@@ -55,25 +51,13 @@ export function WalletSettingsProvider({ children }: { children: ReactNode }) {
     setSettings(await api.settingsSet(token, { lockReminderMinutes: minutes }));
   }, [token]);
 
-  const hiddenChains = settings.hiddenChains;
-
-  const setChainHidden = useCallback(async (chainId: string, hidden: boolean) => {
-    if (!token) throw new Error('Log in to change wallet settings.');
-    const next = hidden
-      ? [...hiddenChains, chainId]
-      : hiddenChains.filter((id) => id !== chainId);
-    setSettings(await api.settingsSet(token, { hiddenChains: next }));
-  }, [token, hiddenChains]);
-
   const value = useMemo(
     () => ({
       lockReminderMinutes: settings.lockReminderMinutes,
       setLockReminderMinutes,
-      hiddenChains,
-      setChainHidden,
       readOnly: !session,
     }),
-    [settings.lockReminderMinutes, setLockReminderMinutes, hiddenChains, setChainHidden, session],
+    [settings.lockReminderMinutes, setLockReminderMinutes, session],
   );
   return <WalletSettingsContext.Provider value={value}>{children}</WalletSettingsContext.Provider>;
 }

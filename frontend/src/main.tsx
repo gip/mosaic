@@ -12,6 +12,7 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import { SessionProvider } from './contexts/SessionContext';
 import { CatalogProvider } from './contexts/CatalogContext';
+import { BalancesProvider } from './contexts/BalancesContext';
 import { VaultProvider } from './contexts/VaultContext';
 import { WalletSettingsProvider } from './contexts/WalletSettingsContext';
 import SettingsLayout from './pages/SettingsLayout';
@@ -34,7 +35,9 @@ function AppRoute() {
           <WalletSettingsProvider>
             <VaultProvider>
               <CatalogProvider>
-                <App />
+                <BalancesProvider>
+                  <App />
+                </BalancesProvider>
               </CatalogProvider>
             </VaultProvider>
           </WalletSettingsProvider>

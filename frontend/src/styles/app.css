@@ -223,6 +223,18 @@
 .vault-meta div { display: flex; gap: var(--sp-2); }
 .vault-meta dt { color: var(--fg-dim); }
 .vault-meta dd { margin: 0; }
+/* Rules under the metadata and chain-summary rows of an expanded vault card. */
+.vault-body > .vault-meta,
+.vault-body > .chain-summary {
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.chain-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
 
 .settings-head {
   align-items: flex-end;
@@ -257,17 +269,26 @@
   gap: var(--sp-2);
 }
 
+/* Each new chain section starts with a separator rule. */
+.address-group + .address-group {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
 .address-group-head {
   margin-bottom: var(--sp-2);
 }
 
 .address-group-head h3 {
   margin: 0;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-md);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-dim);
+}
+
+.address-group-note {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--fg-muted);
 }
 
 .address-create input {
@@ -282,8 +303,13 @@
 }
 
 .address-item {
-  padding: var(--sp-3) 0;
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) 0;
   border-top: 1px solid var(--line);
+}
+/* The chain heading and its addresses read as one block: no rule under the head. */
+.address-group-head + .address-item {
+  padding-top: 0;
+  border-top: 0;
 }
 .address-item:last-child { padding-bottom: 0; }
 
@@ -325,6 +351,39 @@
   background: var(--bg-inset);
 }
 .address-copy .copy-done { color: var(--ok); }
+
+.address-balances {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  /* Entries are joined by dots; keep the gap equal to the dot's inner gap so
+     spacing around each dot is symmetric. */
+  gap: var(--sp-1);
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+}
+.address-balance {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+}
+/* "0 XRP · 1.2 USDC · Not activated yet": dots between entries, amounts brighter than symbols. */
+.address-balance + .address-balance::before,
+.address-balance ~ .address-balance-note::before {
+  content: '·';
+  color: var(--fg-dim);
+}
+/* The note is plain text, not a gapped flex row: space the dot itself. */
+.address-balance ~ .address-balance-note::before {
+  margin-right: var(--sp-1);
+}
+.address-balance > .mono {
+  color: var(--fg-bright);
+}
+.address-balance-symbol,
+.address-balance-note {
+  color: var(--fg-muted);
+}
 
 .address-txs-empty {
   margin: 2px 0 0;

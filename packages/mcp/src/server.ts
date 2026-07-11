@@ -144,7 +144,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   reg(
     'catalog_list',
     {
-      description: 'List supported chains and assets with trust preferences for the authenticated root wallet.',
+      description: 'List supported chains (with enabled state) and assets (with trust preferences) for the authenticated root wallet.',
       inputSchema: { token: z.string() },
     },
     async (args) => {
@@ -154,18 +154,21 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   );
 
   reg(
-    'chain_trust_set',
+    'chain_enabled_set',
     {
-      description: 'Set whether the authenticated root wallet trusts a supported chain.',
-      inputSchema: { token: z.string(), chainId: z.string().min(1), trusted: z.boolean() },
+      description:
+        'Enable or disable a supported chain for the authenticated root wallet. Applies to every network '
+        + 'variant of the chain (mainnet and testnet); new vaults copy these settings at creation. Returns '
+        + 'the updated chain variants.',
+      inputSchema: { token: z.string(), chainKey: z.string().min(1), enabled: z.boolean() },
     },
     async (args) => {
       const session = await requireSession(args);
       return ok(
-        await store.setChainTrust(
+        await store.setChainEnabled(
           { chain: session.chain, address: session.address },
-          String(args.chainId),
-          Boolean(args.trusted),
+          String(args.chainKey),
+          Boolean(args.enabled),
         ),
       );
     },
@@ -192,7 +195,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   reg(
     'settings_get',
     {
-      description: 'Read per-wallet settings (Mainnet vault lock reminder, hidden chains) for the authenticated root wallet.',
+      description: 'Read per-wallet settings (Mainnet vault lock reminder) for the authenticated root wallet.',
       inputSchema: { token: z.string() },
     },
     async (args) => {
@@ -206,12 +209,10 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     {
       description:
         'Update per-wallet settings; omitted fields keep their current value. lockReminderMinutes must be one of '
-        + '0 (disabled), 1, 3, 5, 10, 30. hiddenChains lists catalog chain ids the UI hides everywhere except '
-        + "settings; the session's root chain family must keep at least one active chain per network.",
+        + '0 (disabled), 1, 3, 5, 10, 30.',
       inputSchema: {
         token: z.string(),
         lockReminderMinutes: z.number().int().optional(),
-        hiddenChains: z.array(z.string()).optional(),
       },
     },
     async (args) => {
@@ -220,7 +221,6 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       const current = await store.getWalletSettings(owner);
       return ok(await store.setWalletSettings(owner, {
         lockReminderMinutes: args.lockReminderMinutes === undefined ? current.lockReminderMinutes : Number(args.lockReminderMinutes),
-        hiddenChains: (args.hiddenChains as string[] | undefined) ?? current.hiddenChains,
       }));
     },
   );
@@ -242,7 +242,23 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         createdAt: record.createdAt,
         lastUnlockedAt: record.lastUnlockedAt ?? undefined,
         addresses: await store.listZoneAddresses(record.id),
+        chains: await store.listZoneChainSettings(record.id),
       }))));
+    },
+  );
+
+  reg(
+    'zone_chain_set',
+    {
+      description:
+        'Enable or disable a chain for one owned vault. Vault chain settings start as a copy of the '
+        + 'account-level settings and change independently afterwards. Returns the vault\'s full chain list.',
+      inputSchema: { token: z.string(), zone: z.string().min(1).max(64), chainKey: z.string().min(1), enabled: z.boolean() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const zone = await requireZone(session, String(args.zone));
+      return ok(await store.setZoneChainEnabled(zone.id, String(args.chainKey), Boolean(args.enabled)));
     },
   );
 
@@ -395,6 +411,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         createdAt: record.createdAt,
         lastUnlockedAt: record.lastUnlockedAt ?? undefined,
         blobs,
+        chains: await store.listZoneChainSettings(record.id),
       });
     },
   );

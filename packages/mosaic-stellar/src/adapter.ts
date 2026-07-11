@@ -1,5 +1,4 @@
-import { cmpDecimals, divDecimals, mulRatio } from '../decimal.js';
-import { readSseStream } from '../sse.js';
+import { cmpDecimals, divDecimals, mulRatio } from '@mosaic/chain-core';
 import type {
   AdapterFetchOptions,
   AdapterStreamEvent,
@@ -13,7 +12,8 @@ import type {
   QuoteSample,
   QuoteSurface,
   StreamHandle,
-} from '../types.js';
+} from '@mosaic/chain-core';
+import { readSseStream } from './sse.js';
 
 export const HORIZON_ENDPOINTS: Record<Network, string> = {
   mainnet: 'https://horizon.stellar.org',

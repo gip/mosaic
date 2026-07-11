@@ -5,6 +5,8 @@ export type AssetTrustState = 'hidden' | 'review' | 'allowed';
 
 export interface SupportedChain {
   id: string;
+  /** Groups the mainnet/testnet variants of one logical chain; custom chains use their own id. */
+  chainKey: string;
   name: string;
   family: ChainFamily;
   network: NetworkTag;
@@ -26,8 +28,8 @@ export interface SupportedAsset {
   deployments: readonly AssetDeployment[];
 }
 
-export interface ChainWithTrust extends SupportedChain {
-  trusted: boolean;
+export interface ChainWithEnabled extends SupportedChain {
+  enabled: boolean;
 }
 
 export interface AssetWithTrust extends SupportedAsset {
@@ -35,17 +37,18 @@ export interface AssetWithTrust extends SupportedAsset {
 }
 
 export interface CatalogSnapshot {
-  chains: ChainWithTrust[];
+  chains: ChainWithEnabled[];
   assets: AssetWithTrust[];
 }
 
+// Product-wide family order: XRPL, Stellar, EVM. Catalog consumers render in this order.
 export const BUILTIN_CHAINS: readonly SupportedChain[] = [
-  { id: 'base-mainnet', name: 'Base', family: 'evm', network: 'mainnet', source: 'static', evmChainId: 8453 },
-  { id: 'base-sepolia', name: 'Base Sepolia', family: 'evm', network: 'testnet', source: 'static', evmChainId: 84532 },
-  { id: 'xrpl-mainnet', name: 'XRPL', family: 'xrpl', network: 'mainnet', source: 'static' },
-  { id: 'xrpl-testnet', name: 'XRPL Testnet', family: 'xrpl', network: 'testnet', source: 'static' },
-  { id: 'stellar-mainnet', name: 'Stellar', family: 'stellar', network: 'mainnet', source: 'static' },
-  { id: 'stellar-testnet', name: 'Stellar Testnet', family: 'stellar', network: 'testnet', source: 'static' },
+  { id: 'xrpl-mainnet', chainKey: 'xrpl', name: 'XRPL', family: 'xrpl', network: 'mainnet', source: 'static' },
+  { id: 'xrpl-testnet', chainKey: 'xrpl', name: 'XRPL Testnet', family: 'xrpl', network: 'testnet', source: 'static' },
+  { id: 'stellar-mainnet', chainKey: 'stellar', name: 'Stellar', family: 'stellar', network: 'mainnet', source: 'static' },
+  { id: 'stellar-testnet', chainKey: 'stellar', name: 'Stellar Testnet', family: 'stellar', network: 'testnet', source: 'static' },
+  { id: 'base-mainnet', chainKey: 'base', name: 'Base', family: 'evm', network: 'mainnet', source: 'static', evmChainId: 8453 },
+  { id: 'base-sepolia', chainKey: 'base', name: 'Base Sepolia', family: 'evm', network: 'testnet', source: 'static', evmChainId: 84532 },
 ] as const;
 
 export const BUILTIN_ASSETS: readonly SupportedAsset[] = [
@@ -97,7 +100,7 @@ export const BUILTIN_ASSETS: readonly SupportedAsset[] = [
 
 export function defaultCatalogSnapshot(): CatalogSnapshot {
   return {
-    chains: BUILTIN_CHAINS.map((chain) => ({ ...chain, trusted: true })),
+    chains: BUILTIN_CHAINS.map((chain) => ({ ...chain, enabled: true })),
     assets: BUILTIN_ASSETS.map((asset) => ({ ...asset, deployments: [...asset.deployments], trustState: 'allowed' })),
   };
 }

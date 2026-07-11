@@ -1,7 +1,7 @@
 {
-  "name": "@mosaic/dex",
+  "name": "@mosaic/xrpl",
   "version": "0.0.0",
-  "description": "Chain-agnostic DEX order-book feeds (Stellar, XRPL; EVM pending) with streaming updates",
+  "description": "XRPL market data (CLOB order books, path_find quote surfaces) and trusted-asset balances",
   "license": "MIT",
   "type": "module",
   "files": [
@@ -12,15 +12,15 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./stellar": "./dist/stellar/index.js",
-    "./xrpl": "./dist/xrpl/index.js",
-    "./evm": "./dist/evm/index.js",
     "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mosaic/chain-core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.12.3",

@@ -31,8 +31,8 @@ export default function LoginModal({ onClose }: { onClose: () => void }) {
       </p>
       <div className="login-tiles">
         <XamanTile />
-        <EvmTile />
         <StellarTile />
+        <EvmTile />
       </div>
     </Modal>
   );
