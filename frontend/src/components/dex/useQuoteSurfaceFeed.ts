@@ -14,10 +14,14 @@ const INITIAL_STATE: QuoteSurfaceFeedState = { surface: null, status: 'idle', er
  * Same lifecycle rules as useOrderBookFeed: dynamic import, stop on unmount /
  * request change / disable.
  */
-export function useQuoteSurfaceFeed(request: OrderBookRequest, enabled = true): QuoteSurfaceFeedState {
+export function useQuoteSurfaceFeed(
+  request: OrderBookRequest,
+  enabled = true,
+  quoteAmounts?: string[],
+): QuoteSurfaceFeedState {
   const [state, setState] = useState<QuoteSurfaceFeedState>(INITIAL_STATE);
 
-  const requestKey = enabled ? JSON.stringify(request) : '';
+  const requestKey = enabled ? JSON.stringify({ request, quoteAmounts }) : '';
 
   // Reset stale data as soon as the pair changes (state-during-render pattern).
   const [prevKey, setPrevKey] = useState(requestKey);
@@ -34,7 +38,8 @@ export function useQuoteSurfaceFeed(request: OrderBookRequest, enabled = true): 
     void (async () => {
       try {
         const { createQuoteSurfaceFeed } = await import('@mosaic/dex');
-        const feed = await createQuoteSurfaceFeed(JSON.parse(requestKey) as OrderBookRequest);
+        const config = JSON.parse(requestKey) as { request: OrderBookRequest; quoteAmounts?: string[] };
+        const feed = await createQuoteSurfaceFeed(config.request, { quoteAmounts: config.quoteAmounts });
         const unsubscribe = feed.subscribe((event) => {
           if (event.type === 'surface') {
             setState((s) => ({ ...s, surface: event.surface, error: null }));

@@ -1,3 +1,4 @@
+import { divDecimals } from './decimal.js';
 import type {
   DexAdapter,
   FeedStatus,
@@ -26,6 +27,7 @@ const DERIVE_TIMEOUT_MS = 10_000;
 interface SurfaceParams {
   sizes: string[];
   referencePrice: string;
+  quoteAmounts?: string[];
 }
 
 /** Render a positive number with at most 6 decimals (valid on both chains). */
@@ -58,6 +60,9 @@ export class SurfaceFeed implements QuoteSurfaceFeed {
   #derived: SurfaceParams | null = null;
 
   constructor(adapter: DexAdapter, request: OrderBookRequest, options: QuoteSurfaceFeedOptions = {}) {
+    if (options.sampleSizes && options.quoteAmounts) {
+      throw new Error('quoteAmounts cannot be combined with sampleSizes');
+    }
     this.request = request;
     this.#adapter = adapter;
     this.#options = options;
@@ -199,26 +204,36 @@ export class SurfaceFeed implements QuoteSurfaceFeed {
   async #deriveParams(): Promise<SurfaceParams> {
     if (this.#derived) return this.#derived;
     let sizes = this.#options.sampleSizes;
+    const quoteAmounts = this.#options.quoteAmounts;
     let referencePrice = this.#options.referencePrice;
     const count = this.#options.sampleCount ?? DEFAULT_SAMPLE_COUNT;
     if (!sizes || !referencePrice) {
       let book: OrderBookSnapshot | null = null;
-      try {
-        book = await this.#adapter.fetchOrderBook(this.request, {
-          depth: DERIVE_BOOK_DEPTH,
-          httpEndpoint: this.#options.httpEndpoint,
-          streamEndpoint: this.#options.streamEndpoint,
-          fetch: this.#fetch,
-          webSocket: this.#webSocket,
-          signal: AbortSignal.timeout(DERIVE_TIMEOUT_MS),
-        });
-      } catch {
-        // The CLOB is only a sizing heuristic; pathfinding may still work.
+      if (!referencePrice || (!sizes && !quoteAmounts)) {
+        try {
+          book = await this.#adapter.fetchOrderBook(this.request, {
+            depth: DERIVE_BOOK_DEPTH,
+            httpEndpoint: this.#options.httpEndpoint,
+            streamEndpoint: this.#options.streamEndpoint,
+            fetch: this.#fetch,
+            webSocket: this.#webSocket,
+            signal: AbortSignal.timeout(DERIVE_TIMEOUT_MS),
+          });
+        } catch {
+          // The CLOB is only a sizing heuristic; pathfinding may still work.
+        }
       }
       if (!referencePrice) referencePrice = (book && midPrice(book)) ?? (await this.#probeReferencePrice());
-      if (!sizes) sizes = (book && deriveSizes(book, count)) ?? geometricSizes(count);
+      if (quoteAmounts) {
+        // Six decimals is accepted by both chains (XRP drops and Stellar's
+        // seven-decimal asset amounts). Higher precision makes Horizon reject
+        // the request with HTTP 400.
+        sizes = quoteAmounts.map((amount) => divDecimals(amount, referencePrice!, 6));
+      } else if (!sizes) {
+        sizes = (book && deriveSizes(book, count)) ?? geometricSizes(count);
+      }
     }
-    this.#derived = { sizes, referencePrice };
+    this.#derived = { sizes, referencePrice, quoteAmounts };
     return this.#derived;
   }
 
@@ -241,6 +256,7 @@ export class SurfaceFeed implements QuoteSurfaceFeed {
     return {
       sizes: params.sizes,
       referencePrice: params.referencePrice,
+      quoteAmounts: params.quoteAmounts,
       httpEndpoint: this.#options.httpEndpoint,
       streamEndpoint: this.#options.streamEndpoint,
       fetch: this.#fetch,

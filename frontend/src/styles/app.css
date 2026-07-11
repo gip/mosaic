@@ -511,6 +511,58 @@
   padding: var(--sp-1) var(--sp-2);
 }
 
+.dex-execution {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-2);
+}
+
+.dex-execution-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-1);
+}
+
+.dex-execution-head h4,
+.dex-execution-head p {
+  margin: 0;
+}
+
+.dex-execution-head h4 {
+  font-size: var(--fs-sm);
+}
+
+.dex-execution-head p {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+
+.dex-execution-scroll {
+  overflow-x: auto;
+}
+
+.dex-execution-table th:first-child,
+.dex-execution-table td:first-child {
+  text-align: left;
+}
+
+.dex-execution-table tbody th {
+  color: var(--fg);
+  font-weight: 500;
+  padding: 2px var(--sp-2);
+}
+
+.dex-execution-table th.sell,
+.dex-execution-table td.sell {
+  color: var(--sell);
+}
+
+.dex-execution-table th.buy,
+.dex-execution-table td.buy {
+  color: var(--buy);
+}
+
 .dex-error {
   font-size: var(--fs-xs);
   color: var(--err);

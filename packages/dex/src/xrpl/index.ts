@@ -407,7 +407,7 @@ export function createAdapter(): DexAdapter {
           const sell: QuoteSample[] = [];
           let firstError: Error | undefined;
 
-          for (const size of opts.sizes) {
+          for (const [index, size] of opts.sizes.entries()) {
             if (closed) return;
             // Buy: receive `size` base, pay as little quote as possible.
             const buyRes = await pathFindCreate({
@@ -418,11 +418,13 @@ export function createAdapter(): DexAdapter {
             if (closed) return;
             if (buyRes.error) firstError ??= buyRes.error;
             const buyTotal = buyRes.alternatives && bestSourceAmount(buyRes.alternatives);
-            if (buyTotal) buy.push({ amount: size, total: buyTotal, avgPrice: divDecimals(buyTotal, size) });
+            if (buyTotal) {
+              buy.push(withQuoteAmount({ amount: size, total: buyTotal, avgPrice: divDecimals(buyTotal, size) }, opts.quoteAmounts?.[index]));
+            }
 
             // Sell: receive `size × referencePrice` quote, pay as little base
             // as possible; the base actually paid is the sample's amount.
-            const quoteTarget = mulDecimals(size, opts.referencePrice, 6);
+            const quoteTarget = opts.quoteAmounts?.[index] ?? mulDecimals(size, opts.referencePrice, 6);
             if (isZeroDecimal(quoteTarget)) continue;
             const sellRes = await pathFindCreate({
               ...accounts!.sell,
@@ -433,7 +435,12 @@ export function createAdapter(): DexAdapter {
             if (sellRes.error) firstError ??= sellRes.error;
             const basePaid = sellRes.alternatives && bestSourceAmount(sellRes.alternatives);
             if (basePaid && !isZeroDecimal(basePaid)) {
-              sell.push({ amount: basePaid, total: quoteTarget, avgPrice: divDecimals(quoteTarget, basePaid) });
+              sell.push(
+                withQuoteAmount(
+                  { amount: basePaid, total: quoteTarget, avgPrice: divDecimals(quoteTarget, basePaid) },
+                  opts.quoteAmounts?.[index],
+                ),
+              );
             }
           }
 
@@ -697,4 +704,8 @@ export function createAdapter(): DexAdapter {
       };
     },
   };
+}
+
+function withQuoteAmount(sample: QuoteSample, quoteAmount: string | undefined): QuoteSample {
+  return quoteAmount === undefined ? sample : { ...sample, quoteAmount };
 }

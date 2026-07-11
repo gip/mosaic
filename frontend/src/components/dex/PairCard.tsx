@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
-import type { OrderBookLevel, OrderBookSnapshot, QuoteSurface } from '@mosaic/dex';
+import type { OrderBookLevel, OrderBookSnapshot, QuoteSample, QuoteSurface } from '@mosaic/dex';
 import type { UTCTimestamp } from 'lightweight-charts';
 import Banner from '../ui/Banner';
 import Button from '../ui/Button';
@@ -28,8 +28,8 @@ const SOURCE_LABELS: { id: keyof PairSources; label: string }[] = [
   { id: 'clob', label: 'Book' },
   { id: 'paths', label: 'Paths' },
 ];
-const TABLE_LEVELS = 8;
 const HISTORY_MAX = 600;
+const QUOTE_AMOUNTS = ['1', '10', '100', '1000', '10000', '100000'];
 
 const STATUS_TONES: Record<string, StatusTone> = {
   live: 'ok',
@@ -46,84 +46,134 @@ function fmt(value: string | number, digits = 7): string {
   return String(Number(n.toPrecision(digits)));
 }
 
-function BookTable({ snapshot }: { snapshot: OrderBookSnapshot }) {
-  const asks = snapshot.asks.slice(0, TABLE_LEVELS);
-  const bids = snapshot.bids.slice(0, TABLE_LEVELS);
-  const maxAmount = Math.max(...[...asks, ...bids].map((l) => Number(l.amount)), 1e-18);
-  const bestBid = bids[0];
-  const bestAsk = asks[0];
-  const spread = bestBid && bestAsk ? Number(bestAsk.price) - Number(bestBid.price) : null;
-  const mid = bestBid && bestAsk ? (Number(bestAsk.price) + Number(bestBid.price)) / 2 : null;
-
-  // Positional keys: several offers can share one price level.
-  const row = (level: OrderBookLevel, side: 'ask' | 'bid', index: number) => (
-    <tr
-      key={`${side}-${index}`}
-      className={side}
-      style={{
-        backgroundImage: `linear-gradient(to left, var(--${side === 'ask' ? 'sell' : 'buy'}-dim) ${
-          (Number(level.amount) / maxAmount) * 100
-        }%, transparent 0)`,
-      }}
-    >
-      <td className="dex-price">{fmt(level.price)}</td>
-      <td>{fmt(level.amount)}</td>
-    </tr>
-  );
-
-  return (
-    <table className="dex-book">
-      <thead>
-        <tr>
-          <th>Price ({assetLabel(snapshot.quote, snapshot.chain)})</th>
-          <th>Size ({assetLabel(snapshot.base, snapshot.chain)})</th>
-        </tr>
-      </thead>
-      <tbody>
-        {[...asks].reverse().map((l, i) => row(l, 'ask', i))}
-        <tr className="dex-spread">
-          <td colSpan={2}>
-            {spread !== null && mid !== null
-              ? `spread ${fmt(spread, 4)} (${fmt((spread / mid) * 100, 3)}%)`
-              : 'one-sided book'}
-          </td>
-        </tr>
-        {bids.map((l, i) => row(l, 'bid', i))}
-      </tbody>
-    </table>
-  );
+function bookAveragePrice(levels: OrderBookLevel[], baseAmount: number): number | null {
+  if (!Number.isFinite(baseAmount) || baseAmount <= 0) return null;
+  let remainingBase = baseAmount;
+  let quoteTotal = 0;
+  for (const level of levels) {
+    const price = Number(level.price);
+    const availableBase = Number(level.amount);
+    if (!Number.isFinite(price) || !Number.isFinite(availableBase) || price <= 0 || availableBase <= 0) continue;
+    const baseHere = Math.min(remainingBase, availableBase);
+    quoteTotal += baseHere * price;
+    remainingBase -= baseHere;
+    if (remainingBase <= Math.max(baseAmount, 1) * 1e-12) break;
+  }
+  if (remainingBase > Math.max(baseAmount, 1) * 1e-12) return null;
+  return quoteTotal / baseAmount;
 }
 
-function SurfaceTable({ surface }: { surface: QuoteSurface }) {
-  const rows = Math.max(surface.sell.length, surface.buy.length);
-  if (rows === 0) return <p className="dex-waiting">No executable routes found for the sampled sizes.</p>;
-  const baseSym = assetLabel(surface.base, surface.chain);
-  const quoteSym = assetLabel(surface.quote, surface.chain);
+function executionBps(averagePrice: number | null, midPrice: number | null, side: 'sell' | 'buy'): number | null {
+  if (
+    averagePrice === null ||
+    midPrice === null ||
+    !Number.isFinite(averagePrice) ||
+    !Number.isFinite(midPrice) ||
+    averagePrice <= 0 ||
+    midPrice <= 0
+  ) {
+    return null;
+  }
+  return side === 'sell'
+    ? ((midPrice - averagePrice) / midPrice) * 10_000
+    : ((averagePrice - midPrice) / midPrice) * 10_000;
+}
+
+function sampleAveragePrice(samples: QuoteSample[], quoteAmount: string): number | null {
+  const sample = samples.find((item) => item.quoteAmount === quoteAmount);
+  const price = Number(sample?.avgPrice);
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function marketMid(snapshot: OrderBookSnapshot | null): number | null {
+  const bid = Number(snapshot?.bids[0]?.price);
+  const ask = Number(snapshot?.asks[0]?.price);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid > ask) return null;
+  return (bid + ask) / 2;
+}
+
+function formatBps(value: number | null): string {
+  if (value === null) return '—';
+  const rounded = Math.abs(value) < 0.05 ? 0 : Math.round(value * 10) / 10;
+  return `${rounded.toLocaleString(undefined, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  })} bps`;
+}
+
+function ExecutionCostTable({
+  snapshot,
+  surface,
+  sources,
+}: {
+  snapshot: OrderBookSnapshot | null;
+  surface: QuoteSurface | null;
+  sources: PairSources;
+}) {
+  const quote = snapshot ?? surface;
+  if (!quote) return null;
+  const quoteSym = assetLabel(quote.quote, quote.chain);
+  const mid = marketMid(snapshot);
+
   return (
-    <table className="dex-book dex-surface">
-      <thead>
-        <tr>
-          <th>Sell size ({baseSym})</th>
-          <th>Sell avg ({quoteSym})</th>
-          <th>Buy size ({baseSym})</th>
-          <th>Buy avg ({quoteSym})</th>
-        </tr>
-      </thead>
-      <tbody>
-        {Array.from({ length: rows }, (_, i) => {
-          const sell = surface.sell[i];
-          const buy = surface.buy[i];
-          return (
-            <tr key={i}>
-              <td className="bid dex-price">{sell ? fmt(sell.amount) : '—'}</td>
-              <td className="bid">{sell ? fmt(sell.avgPrice) : '—'}</td>
-              <td className="ask dex-price">{buy ? fmt(buy.amount) : '—'}</td>
-              <td className="ask">{buy ? fmt(buy.avgPrice) : '—'}</td>
+    <section className="dex-execution" aria-label="Execution cost">
+      <div className="dex-execution-head">
+        <h4>Execution cost</h4>
+        <p>Execution cost versus the current mid price; lower is better.</p>
+      </div>
+      <div className="dex-execution-scroll">
+        <table className="dex-book dex-execution-table">
+          <thead>
+            <tr>
+              <th>Notional ({quoteSym})</th>
+              {sources.clob && <th className="sell">Book sell</th>}
+              {sources.clob && <th className="buy">Book buy</th>}
+              {sources.paths && <th className="sell">Paths sell</th>}
+              {sources.paths && <th className="buy">Paths buy</th>}
             </tr>
-          );
-        })}
-      </tbody>
-    </table>
+          </thead>
+          <tbody>
+            {QUOTE_AMOUNTS.map((amount) => (
+              <tr key={amount}>
+                <th scope="row">{fmt(amount, 6)}</th>
+                {sources.clob && (
+                  <td className="sell">
+                    {formatBps(
+                      executionBps(
+                        bookAveragePrice(snapshot?.bids ?? [], mid === null ? 0 : Number(amount) / mid),
+                        mid,
+                        'sell',
+                      ),
+                    )}
+                  </td>
+                )}
+                {sources.clob && (
+                  <td className="buy">
+                    {formatBps(
+                      executionBps(
+                        bookAveragePrice(snapshot?.asks ?? [], mid === null ? 0 : Number(amount) / mid),
+                        mid,
+                        'buy',
+                      ),
+                    )}
+                  </td>
+                )}
+                {sources.paths && (
+                  <td className="sell">
+                    {formatBps(executionBps(sampleAveragePrice(surface?.sell ?? [], amount), mid, 'sell'))}
+                  </td>
+                )}
+                {sources.paths && (
+                  <td className="buy">
+                    {formatBps(executionBps(sampleAveragePrice(surface?.buy ?? [], amount), mid, 'buy'))}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -137,7 +187,7 @@ export default function PairCard({ pair, onRemove }: { pair: PairConfig; onRemov
     fundedAccounts: pair.fundedAccounts,
   };
   const book = useOrderBookFeed(request, sources.clob);
-  const paths = useQuoteSurfaceFeed(request, sources.paths);
+  const paths = useQuoteSurfaceFeed(request, sources.paths, QUOTE_AMOUNTS);
 
   const availableKinds = CHART_KINDS.filter(({ id }) => sources[CHART_KIND_SOURCE[id]]);
   const defaultKind = sources.clob ? 'depth' : 'quotes';
@@ -256,8 +306,7 @@ export default function PairCard({ pair, onRemove }: { pair: PairConfig; onRemov
               </Banner>
             ),
           )}
-          {sources.paths && paths.surface && <SurfaceTable surface={paths.surface} />}
-          {sources.clob && book.snapshot && <BookTable snapshot={book.snapshot} />}
+          <ExecutionCostTable snapshot={book.snapshot} surface={paths.surface} sources={sources} />
           {!hasData && feedErrors.length === 0 && (
             <p className="dex-waiting">Waiting for the first market data…</p>
           )}

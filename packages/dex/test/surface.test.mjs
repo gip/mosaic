@@ -55,6 +55,7 @@ test('stellar fetchQuoteSurface: URLs, best-record picking, empty-size skipping'
   const surface = await adapter.fetchQuoteSurface(STELLAR_REQ, {
     sizes: ['100', '200'],
     referencePrice: '0.2',
+    quoteAmounts: ['20', '40'],
     fetch: fetchMock,
     webSocket: WebSocket,
   });
@@ -71,8 +72,8 @@ test('stellar fetchQuoteSurface: URLs, best-record picking, empty-size skipping'
 
   // Sell picks max destination_amount; buy picks min source_amount; the
   // empty 200-size records are skipped entirely.
-  assert.deepEqual(surface.sell, [{ amount: '100', total: '19.9', avgPrice: '0.199' }]);
-  assert.deepEqual(surface.buy, [{ amount: '100', total: '20.1', avgPrice: '0.201' }]);
+  assert.deepEqual(surface.sell, [{ amount: '100', total: '19.9', avgPrice: '0.199', quoteAmount: '20' }]);
+  assert.deepEqual(surface.buy, [{ amount: '100', total: '20.1', avgPrice: '0.201', quoteAmount: '20' }]);
 });
 
 /* --------------------------------------------------- xrpl pathfinding */
@@ -121,7 +122,7 @@ function openXrplSurface(events, opts = {}) {
 
 test('xrpl surface stream: funded-account exact-receive cycle, surface assembly', async () => {
   const events = [];
-  const { handle, ws } = openXrplSurface(events);
+  const { handle, ws } = openXrplSurface(events, { quoteAmounts: ['200'] });
   assert.equal(ws.url, 'wss://s.altnet.rippletest.net:51233');
 
   ws.onopen();
@@ -164,8 +165,12 @@ test('xrpl surface stream: funded-account exact-receive cycle, surface assembly'
   assert.equal(ws.sent[3].subcommand, 'close');
   assert.equal(events.length, 1);
   const surface = events[0].surface;
-  assert.deepEqual(surface.buy, [{ amount: '100', total: '210', avgPrice: '2.1' }]);
-  assert.deepEqual(surface.sell, [{ amount: '105', total: '200', avgPrice: '1.904761904761904' }]);
+  assert.deepEqual(surface.buy, [
+    { amount: '100', total: '210', avgPrice: '2.1', quoteAmount: '200' },
+  ]);
+  assert.deepEqual(surface.sell, [
+    { amount: '105', total: '200', avgPrice: '1.904761904761904', quoteAmount: '200' },
+  ]);
 
   // a ledger close triggers the next cycle
   ws.onmessage({ data: JSON.stringify({ type: 'ledgerClosed' }) });
@@ -368,6 +373,58 @@ test('empty book falls back to a 1-unit pathfinding probe and geometric ladder',
   const real = surfaceCalls.at(-1);
   assert.equal(real.referencePrice, '0.5'); // from the probe
   assert.deepEqual(real.sizes, ['1', '10', '100', '1000', '10000']);
+});
+
+test('quoteAmounts derive a matching base-size ladder and reach the adapter unchanged', async () => {
+  const surfaceCalls = [];
+  const adapter = {
+    async fetchOrderBook() {
+      return BOOK;
+    },
+    openStream() {
+      throw new Error('unused');
+    },
+    async fetchQuoteSurface(_req, opts) {
+      surfaceCalls.push(opts);
+      return makeSurface('quoted');
+    },
+  };
+  const feed = new SurfaceFeed(adapter, STELLAR_REQ, { quoteAmounts: ['1', '10', '100'] });
+
+  await feed.refresh();
+
+  assert.equal(surfaceCalls.length, 1);
+  assert.equal(surfaceCalls[0].referencePrice, '0.2');
+  assert.deepEqual(surfaceCalls[0].sizes, ['5', '50', '500']);
+  assert.deepEqual(surfaceCalls[0].quoteAmounts, ['1', '10', '100']);
+});
+
+test('quoteAmounts are capped at chain-safe base precision', async () => {
+  const surfaceCalls = [];
+  const adapter = {
+    async fetchOrderBook() {
+      return { ...BOOK, bids: [{ price: '0.18', amount: '1000' }], asks: [{ price: '0.2', amount: '1000' }] };
+    },
+    openStream() {
+      throw new Error('unused');
+    },
+    async fetchQuoteSurface(_req, opts) {
+      surfaceCalls.push(opts);
+      return makeSurface('quoted');
+    },
+  };
+  const feed = new SurfaceFeed(adapter, STELLAR_REQ, { quoteAmounts: ['1'] });
+
+  await feed.refresh();
+
+  assert.deepEqual(surfaceCalls[0].sizes, ['5.263157']);
+});
+
+test('quoteAmounts and sampleSizes cannot be combined', () => {
+  assert.throws(
+    () => new SurfaceFeed({}, STELLAR_REQ, { sampleSizes: ['1'], quoteAmounts: ['1'] }),
+    /quoteAmounts cannot be combined with sampleSizes/,
+  );
 });
 
 test('streaming mode: adapter stream drives the feed, closed → reconnect', async (t) => {

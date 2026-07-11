@@ -144,7 +144,7 @@ export function createAdapter(): DexAdapter {
       };
 
       const samples = await Promise.all(
-        opts.sizes.map(async (size) => {
+        opts.sizes.map(async (size, index) => {
           const [sellRecords, buyRecords] = await Promise.all([
             // Sell: send exactly `size` base, receive as much quote as possible.
             fetchPaths('strict-send', [
@@ -162,16 +162,26 @@ export function createAdapter(): DexAdapter {
           const bestSell = pickBest(sellRecords, 'destination_amount', 'max');
           const bestBuy = pickBest(buyRecords, 'source_amount', 'min');
           return {
-            sell: bestSell && {
-              amount: size,
-              total: bestSell.destination_amount,
-              avgPrice: divDecimals(bestSell.destination_amount, size),
-            },
-            buy: bestBuy && {
-              amount: size,
-              total: bestBuy.source_amount,
-              avgPrice: divDecimals(bestBuy.source_amount, size),
-            },
+            sell:
+              bestSell &&
+              withQuoteAmount(
+                {
+                  amount: size,
+                  total: bestSell.destination_amount,
+                  avgPrice: divDecimals(bestSell.destination_amount, size),
+                },
+                opts.quoteAmounts?.[index],
+              ),
+            buy:
+              bestBuy &&
+              withQuoteAmount(
+                {
+                  amount: size,
+                  total: bestBuy.source_amount,
+                  avgPrice: divDecimals(bestBuy.source_amount, size),
+                },
+                opts.quoteAmounts?.[index],
+              ),
           };
         }),
       );
@@ -227,4 +237,8 @@ export function createAdapter(): DexAdapter {
       };
     },
   };
+}
+
+function withQuoteAmount(sample: QuoteSample, quoteAmount: string | undefined): QuoteSample {
+  return quoteAmount === undefined ? sample : { ...sample, quoteAmount };
 }

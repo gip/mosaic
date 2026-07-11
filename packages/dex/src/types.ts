@@ -112,6 +112,12 @@ export interface QuoteSample {
   amount: string;
   total: string;
   avgPrice: string;
+  /**
+   * Requested quote-side notional that produced this sample, when the feed
+   * was configured with `quoteAmounts`. The actual `total` may vary slightly
+   * when the underlying path API executes on the base side.
+   */
+  quoteAmount?: string;
 }
 
 /**
@@ -133,6 +139,12 @@ export interface QuoteSurface {
 export interface QuoteSurfaceFeedOptions {
   /** Base-amount ladder to sample. Default: derived from visible book depth. */
   sampleSizes?: string[];
+  /**
+   * Quote-side notionals to sample. The feed converts these to base amounts
+   * from its reference price, preserving the requested ladder for display.
+   * Cannot be combined with `sampleSizes`.
+   */
+  quoteAmounts?: string[];
   /** Ladder length when deriving sizes. Default 5. */
   sampleCount?: number;
   /** Poll interval for chains without streaming pathfinding. Default 12000. */
@@ -170,6 +182,8 @@ export interface AdapterSurfaceOptions {
   sizes: string[];
   /** Quote-per-base reference price for chains that ladder the quote side. */
   referencePrice: string;
+  /** Requested quote-side notionals corresponding to `sizes`, if supplied. */
+  quoteAmounts?: string[];
   httpEndpoint?: string;
   streamEndpoint?: string;
   fetch: typeof fetch;

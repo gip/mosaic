@@ -87,6 +87,12 @@ const CUSTOM_PRICE_FORMAT = {
   minMove: 0.00000001,
 };
 
+const BPS_PRICE_FORMAT = {
+  type: 'custom' as const,
+  formatter: (value: number) => `${value.toFixed(1)} bps`,
+  minMove: 0.1,
+};
+
 /** Decimal places for the depth chart's horizontal (price) tick marks. */
 function pricePrecision(price: number): number {
   if (price >= 1000) return 0;
@@ -591,7 +597,7 @@ function SurfaceChart({ surface }: { surface: QuoteSurface | null }) {
   return <div ref={containerRef} className="dex-chart" />;
 }
 
-/** Mid-price or spread over time, one point per received snapshot. */
+/** Mid-price or spread in bps over time, one point per received snapshot. */
 function TimeChart({ kind, history }: { kind: 'mid' | 'spread'; history: PricePoint[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApiBase<UTCTimestamp> | null>(null);
@@ -617,7 +623,7 @@ function TimeChart({ kind, history }: { kind: 'mid' | 'spread'; history: PricePo
         : chart.addSeries(HistogramSeries, {
             color: colors.warn,
             priceLineVisible: false,
-            priceFormat: CUSTOM_PRICE_FORMAT,
+            priceFormat: BPS_PRICE_FORMAT,
           });
     chartRef.current = chart as IChartApiBase<UTCTimestamp>;
     return () => {
@@ -630,7 +636,10 @@ function TimeChart({ kind, history }: { kind: 'mid' | 'spread'; history: PricePo
   useEffect(() => {
     if (!seriesRef.current || !chartRef.current) return;
     seriesRef.current.setData(
-      history.map((p) => ({ time: p.time, value: kind === 'mid' ? p.mid : p.spread })),
+      history.map((p) => ({
+        time: p.time,
+        value: kind === 'mid' ? p.mid : (p.spread / p.mid) * 10_000,
+      })),
     );
     chartRef.current.timeScale().fitContent();
   }, [history, kind, theme]);
