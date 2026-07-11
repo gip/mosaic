@@ -258,6 +258,63 @@ header.topbar {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
+/* Header network switch: green = mainnet, yellow = testnet. */
+.network-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-elevated);
+}
+.network-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-1);
+  background: var(--bg-panel);
+}
+.network-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: calc(var(--r-1) - 1px);
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  line-height: 1.6;
+}
+.network-switch button::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  flex: none;
+}
+.network-switch button:hover:not(:disabled) {
+  color: var(--fg);
+}
+.network-switch button[aria-pressed="true"].mainnet {
+  background: var(--ok-dim);
+  color: var(--ok);
+}
+.network-switch button[aria-pressed="true"].mainnet::before {
+  background: var(--ok);
+}
+.network-switch button[aria-pressed="true"].testnet {
+  background: var(--warn-dim);
+  color: var(--warn);
+}
+.network-switch button[aria-pressed="true"].testnet::before {
+  background: var(--warn);
+}
 /* Uniform, compact control sizing so every chip's row lines up. */
 .wallet-controls button,
 .wallet-chain > button {
@@ -675,6 +732,17 @@ tbody tr:hover {
 }
 .recovery-notice {
   margin-bottom: var(--sp-4);
+}
+/* App-wide banner (network switch status) shown directly under the top bar. */
+.app-banner {
+  margin: var(--sp-3) var(--sp-5) 0;
+}
+.lock-reminder-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
 }
 .recovery-notice-actions {
   display: flex;
@@ -1161,6 +1229,10 @@ tbody tr:hover {
     order: 4;
     width: 100%;
     justify-content: flex-start;
+  }
+  /* Same wrapped row as the wallet chips. */
+  .network-switcher {
+    order: 4;
   }
 }
 

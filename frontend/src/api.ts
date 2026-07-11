@@ -70,6 +70,23 @@ export interface BlobGetResult {
   commitment: string;
 }
 
+export interface WalletSettingsResult {
+  /** 0 disables the Mainnet lock reminder. */
+  lockReminderMinutes: number;
+  /** Catalog chain ids hidden everywhere in the UI except settings. */
+  hiddenChains: string[];
+}
+
+export class ApiError extends Error {
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+  }
+}
+
 class MosaicApi {
   private clientPromise: Promise<Client> | undefined;
 
@@ -96,8 +113,8 @@ class MosaicApi {
     const result = await client.callTool({ name, arguments: args });
     const content = result.content as { type: string; text?: string }[] | undefined;
     const text = content?.[0]?.text ?? '{}';
-    const data = JSON.parse(text) as T & { error?: { message?: string } };
-    if (result.isError) throw new Error(data.error?.message ?? `tool ${name} failed`);
+    const data = JSON.parse(text) as T & { error?: { code?: string; message?: string } };
+    if (result.isError) throw new ApiError(data.error?.message ?? `tool ${name} failed`, data.error?.code);
     return data;
   }
 
@@ -127,6 +144,14 @@ class MosaicApi {
 
   assetTrustSet(token: string, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
     return this.call('asset_trust_set', { token, assetId, state });
+  }
+
+  settingsGet(token: string): Promise<WalletSettingsResult> {
+    return this.call('settings_get', { token });
+  }
+
+  settingsSet(token: string, patch: Partial<WalletSettingsResult>): Promise<WalletSettingsResult> {
+    return this.call('settings_set', { token, ...patch });
   }
 
   zoneBegin(token: string, zone: string): Promise<{ challengeId: string; nonce: string; issuedAt: string; expiresAt: string }> {

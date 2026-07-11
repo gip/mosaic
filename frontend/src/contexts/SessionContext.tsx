@@ -3,7 +3,7 @@ import type { ZoneMessage } from '@mosaic/zone-keys';
 import type { SignedZoneMessage } from '@mosaic/web-connector/types';
 import type { Eip1193Provider } from '@mosaic/web-connector/evm';
 import type { StellarWalletConnectSession } from '@mosaic/web-connector/stellar';
-import { api, type AuthVerifyResult } from '../api';
+import { api, ApiError, type AuthVerifyResult } from '../api';
 import { useSettings } from './SettingsContext';
 import { clearZoneCache } from '../zone/cache';
 
@@ -68,6 +68,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* memory-only */ }
         setSession(next);
       }).catch((cause: unknown) => {
+        if (cause instanceof ApiError && cause.code === 'AUTH_EXPIRED') {
+          // The stored session is already dead server-side; drop it so pages
+          // reflect reality instead of showing stale previous-network data.
+          signerRef.current = null;
+          sessionStorage.removeItem(SESSION_KEY);
+          setSession(null);
+          setNetworkSwitchError('Your session has expired. Log in again to continue on the selected network.');
+          return;
+        }
         setNetworkSwitchError(cause instanceof Error ? cause.message : String(cause));
       }).finally(() => {
         switchingRef.current = false;
@@ -78,6 +87,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback((next: AuthVerifyResult, signer: RootSigner) => {
     signerRef.current = signer;
+    setNetworkSwitchError(null);
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
     } catch {

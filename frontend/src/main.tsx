@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
 import './index.css';
 import App from './App';
 import Home from './pages/Home';
@@ -13,6 +13,7 @@ import { SettingsProvider } from './contexts/SettingsContext';
 import { SessionProvider } from './contexts/SessionContext';
 import { CatalogProvider } from './contexts/CatalogContext';
 import { VaultProvider } from './contexts/VaultContext';
+import { WalletSettingsProvider } from './contexts/WalletSettingsContext';
 import SettingsLayout from './pages/SettingsLayout';
 import VaultsPage from './pages/VaultsPage';
 
@@ -30,11 +31,13 @@ function AppRoute() {
     <ThemeProvider>
       <SettingsProvider>
         <SessionProvider>
-          <VaultProvider>
-            <CatalogProvider>
-              <App />
-            </CatalogProvider>
-          </VaultProvider>
+          <WalletSettingsProvider>
+            <VaultProvider>
+              <CatalogProvider>
+                <App />
+              </CatalogProvider>
+            </VaultProvider>
+          </WalletSettingsProvider>
         </SessionProvider>
       </SettingsProvider>
     </ThemeProvider>
@@ -50,12 +53,13 @@ const router = createBrowserRouter([
       { path: 'dex', element: <DexPage /> },
       { path: 'assets', element: <AssetsPage /> },
       { path: 'agents', element: <AgentsPage /> },
+      { path: 'vaults', element: <VaultsPage /> },
       {
         path: 'settings',
         element: <SettingsLayout />,
         children: [
           { index: true, element: <SettingsPage /> },
-          { path: 'vaults', element: <VaultsPage /> },
+          { path: 'vaults', element: <Navigate to="/vaults" replace /> },
         ],
       },
     ],

@@ -85,6 +85,28 @@ export interface CatalogOwner {
   address: string;
 }
 
+/**
+ * Per-wallet UX settings. `lockReminderMinutes: 0` disables the Mainnet lock
+ * reminder. `hiddenChains` lists catalog chain ids the UI hides everywhere
+ * except settings; the root wallet's chain family keeps at least one active
+ * chain per network so the login chain can never disappear.
+ */
+export interface WalletSettings {
+  lockReminderMinutes: number;
+  hiddenChains: string[];
+}
+
+export const LOCK_REMINDER_MINUTES_OPTIONS = [0, 1, 3, 5, 10, 30] as const;
+export const DEFAULT_LOCK_REMINDER_MINUTES = 3;
+
+type KnownChain = Pick<SupportedChain, 'id' | 'family' | 'network'>;
+
+/** Drops ids the catalog no longer knows (e.g. removed custom chains) and dedupes in catalog order. */
+function normalizeHiddenChains(hiddenChains: string[], chains: KnownChain[]): string[] {
+  const hidden = new Set(hiddenChains);
+  return chains.filter((chain) => hidden.has(chain.id)).map((chain) => chain.id);
+}
+
 export interface CustomChainRecord {
   id: string;
   name: string;
@@ -125,6 +147,10 @@ export interface MosaicStore {
   listCatalog(owner: CatalogOwner): Promise<CatalogSnapshot>;
   setChainTrust(owner: CatalogOwner, chainId: string, trusted: boolean): Promise<ChainWithTrust>;
   setAssetTrust(owner: CatalogOwner, assetId: string, state: AssetTrustState): Promise<AssetWithTrust>;
+
+  getWalletSettings(owner: CatalogOwner): Promise<WalletSettings>;
+  setWalletSettings(owner: CatalogOwner, settings: WalletSettings): Promise<WalletSettings>;
+
   /** Internal administration hook. No MCP tool exposes custom-chain mutation. */
   upsertCustomChain(record: CustomChainRecord): Promise<void>;
 
@@ -147,6 +173,26 @@ export function normalizeCatalogOwner(owner: CatalogOwner): CatalogOwner {
     chain: owner.chain,
     address: owner.chain === 'evm' ? owner.address.toLowerCase() : owner.address,
   };
+}
+
+/** Expects an already-normalized hiddenChains list (known ids only). */
+function validateWalletSettings(owner: CatalogOwner, settings: WalletSettings, chains: KnownChain[]): void {
+  if (!(LOCK_REMINDER_MINUTES_OPTIONS as readonly number[]).includes(settings.lockReminderMinutes)) {
+    throw new MosaicMcpError(
+      'VALIDATION_FAILED',
+      `invalid lockReminderMinutes: ${settings.lockReminderMinutes} (allowed: ${LOCK_REMINDER_MINUTES_OPTIONS.join(', ')})`,
+    );
+  }
+  const hidden = new Set(settings.hiddenChains);
+  for (const tag of ['mainnet', 'testnet'] as const) {
+    const familyChains = chains.filter((chain) => chain.family === owner.chain && chain.network === tag);
+    if (familyChains.length > 0 && familyChains.every((chain) => hidden.has(chain.id))) {
+      throw new MosaicMcpError(
+        'VALIDATION_FAILED',
+        `cannot hide every ${owner.chain} chain on ${tag}: the root wallet chain must stay active`,
+      );
+    }
+  }
 }
 
 function validateCustomChain(record: CustomChainRecord): void {
@@ -443,6 +489,31 @@ export class PostgresStore implements MosaicStore {
     return { ...asset, trustState: state };
   }
 
+  async getWalletSettings(owner: CatalogOwner): Promise<WalletSettings> {
+    const normalized = normalizeCatalogOwner(owner);
+    const [row] = await this.sql`
+      SELECT lock_reminder_minutes, hidden_chains FROM wallet_settings
+      WHERE root_chain = ${normalized.chain} AND root_address = ${normalized.address}`;
+    if (!row) return { lockReminderMinutes: DEFAULT_LOCK_REMINDER_MINUTES, hiddenChains: [] };
+    return {
+      lockReminderMinutes: Number(row.lock_reminder_minutes),
+      hiddenChains: String(row.hidden_chains).split(',').filter(Boolean),
+    };
+  }
+
+  async setWalletSettings(owner: CatalogOwner, settings: WalletSettings): Promise<WalletSettings> {
+    const { chains } = await this.listCatalog(owner);
+    const hiddenChains = normalizeHiddenChains(settings.hiddenChains, chains);
+    validateWalletSettings(owner, { ...settings, hiddenChains }, chains);
+    const normalized = normalizeCatalogOwner(owner);
+    await this.sql`
+      INSERT INTO wallet_settings (root_chain, root_address, lock_reminder_minutes, hidden_chains, updated_at)
+      VALUES (${normalized.chain}, ${normalized.address}, ${settings.lockReminderMinutes}, ${hiddenChains.join(',')}, now())
+      ON CONFLICT (root_chain, root_address)
+      DO UPDATE SET lock_reminder_minutes = EXCLUDED.lock_reminder_minutes, hidden_chains = EXCLUDED.hidden_chains, updated_at = now()`;
+    return { lockReminderMinutes: settings.lockReminderMinutes, hiddenChains };
+  }
+
   async upsertCustomChain(record: CustomChainRecord): Promise<void> {
     validateCustomChain(record);
     await this.sql`
@@ -521,6 +592,7 @@ export class MemoryStore implements MosaicStore {
   private customChains = new Map<string, CustomChainRecord>();
   private chainPreferences = new Map<string, Map<string, boolean>>();
   private assetPreferences = new Map<string, Map<string, AssetTrustState>>();
+  private walletSettings = new Map<string, WalletSettings>();
 
   async init(): Promise<void> {}
   async healthCheck(): Promise<{ ok: true }> {
@@ -688,6 +760,24 @@ export class MemoryStore implements MosaicStore {
     const normalized = normalizeCatalogOwner(owner);
     this.assetPreferences.get(`${normalized.chain}|${normalized.address}`)!.set(assetId, state);
     return { ...asset, trustState: state };
+  }
+
+  async getWalletSettings(owner: CatalogOwner): Promise<WalletSettings> {
+    const normalized = normalizeCatalogOwner(owner);
+    const settings = this.walletSettings.get(`${normalized.chain}|${normalized.address}`);
+    return settings
+      ? { ...settings, hiddenChains: [...settings.hiddenChains] }
+      : { lockReminderMinutes: DEFAULT_LOCK_REMINDER_MINUTES, hiddenChains: [] };
+  }
+
+  async setWalletSettings(owner: CatalogOwner, settings: WalletSettings): Promise<WalletSettings> {
+    const { chains } = await this.listCatalog(owner);
+    const hiddenChains = normalizeHiddenChains(settings.hiddenChains, chains);
+    validateWalletSettings(owner, { ...settings, hiddenChains }, chains);
+    const normalized = normalizeCatalogOwner(owner);
+    const stored = { ...settings, hiddenChains };
+    this.walletSettings.set(`${normalized.chain}|${normalized.address}`, stored);
+    return { ...stored, hiddenChains: [...hiddenChains] };
   }
 
   async upsertCustomChain(record: CustomChainRecord): Promise<void> {

@@ -6,6 +6,7 @@ import Field from '../ui/Field';
 import Banner from '../ui/Banner';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useCatalog } from '../../contexts/CatalogContext';
+import { useActiveChains } from '../../hooks/useActiveChains';
 import type { PairConfig, PairSources } from './types';
 
 interface SelectableAsset {
@@ -25,8 +26,9 @@ function dexCapable(chain: ChainWithTrust): chain is ChainWithTrust & { family: 
 
 export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => void }) {
   const { network: defaultNetwork } = useSettings();
-  const { chains, assets } = useCatalog();
-  const visibleChains = useMemo(() => chains.filter((chain) => chain.trusted), [chains]);
+  const { assets } = useCatalog();
+  const { activeChains } = useActiveChains();
+  const visibleChains = useMemo(() => activeChains.filter((chain) => chain.trusted), [activeChains]);
   const capableChains = useMemo(() => visibleChains.filter(dexCapable), [visibleChains]);
   const preferredId = `stellar-${defaultNetwork}`;
   const [chainId, setChainId] = useState(preferredId);
@@ -74,7 +76,7 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
       { chainId: 'xrpl-testnet', baseId: 'xrp', quoteId: 'rlusd', label: 'XRP / RLUSD · XRPL Testnet', paths: false },
     ];
     return specs.flatMap((spec) => {
-      const chain = chains.find((item) => item.id === spec.chainId);
+      const chain = activeChains.find((item) => item.id === spec.chainId);
       const baseAsset = assets.find((item) => item.id === spec.baseId && item.trustState !== 'hidden');
       const quoteAsset = assets.find((item) => item.id === spec.quoteId && item.trustState !== 'hidden');
       const baseDeployment = baseAsset?.deployments.find((item) => item.chainId === spec.chainId);
@@ -92,7 +94,7 @@ export default function AddPairForm({ onAdd }: { onAdd: (pair: PairConfig) => vo
         },
       }];
     });
-  }, [assets, chains]);
+  }, [assets, activeChains]);
 
   function submit() {
     setSubmitted(true);

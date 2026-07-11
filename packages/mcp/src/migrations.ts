@@ -111,4 +111,16 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
   ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device'));
   `,
+  `
+  CREATE TABLE wallet_settings (
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    lock_reminder_minutes INT NOT NULL CHECK (lock_reminder_minutes IN (0,1,3,5,10,30)),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (root_chain, root_address)
+  );
+  `,
+  `
+  ALTER TABLE wallet_settings ADD COLUMN hidden_chains TEXT NOT NULL DEFAULT '';
+  `,
 ];

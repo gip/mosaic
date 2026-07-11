@@ -1,6 +1,7 @@
 import { Suspense, lazy, useState } from 'react';
 import AddPairForm from '../components/dex/AddPairForm';
 import type { PairConfig } from '../components/dex/types';
+import { useActiveChains } from '../hooks/useActiveChains';
 
 // The card pulls in @mosaic/dex and lightweight-charts; keep them out of the
 // entry chunk (same pattern as LoginModal / ZonePanel).
@@ -8,6 +9,11 @@ const PairCard = lazy(() => import('../components/dex/PairCard'));
 
 export default function DexPage() {
   const [pairs, setPairs] = useState<PairConfig[]>([]);
+  const { activeChains } = useActiveChains();
+  // Pairs stay in state so re-activating the chain brings them back.
+  const visiblePairs = pairs.filter((pair) =>
+    activeChains.some((chain) => chain.family === pair.chain && chain.network === pair.network),
+  );
 
   return (
     <section className="dex-page">
@@ -17,10 +23,10 @@ export default function DexPage() {
         Add a pair to watch its book update as ledgers close.
       </p>
       <AddPairForm onAdd={(pair) => setPairs((ps) => [...ps, pair])} />
-      {pairs.length > 0 && (
+      {visiblePairs.length > 0 && (
         <div className="dex-pairs">
           <Suspense fallback={<p className="dex-waiting">Loading charts…</p>}>
-            {pairs.map((pair) => (
+            {visiblePairs.map((pair) => (
               <PairCard
                 key={pair.id}
                 pair={pair}

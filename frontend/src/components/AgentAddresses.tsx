@@ -1,11 +1,13 @@
 import { useState } from 'react';
+import { Check, Copy } from 'lucide-react';
 import type { AgentChain } from '@mosaic/zone-keys';
+import { useActiveChains } from '../hooks/useActiveChains';
 import type { DerivedVaultAddress } from '../zone/unlock';
 
-const CHAINS: { key: AgentChain; label: string; path: (index: number) => string }[] = [
-  { key: 'evm', label: 'EVM', path: (index) => `m/44'/60'/0'/0/${index} · secp256k1` },
-  { key: 'xrpl', label: 'XRPL', path: (index) => `m/44'/144'/0'/0/${index} · secp256k1` },
-  { key: 'stellar', label: 'Stellar', path: (index) => `m/44'/148'/${index}' · ed25519` },
+const CHAINS: { key: AgentChain; label: string }[] = [
+  { key: 'evm', label: 'EVM' },
+  { key: 'xrpl', label: 'XRPL' },
+  { key: 'stellar', label: 'Stellar' },
 ];
 
 export default function AgentAddressCards({
@@ -15,6 +17,7 @@ export default function AgentAddressCards({
   addresses: DerivedVaultAddress[];
   onCreate?: (chain: AgentChain, name?: string) => Promise<void>;
 }) {
+  const { isFamilyActive } = useActiveChains();
   const [copied, setCopied] = useState<string | null>(null);
   const [names, setNames] = useState<Record<AgentChain, string>>({ evm: '', xrpl: '', stellar: '' });
   const [busy, setBusy] = useState<AgentChain | null>(null);
@@ -45,32 +48,30 @@ export default function AgentAddressCards({
   return (
     <div className="address-groups">
       {error && <p className="tile-error">{error}</p>}
-      {CHAINS.map(({ key, label, path }) => (
+      {CHAINS.filter(({ key }) => isFamilyActive(key)).map(({ key, label }) => (
         <section className="address-group" key={key}>
           <div className="address-group-head">
             <h3>{label}</h3>
             {onCreate && <div className="address-create">
               <input aria-label={`New ${label} address name`} value={names[key]} maxLength={64} placeholder={`#${addresses.filter((item) => item.chain === key).length}`}
                 onChange={(event) => setNames((current) => ({ ...current, [key]: event.target.value }))} />
-              <button type="button" className="btn-primary btn-sm" disabled={busy !== null} onClick={() => void create(key)}>
-                {busy === key ? 'Creating…' : `Add ${label} address`}
+              <button type="button" className="btn-sm" disabled={busy !== null} onClick={() => void create(key)}>
+                {busy === key ? 'Creating…' : 'Add address'}
               </button>
             </div>}
           </div>
-          <div className="address-cards">
-            {addresses.filter((item) => item.chain === key).map((item) => (
-              <div className="address-card" key={item.id}>
-                <div className="address-card-head">
-                  <h4>{item.name}</h4>
-                  <span className="tile-note mono">{path(item.index)}</span>
-                </div>
+          {addresses.filter((item) => item.chain === key).map((item) => (
+            <div className="address-item" key={item.id}>
+              <div className="address-item-head">
+                <span className="address-name">{item.name}</span>
                 <code className="mono address-value">{item.address}</code>
-                <button type="button" className="btn-ghost btn-sm" onClick={() => void copy(item.id, item.address)}>
-                  {copied === item.id ? 'copied ✓' : 'copy'}
+                <button type="button" className="address-copy" title="Copy address" aria-label={`Copy ${item.name} address`} onClick={() => void copy(item.id, item.address)}>
+                  {copied === item.id ? <Check size={15} strokeWidth={2} className="copy-done" aria-hidden="true" /> : <Copy size={15} strokeWidth={1.75} aria-hidden="true" />}
                 </button>
               </div>
-            ))}
-          </div>
+              <p className="address-txs-empty">No transactions recorded yet.</p>
+            </div>
+          ))}
         </section>
       ))}
     </div>

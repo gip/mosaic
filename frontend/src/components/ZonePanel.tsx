@@ -62,7 +62,7 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
         <div>
           <h2>{activeVault ? <>Vault <span className="mono">{activeVault.zone === 'default' ? 'Default' : activeVault.zone}</span> · {session.network}</> : 'Vaults'}</h2>
         </div>
-        <button type="button" className="btn-primary" onClick={onCreate}>Create vault</button>
+        <button type="button" onClick={onCreate}>Create vault</button>
       </div>
       {loading && <p className="tile-note">Loading vaults…</p>}
       {error && <Banner tone="err">{error}</Banner>}
@@ -71,14 +71,14 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
         <div className="zone-card">
           <h3>Create your first vault</h3>
           <p>A vault generates deterministic agent addresses while its secret remains encrypted outside this browser.</p>
-          <button type="button" className="btn-primary" onClick={onCreate}>Create vault</button>
+          <button type="button" onClick={onCreate}>Create vault</button>
         </div>
       )}
       {activeVault?.status === 'locked' && (
         <div className="zone-card">
           <h3>Vault locked</h3>
           <p>{activeVault.mode === 'testnet-device' ? 'The vault secret is not available on this device. Unlock with its device key or import a pairing code.' : 'The vault secret is not available on this device. Restore it with your wallet signature or backup passphrase.'}</p>
-          <button type="button" className="btn-primary" onClick={() => setUnlockOpen(true)}>Unlock vault</button>
+          <button type="button" onClick={() => setUnlockOpen(true)}>Unlock vault</button>
         </div>
       )}
       {activeVault?.status === 'unlocked' && activeVault.derivedAddresses && (
@@ -86,8 +86,8 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
           <AgentAddressCards addresses={activeVault.derivedAddresses} onCreate={(chain, name) => createAddress(activeVault.zone, chain, name)} />
           <div className="zone-actions">
             <span className="tile-note mono" title="zoneRootCommitment">commitment {activeVault.commitment.slice(0, 16)}…</span>
-            <button type="button" className="btn-ghost btn-sm" onClick={() => void lockVault(activeVault.zone)}>Lock vault on this device</button>
-            {activeVault.mode === 'testnet-device' && <button type="button" className="btn-ghost btn-sm" onClick={() => setPairOpen(true)}>Pair another device</button>}
+            <button type="button" className="btn-sm" onClick={() => void lockVault(activeVault.zone)}>Lock vault on this device</button>
+            {activeVault.mode === 'testnet-device' && <button type="button" className="btn-sm" onClick={() => setPairOpen(true)}>Pair another device</button>}
           </div>
         </>
       )}

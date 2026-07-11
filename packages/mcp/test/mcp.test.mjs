@@ -192,6 +192,44 @@ test('catalog preferences default, isolate owners, normalize EVM addresses, and 
   await assert.rejects(() => store.setAssetTrust(upperOwner, 'usdc', 'maybe'), /invalid asset trust state/);
 });
 
+test('wallet settings default to 3 minutes, validate options, normalize EVM addresses, and isolate owners', async () => {
+  const store = new MemoryStore();
+  const upperOwner = { chain: 'evm', address: '0xAbCDEF' };
+  const lowerOwner = { chain: 'evm', address: '0xabcdef' };
+  const otherOwner = { chain: 'stellar', address: stellarAddress };
+
+  assert.deepEqual(await store.getWalletSettings(upperOwner), { lockReminderMinutes: 3, hiddenChains: [] });
+  await store.setWalletSettings(upperOwner, { lockReminderMinutes: 10, hiddenChains: [] });
+  assert.deepEqual(await store.getWalletSettings(lowerOwner), { lockReminderMinutes: 10, hiddenChains: [] });
+  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 3, hiddenChains: [] });
+  await store.setWalletSettings(otherOwner, { lockReminderMinutes: 0, hiddenChains: [] });
+  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 0, hiddenChains: [] });
+  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: 2, hiddenChains: [] }), /invalid lockReminderMinutes/);
+  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: -1, hiddenChains: [] }), /invalid lockReminderMinutes/);
+});
+
+test('hidden chains normalize to catalog order, drop unknown ids, and keep the root family active', async () => {
+  const store = new MemoryStore();
+  const evmOwner = { chain: 'evm', address: '0xabcdef' };
+  const stellarOwner = { chain: 'stellar', address: stellarAddress };
+
+  const saved = await store.setWalletSettings(evmOwner, {
+    lockReminderMinutes: 3,
+    hiddenChains: ['stellar-testnet', 'xrpl-mainnet', 'stellar-testnet', 'not-a-chain'],
+  });
+  assert.deepEqual(saved.hiddenChains, ['xrpl-mainnet', 'stellar-testnet']);
+  assert.deepEqual((await store.getWalletSettings(evmOwner)).hiddenChains, ['xrpl-mainnet', 'stellar-testnet']);
+  await assert.rejects(
+    () => store.setWalletSettings(evmOwner, { lockReminderMinutes: 3, hiddenChains: ['base-mainnet'] }),
+    /cannot hide every evm chain on mainnet/,
+  );
+  await assert.rejects(
+    () => store.setWalletSettings(stellarOwner, { lockReminderMinutes: 3, hiddenChains: ['stellar-testnet'] }),
+    /cannot hide every stellar chain on testnet/,
+  );
+  assert.deepEqual((await store.getWalletSettings(stellarOwner)).hiddenChains, []);
+});
+
 test('MemoryStore lists zones deterministically and scopes unlock metadata to the owner and network', async () => {
   const store = new MemoryStore();
   const base = {
@@ -528,6 +566,14 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     const custom = (await store.listCatalog({ chain: 'evm', address: ownerAddress })).chains.find((chain) => chain.id === customId);
     assert.equal(custom?.source, 'database');
     assert.equal(custom?.trusted, false);
+
+    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 3, hiddenChains: [] });
+    await store.setWalletSettings({ chain: 'evm', address: ownerAddress.toUpperCase() }, { lockReminderMinutes: 30, hiddenChains: ['stellar-testnet', 'xrpl-mainnet', 'not-a-chain'] });
+    assert.deepEqual(
+      await store.getWalletSettings({ chain: 'evm', address: ownerAddress }),
+      { lockReminderMinutes: 30, hiddenChains: ['xrpl-mainnet', 'stellar-testnet'] },
+    );
+    await assert.rejects(() => store.setWalletSettings({ chain: 'evm', address: ownerAddress }, { lockReminderMinutes: 7, hiddenChains: [] }), /invalid lockReminderMinutes/);
 
     const zoneName = `top-${id}`;
     const zone = await store.createZone({

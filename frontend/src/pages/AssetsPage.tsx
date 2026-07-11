@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AssetTrustState } from '@mosaic/catalog';
 import Banner from '../components/ui/Banner';
 import { useCatalog } from '../contexts/CatalogContext';
+import { useActiveChains } from '../hooks/useActiveChains';
 
 const STATES: { id: AssetTrustState; label: string }[] = [
   { id: 'hidden', label: 'Hidden' },
@@ -14,10 +15,15 @@ function shortAddress(address: string): string {
 }
 
 export default function AssetsPage() {
-  const { assets, chains, loading, error, readOnly, setAssetState } = useCatalog();
+  const { assets, loading, error, readOnly, setAssetState } = useCatalog();
+  const { activeChains } = useActiveChains();
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const chainNames = new Map(chains.map((chain) => [chain.id, chain.name]));
+  const chainNames = new Map(activeChains.map((chain) => [chain.id, chain.name]));
+  // Deployments on hidden chains never render; an asset with none left disappears too.
+  const visibleAssets = assets
+    .map((asset) => ({ ...asset, deployments: asset.deployments.filter((item) => chainNames.has(item.chainId)) }))
+    .filter((asset) => asset.deployments.length > 0);
 
   async function update(assetId: string, state: AssetTrustState) {
     setBusy(assetId);
@@ -43,7 +49,7 @@ export default function AssetsPage() {
       {actionError && <Banner tone="err">{actionError}</Banner>}
       {loading && <p className="tile-note">Loading wallet preferences…</p>}
       <div className="catalog-list">
-        {assets.map((asset) => (
+        {visibleAssets.map((asset) => (
           <article className="card catalog-card" key={asset.id}>
             <div className="catalog-card-head">
               <h3>{asset.name}</h3>

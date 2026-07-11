@@ -3,6 +3,8 @@ import { Settings } from 'lucide-react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import ThemeToggle from './components/ui/ThemeToggle';
 import StatusDot from './components/ui/StatusDot';
+import Banner from './components/ui/Banner';
+import MainnetLockReminder from './components/MainnetLockReminder';
 import { useSession } from './contexts/SessionContext';
 import { useSettings } from './contexts/SettingsContext';
 import { useVaults, type VaultState } from './contexts/VaultContext';
@@ -18,8 +20,8 @@ function short(addr: string): string {
 const CHAIN_LABELS = { evm: 'EVM', xrpl: 'XRPL', stellar: 'Stellar' } as const;
 
 export default function App() {
-  const { session, logout } = useSession();
-  const { network } = useSettings();
+  const { session, logout, networkSwitching, networkSwitchError } = useSession();
+  const { network, setNetwork } = useSettings();
   const { vaults, activeVault, selectVault } = useVaults();
   const [loginOpen, setLoginOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -64,6 +66,9 @@ export default function App() {
           <NavLink to="/assets" className={({ isActive }) => (isActive ? 'active' : '')}>
             Assets
           </NavLink>
+          <NavLink to="/vaults" className={({ isActive }) => (isActive ? 'active' : '')}>
+            Vaults
+          </NavLink>
           {localApp && (
             <NavLink to="/agents" className={({ isActive }) => (isActive ? 'active' : '')}>
               Agents
@@ -71,6 +76,31 @@ export default function App() {
           )}
         </nav>
         <div className="topbar-spacer" />
+        <div className="network-switcher">
+          <span className="chain-label">Network</span>
+          <div className="network-switch" role="group" aria-label="Network">
+            <button
+              type="button"
+              className="mainnet"
+              aria-pressed={network === 'mainnet'}
+              disabled={networkSwitching}
+              onClick={() => setNetwork('mainnet')}
+              title="Switch to Mainnet"
+            >
+              Mainnet
+            </button>
+            <button
+              type="button"
+              className="testnet"
+              aria-pressed={network === 'testnet'}
+              disabled={networkSwitching}
+              onClick={() => setNetwork('testnet')}
+              title="Switch to Testnet"
+            >
+              Testnet
+            </button>
+          </div>
+        </div>
         {session && (
           <div className="vault-switcher">
             <span className="chain-label">Active vault</span>
@@ -87,7 +117,7 @@ export default function App() {
         )}
         <div className="wallet-stack">
           <div className="wallet-chain">
-            <span className="chain-label">{session ? `${CHAIN_LABELS[session.chain]} · ${network}` : network}</span>
+            <span className="chain-label">{session ? CHAIN_LABELS[session.chain] : 'Root wallet'}</span>
             <div className="wallet-controls">
               {session ? (
                 <>
@@ -126,6 +156,9 @@ export default function App() {
           </button>
         </div>
       </header>
+      {networkSwitching && <Banner tone="info" className="app-banner">Switching your session to {network}…</Banner>}
+      {!networkSwitching && networkSwitchError && <Banner tone="err" className="app-banner">Could not switch network: {networkSwitchError}</Banner>}
+      <MainnetLockReminder key={`${network}|${session?.address ?? ''}`} />
       <main className="app-main">
         <Outlet />
       </main>

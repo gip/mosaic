@@ -82,6 +82,39 @@ export async function dropCachedZoneSecret(ref: ZoneRef): Promise<void> {
   }
 }
 
+export type ZoneCacheScope = Pick<ZoneRef, 'rootChain' | 'rootAddress' | 'network'>;
+
+/* Zone names may contain '|', so keys are matched by chain/address prefix and
+   network suffix (both '|'-free) instead of splitting on the separator. */
+async function matchingCacheKeys(scope: ZoneCacheScope): Promise<string[]> {
+  const db = await dbPromise();
+  const keys = (await db.getAllKeys(STORE)) as string[];
+  const prefix = `${scope.rootChain}|${scope.rootAddress}|`;
+  const suffix = `|${scope.network}`;
+  return keys.filter((key) => key.startsWith(prefix) && key.endsWith(suffix));
+}
+
+/** Zone names with a cached (unlocked) secret for one wallet and network. */
+export async function cachedZoneNames(scope: ZoneCacheScope): Promise<string[]> {
+  try {
+    const prefix = `${scope.rootChain}|${scope.rootAddress}|`;
+    const suffix = `|${scope.network}`;
+    return (await matchingCacheKeys(scope)).map((key) => key.slice(prefix.length, key.length - suffix.length));
+  } catch {
+    return [];
+  }
+}
+
+export async function dropCachedZoneSecretsForNetwork(scope: ZoneCacheScope): Promise<void> {
+  try {
+    const db = await dbPromise();
+    const keys = await matchingCacheKeys(scope);
+    await Promise.all(keys.map((key) => db.delete(STORE, key)));
+  } catch {
+    /* cache is best-effort */
+  }
+}
+
 export async function clearZoneCache(): Promise<void> {
   try {
     const db = await dbPromise();

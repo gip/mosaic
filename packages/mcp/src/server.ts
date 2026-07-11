@@ -190,6 +190,42 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   );
 
   reg(
+    'settings_get',
+    {
+      description: 'Read per-wallet settings (Mainnet vault lock reminder, hidden chains) for the authenticated root wallet.',
+      inputSchema: { token: z.string() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(await store.getWalletSettings({ chain: session.chain, address: session.address }));
+    },
+  );
+
+  reg(
+    'settings_set',
+    {
+      description:
+        'Update per-wallet settings; omitted fields keep their current value. lockReminderMinutes must be one of '
+        + '0 (disabled), 1, 3, 5, 10, 30. hiddenChains lists catalog chain ids the UI hides everywhere except '
+        + "settings; the session's root chain family must keep at least one active chain per network.",
+      inputSchema: {
+        token: z.string(),
+        lockReminderMinutes: z.number().int().optional(),
+        hiddenChains: z.array(z.string()).optional(),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const owner = { chain: session.chain, address: session.address };
+      const current = await store.getWalletSettings(owner);
+      return ok(await store.setWalletSettings(owner, {
+        lockReminderMinutes: args.lockReminderMinutes === undefined ? current.lockReminderMinutes : Number(args.lockReminderMinutes),
+        hiddenChains: (args.hiddenChains as string[] | undefined) ?? current.hiddenChains,
+      }));
+    },
+  );
+
+  reg(
     'zone_list',
     {
       description: 'List zone metadata for the authenticated root wallet and session network.',
