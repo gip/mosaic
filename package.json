@@ -6,6 +6,8 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
+    "local": "pnpm --filter @mosaic/local-app start",
+    "local:dev": "pnpm --filter @mosaic/local-app dev",
     "typecheck": "tsc -b",
     "test": "pnpm -r test"
   },

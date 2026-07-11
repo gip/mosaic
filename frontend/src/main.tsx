@@ -7,6 +7,7 @@ import Home from './pages/Home';
 import DexPage from './pages/DexPage';
 import SettingsPage from './pages/SettingsPage';
 import AssetsPage from './pages/AssetsPage';
+import AgentsPage from './pages/AgentsPage';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import { SessionProvider } from './contexts/SessionContext';
@@ -43,6 +44,7 @@ const router = createBrowserRouter([
       { index: true, element: <Home /> },
       { path: 'dex', element: <DexPage /> },
       { path: 'assets', element: <AssetsPage /> },
+      { path: 'agents', element: <AgentsPage /> },
       { path: 'settings', element: <SettingsPage /> },
     ],
   },

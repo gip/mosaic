@@ -13,6 +13,8 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@mosaic/catalog": "workspace:*",
     "@mosaic/dex": "workspace:*",
+    "@mosaic/local-runtime": "workspace:*",
+    "@mosaic/ui-theme": "workspace:*",
     "@mosaic/web-connector": "workspace:*",
     "@mosaic/zone-keys": "workspace:*",
     "hash-wasm": "^4.12.0",

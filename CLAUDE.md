@@ -50,8 +50,19 @@ the secret is always one wallet signature away.
   Session auth (per-chain signature verification, single-use nonces), zone
   registry, encrypted blob storage, Xaman payload proxy, XRPL
   authoritative-key ledger checks.
-- `frontend` — Vite + React 19 app. UI theme copied from stellar-mosaic-x
-  (plain CSS, `data-theme` tokens, Zed Sans/Mono).
+- `packages/local-runtime` — shared utility-process lifecycle and IPC contract
+  for the Electron host, Signer/Policy Manager, and Agent Runner.
+- `packages/ui-theme` — shared visual tokens for Web and Local. Palette,
+  spacing, typography scale, radii, and theme behavior belong here once.
+- `packages/local-signer` / `packages/agent-runner` — independently supervised
+  local process boundaries. The runner never receives zone secrets or keys.
+- `local-app` — Electron host for the shared frontend and local processes. It
+  must not contain a parallel renderer UI. The runner service starts with the
+  app; individual agents start only after their zone is unlocked by the signer.
+- `frontend` — the Vite + React 19 app rendered by both Web and Local. Local
+  capabilities are detected through the optional preload bridge; `/agents` is
+  shown in Electron and uses the same providers, MCP client, components, CSS,
+  and assets as every other route.
 
 ## Commands
 
@@ -62,6 +73,7 @@ the secret is always one wallet signature away.
 - `pnpm --filter @mosaic/mcp http` — run the MCP server (needs Postgres:
   `docker compose up -d`, and `.env` per `.env.example`).
 - `pnpm --filter frontend dev` — Vite dev server.
+- `pnpm local:dev` — build and run the Electron local app.
 - Postgres tests run only when `MOSAIC_TEST_DATABASE_URL` is set; MemoryStore
   tests always run.
 
@@ -74,5 +86,7 @@ the secret is always one wallet signature away.
   `tsconfig.base.json` (`composite: true`); root `tsconfig.json` lists
   references. Add new packages there and to `pnpm-workspace.yaml`.
 - ESLint flat-config in `frontend/` only; no prettier anywhere.
-- Frontend styling is plain CSS with theme tokens (`src/styles/tokens.css`);
-  no Tailwind/CSS-in-JS. Dark is default; light via `[data-theme="light"]`.
+- Web and Local render the same `frontend`; never build a separate Electron
+  renderer or copy screens/components/styles into `local-app`. Keep styling
+  plain CSS with no Tailwind/CSS-in-JS. Platform behavior goes behind the
+  optional Electron preload bridge.

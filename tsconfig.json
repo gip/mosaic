@@ -5,6 +5,10 @@
     { "path": "./packages/zone-keys" },
     { "path": "./packages/web-connector" },
     { "path": "./packages/dex" },
-    { "path": "./packages/mcp" }
+    { "path": "./packages/mcp" },
+    { "path": "./packages/local-runtime" },
+    { "path": "./packages/local-signer" },
+    { "path": "./packages/agent-runner" },
+    { "path": "./local-app" }
   ]
 }

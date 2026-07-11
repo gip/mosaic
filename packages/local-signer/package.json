@@ -1,0 +1,23 @@
+{
+  "name": "@mosaic/local-signer",
+  "version": "0.0.0",
+  "description": "Local Signer and Policy Manager process boundary for Mosaic.",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "mosaic-local-signer": "./dist/bin.js" },
+  "files": ["dist"],
+  "exports": { "./package.json": "./package.json" },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "start": "node dist/bin.js",
+    "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mosaic/local-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "typescript": "~6.0.2"
+  }
+}

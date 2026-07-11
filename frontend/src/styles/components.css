@@ -99,6 +99,17 @@ header.topbar {
   top: 0;
   z-index: 30;
 }
+.topbar--local {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.topbar--local a,
+.topbar--local button,
+.topbar--local input,
+.topbar--local select,
+.topbar--local textarea {
+  -webkit-app-region: no-drag;
+}
 .brand {
   font-size: var(--fs-md);
   font-weight: 700;
@@ -116,6 +127,9 @@ header.topbar {
 }
 .brand a:hover {
   color: var(--accent-hover);
+}
+.brand--local a {
+  transform: translateY(6px);
 }
 /* The logo's alpha is used as a CSS mask and painted with --logo-fill, so the wireframe
    recolors per theme (amber on dark, teal on light) and keeps a transparent backdrop. */

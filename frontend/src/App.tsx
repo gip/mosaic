@@ -5,6 +5,7 @@ import ThemeToggle from './components/ui/ThemeToggle';
 import StatusDot from './components/ui/StatusDot';
 import { useSession } from './contexts/SessionContext';
 import { useSettings } from './contexts/SettingsContext';
+import { isLocalApp } from './local/bridge';
 
 const LoginModal = lazy(() => import('./components/LoginModal'));
 
@@ -20,6 +21,7 @@ export default function App() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const navigate = useNavigate();
+  const localApp = isLocalApp();
 
   async function copyAddress() {
     if (!session) return;
@@ -34,10 +36,10 @@ export default function App() {
 
   return (
     <>
-      <header className="topbar">
-        <h1 className="brand">
+      <header className={`topbar${localApp ? ' topbar--local' : ''}`}>
+        <h1 className={`brand${localApp ? ' brand--local' : ''}`}>
           <Link to="/">
-            <span className="brand-word">MOSAIC</span>
+            {!localApp && <span className="brand-word">MOSAIC</span>}
             <span className="brand-logo" role="img" aria-label="Mosaic logo" />
           </Link>
         </h1>
@@ -51,6 +53,11 @@ export default function App() {
           <NavLink to="/assets" className={({ isActive }) => (isActive ? 'active' : '')}>
             Assets
           </NavLink>
+          {localApp && (
+            <NavLink to="/agents" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Agents
+            </NavLink>
+          )}
         </nav>
         <div className="topbar-spacer" />
         <div className="wallet-stack">

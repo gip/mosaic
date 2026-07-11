@@ -21,7 +21,12 @@ Conventions and custody boundary: [`CLAUDE.md`](CLAUDE.md).
 | `packages/zone-keys` | `@mosaic/zone-keys` | Pure isomorphic crypto: canonical messages, HKDF zone seeds, BIP44/SLIP-0010 derivation, address generation, recovery-blob AEAD. `./verify` subpath adds per-chain signature verification. Frozen golden vectors in `vectors/`. |
 | `packages/web-connector` | `@mosaic/web-connector` | Browser wallet connectivity: WalletConnect QR to MetaMask mobile + EIP-6963 extension fallback (EVM), WalletConnect QR to Freighter mobile + extension fallback (Stellar), Xaman payload QR/websocket helpers (XRPL). |
 | `packages/mcp` | `@mosaic/mcp` | MCP server (Streamable HTTP) with Postgres: per-chain session auth, zone registry, encrypted blob storage, Xaman payload proxy, XRPL authoritative-key checks. |
-| `frontend` | — | Vite + React 19 app (theme shared with stellar-mosaic-x). |
+| `packages/ui-theme` | `@mosaic/ui-theme` | Shared Web/Local design tokens: palette, spacing, typography scale, radii, and dark/light themes. |
+| `packages/local-runtime` | `@mosaic/local-runtime` | Shared Electron/Node utility-process lifecycle and IPC contract. |
+| `packages/local-signer` | `@mosaic/local-signer` | Local Signer and Policy Manager process boundary. Currently a lifecycle-only scaffold; it does not unlock or sign. |
+| `packages/agent-runner` | `@mosaic/agent-runner` | Independently supervised Agent Runner process. Execution and state are intentionally deferred. |
+| `local-app` | `@mosaic/local-app` | Electron host for the shared frontend plus Signer/Policy Manager and Agent Runner processes. It adds a narrow preload bridge, not a second UI. |
+| `frontend` | — | The shared Vite + React 19 application rendered by both Web and Local. Local exposes an additional `/agents` navigation item through its Electron bridge. |
 
 ## Quick start
 
@@ -40,6 +45,9 @@ pnpm --filter @mosaic/mcp http
 # 3. Frontend (WalletConnect project id from https://cloud.reown.com)
 cd frontend
 VITE_WALLETCONNECT_PROJECT_ID=... pnpm dev
+
+# Local desktop process scaffold (separate terminal)
+pnpm local:dev
 ```
 
 Login is mobile-wallet-first: each tile shows a QR to scan with the wallet's

@@ -127,7 +127,7 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ c
   const bind = opts.bind ?? envString('MOSAIC_BIND') ?? `127.0.0.1:${envNumber('MOSAIC_MCP_PORT', 8788)}`;
   const { host, port } = parseBind(bind);
   const corsOrigins = parseOrigins(
-    opts.corsOrigin ?? envString('MOSAIC_CORS_ORIGIN') ?? 'http://localhost:5173,http://127.0.0.1:5173',
+    opts.corsOrigin ?? envString('MOSAIC_CORS_ORIGIN') ?? 'http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:4174',
   );
   const store = opts.store ?? openMosaicStore(envString('MOSAIC_DATABASE_URL'));
   await store.init();
