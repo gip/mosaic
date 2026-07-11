@@ -161,6 +161,37 @@ test('wrong wallet signature rejected', async () => {
   );
 });
 
+test('catalog preferences default, isolate owners, normalize EVM addresses, and merge custom chains', async () => {
+  const store = new MemoryStore();
+  const upperOwner = { chain: 'evm', address: '0xAbCDEF' };
+  const lowerOwner = { chain: 'evm', address: '0xabcdef' };
+  const otherOwner = { chain: 'stellar', address: stellarAddress };
+
+  const defaults = await store.listCatalog(upperOwner);
+  assert.equal(defaults.chains.length, 6);
+  assert.ok(defaults.chains.every((chain) => chain.trusted));
+  assert.ok(defaults.assets.every((asset) => asset.trustState === 'allowed'));
+
+  await store.setChainTrust(upperOwner, 'xrpl-mainnet', false);
+  await store.setAssetTrust(upperOwner, 'rlusd', 'hidden');
+  assert.equal((await store.listCatalog(lowerOwner)).chains.find((chain) => chain.id === 'xrpl-mainnet').trusted, false);
+  assert.equal((await store.listCatalog(lowerOwner)).assets.find((asset) => asset.id === 'rlusd').trustState, 'hidden');
+  assert.equal((await store.listCatalog(otherOwner)).assets.find((asset) => asset.id === 'rlusd').trustState, 'allowed');
+
+  await store.upsertCustomChain({ id: 'optimism-mainnet', name: 'Optimism', network: 'mainnet', evmChainId: 10, enabled: true });
+  const withCustom = await store.listCatalog(upperOwner);
+  const optimism = withCustom.chains.find((chain) => chain.id === 'optimism-mainnet');
+  assert.equal(optimism.source, 'database');
+  assert.equal(optimism.trusted, false);
+  await assert.rejects(
+    () => store.upsertCustomChain({ id: 'base-mainnet', name: 'Fake Base', network: 'mainnet', evmChainId: 999, enabled: true }),
+    /conflicts with built-in/,
+  );
+  await assert.rejects(() => store.setChainTrust(upperOwner, 'unknown', true), /unknown chain/);
+  await assert.rejects(() => store.setAssetTrust(upperOwner, 'unknown', 'allowed'), /unknown asset/);
+  await assert.rejects(() => store.setAssetTrust(upperOwner, 'usdc', 'maybe'), /invalid asset trust state/);
+});
+
 // -------------------------------------------------- end-to-end over HTTP
 
 async function connectClient(url) {
@@ -172,7 +203,13 @@ async function connectClient(url) {
 async function call(client, name, args) {
   const result = await client.callTool({ name, arguments: args });
   const text = result.content?.[0]?.text ?? '{}';
-  const data = JSON.parse(text);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    if (result.isError) throw new Error(text, { cause: error });
+    throw error;
+  }
   if (result.isError) throw new Error(data.error?.message ?? text);
   return data;
 }
@@ -196,6 +233,20 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
       signature: { type: 'evm', signature: loginSig },
     });
     assert.ok(token);
+
+    // catalog defaults and trust updates are authenticated and wallet-scoped
+    const catalog = await call(client, 'catalog_list', { token });
+    assert.equal(catalog.chains.length, 6);
+    assert.equal(catalog.assets.find((asset) => asset.id === 'rlusd').trustState, 'allowed');
+    const hidden = await call(client, 'asset_trust_set', { token, assetId: 'rlusd', state: 'hidden' });
+    assert.equal(hidden.trustState, 'hidden');
+    const untrusted = await call(client, 'chain_trust_set', { token, chainId: 'xrpl-mainnet', trusted: false });
+    assert.equal(untrusted.trusted, false);
+    await assert.rejects(() => call(client, 'catalog_list', {}), /missing session token|invalid/i);
+    await assert.rejects(
+      () => call(client, 'asset_trust_set', { token, assetId: 'rlusd', state: 'maybe' }),
+      /invalid|expected/i,
+    );
 
     // no zone yet
     const missing = await call(client, 'zone_get', { token, zone: 'top' });
@@ -361,9 +412,23 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     assert.equal(first?.nonce, `nonce-${id}`);
     assert.equal(await store.consumeChallenge(id), undefined); // replay across store = rejected
 
-    const { token } = await store.createSession({ chain: 'evm', address: '0xabc', network: 'testnet', expiresAt: Date.now() + 60_000 });
-    assert.ok((await store.getSession(token))?.address === '0xabc');
+    const ownerAddress = `0xabc-${id}`;
+    const { token } = await store.createSession({ chain: 'evm', address: ownerAddress, network: 'testnet', expiresAt: Date.now() + 60_000 });
+    assert.ok((await store.getSession(token))?.address === ownerAddress);
     assert.notEqual(hashToken(token), token);
+
+    const catalog = await store.listCatalog({ chain: 'evm', address: ownerAddress.toUpperCase() });
+    assert.equal(catalog.assets.find((asset) => asset.id === 'usdc')?.trustState, 'allowed');
+    await store.setAssetTrust({ chain: 'evm', address: ownerAddress.toUpperCase() }, 'usdc', 'review');
+    assert.equal(
+      (await store.listCatalog({ chain: 'evm', address: ownerAddress })).assets.find((asset) => asset.id === 'usdc')?.trustState,
+      'review',
+    );
+    const customId = `custom-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    await store.upsertCustomChain({ id: customId, name: 'Test EVM', network: 'testnet', evmChainId: 4_000_000_000_000 + Date.now(), enabled: true });
+    const custom = (await store.listCatalog({ chain: 'evm', address: ownerAddress })).chains.find((chain) => chain.id === customId);
+    assert.equal(custom?.source, 'database');
+    assert.equal(custom?.trusted, false);
 
     const zoneName = `top-${id}`;
     const zone = await store.createZone({

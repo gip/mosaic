@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "@mosaic/catalog": "workspace:*",
     "@mosaic/zone-keys": "workspace:*",
     "postgres": "^3.4.7",
     "xumm-sdk": "^1.11.2",

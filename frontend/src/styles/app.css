@@ -210,6 +210,118 @@
   flex-direction: column;
 }
 
+.zone-card + .zone-card {
+  margin-top: var(--sp-4);
+}
+
+.chain-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.chain-group h4 {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chain-trust-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-inset);
+}
+
+.chain-trust-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ----------------------------------------------------------- catalog */
+
+.catalog-page {
+  padding-bottom: var(--sp-8);
+}
+
+.catalog-intro {
+  color: var(--fg-muted);
+}
+
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.catalog-card {
+  margin: 0;
+}
+
+.catalog-card-head,
+.catalog-state-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.catalog-card-head h3 {
+  margin: 0;
+}
+
+.catalog-deployments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0;
+}
+
+.catalog-deployment {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+
+.catalog-deployment strong {
+  color: var(--fg);
+}
+
+.catalog-deployment .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 560px) {
+  .catalog-state-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .catalog-state-row .segmented {
+    display: flex;
+  }
+
+  .catalog-state-row .segmented button {
+    flex: 1;
+  }
+}
+
 /* ------------------------------------------------------------ hero */
 
 .intro {
@@ -256,6 +368,10 @@
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: var(--sp-4);
   align-items: start;
+}
+
+.dex-add-form > .banner {
+  grid-column: 1 / -1;
 }
 
 .dex-asset {

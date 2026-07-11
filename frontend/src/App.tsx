@@ -48,6 +48,9 @@ export default function App() {
           <NavLink to="/dex" className={({ isActive }) => (isActive ? 'active' : '')}>
             DEX
           </NavLink>
+          <NavLink to="/assets" className={({ isActive }) => (isActive ? 'active' : '')}>
+            Assets
+          </NavLink>
         </nav>
         <div className="topbar-spacer" />
         <div className="wallet-stack">

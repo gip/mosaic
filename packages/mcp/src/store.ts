@@ -1,5 +1,15 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import postgres from 'postgres';
+import {
+  BUILTIN_ASSETS,
+  BUILTIN_CHAINS,
+  type AssetTrustState,
+  type AssetWithTrust,
+  type CatalogSnapshot,
+  type ChainWithTrust,
+  type NetworkTag,
+  type SupportedChain,
+} from '@mosaic/catalog';
 import type { Network, RootChain } from '@mosaic/zone-keys';
 import { MosaicMcpError } from './errors.js';
 import { MIGRATIONS } from './migrations.js';
@@ -60,6 +70,19 @@ export interface BlobRecord {
   createdAt: string;
 }
 
+export interface CatalogOwner {
+  chain: RootChain;
+  address: string;
+}
+
+export interface CustomChainRecord {
+  id: string;
+  name: string;
+  network: NetworkTag;
+  evmChainId: number;
+  enabled: boolean;
+}
+
 export interface MosaicStore {
   init(): Promise<void>;
   healthCheck(): Promise<{ ok: true }>;
@@ -84,6 +107,13 @@ export interface MosaicStore {
   getBlob(zoneId: string, kind: BlobKind): Promise<BlobRecord | undefined>;
   listBlobKinds(zoneId: string): Promise<{ kind: BlobKind; version: number }[]>;
 
+  ensureCatalogPreferences(owner: CatalogOwner): Promise<void>;
+  listCatalog(owner: CatalogOwner): Promise<CatalogSnapshot>;
+  setChainTrust(owner: CatalogOwner, chainId: string, trusted: boolean): Promise<ChainWithTrust>;
+  setAssetTrust(owner: CatalogOwner, assetId: string, state: AssetTrustState): Promise<AssetWithTrust>;
+  /** Internal administration hook. No MCP tool exposes custom-chain mutation. */
+  upsertCustomChain(record: CustomChainRecord): Promise<void>;
+
   sweepExpired(): Promise<void>;
   close(): Promise<void>;
 }
@@ -96,6 +126,26 @@ export function hashToken(token: string): string {
 
 export function newToken(): string {
   return randomBytes(32).toString('hex');
+}
+
+export function normalizeCatalogOwner(owner: CatalogOwner): CatalogOwner {
+  return {
+    chain: owner.chain,
+    address: owner.chain === 'evm' ? owner.address.toLowerCase() : owner.address,
+  };
+}
+
+function validateCustomChain(record: CustomChainRecord): void {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(record.id)) {
+    throw new MosaicMcpError('VALIDATION_FAILED', `invalid custom chain id: ${record.id}`);
+  }
+  if (!record.name.trim()) throw new MosaicMcpError('VALIDATION_FAILED', 'custom chain name is required');
+  if (!Number.isSafeInteger(record.evmChainId) || record.evmChainId <= 0) {
+    throw new MosaicMcpError('VALIDATION_FAILED', `invalid EVM chain id: ${record.evmChainId}`);
+  }
+  if (BUILTIN_CHAINS.some(({ id }) => id === record.id)) {
+    throw new MosaicMcpError('CONFLICT', `custom chain conflicts with built-in: ${record.id}`);
+  }
 }
 
 // ---------------------------------------------------------------- Postgres
@@ -167,6 +217,7 @@ export class PostgresStore implements MosaicStore {
       network: record.network,
       expires_at: new Date(record.expiresAt).toISOString(),
     })}`;
+    await this.ensureCatalogPreferences({ chain: record.chain, address: record.address });
     return { token };
   }
 
@@ -250,6 +301,103 @@ export class PostgresStore implements MosaicStore {
     return rows.map((row) => ({ kind: row.kind as BlobKind, version: Number(row.version) }));
   }
 
+  async ensureCatalogPreferences(rawOwner: CatalogOwner): Promise<void> {
+    const owner = normalizeCatalogOwner(rawOwner);
+    for (const chain of BUILTIN_CHAINS) {
+      await this.sql`
+        INSERT INTO chain_preferences (root_chain, root_address, chain_id, trusted)
+        VALUES (${owner.chain}, ${owner.address}, ${chain.id}, TRUE)
+        ON CONFLICT DO NOTHING`;
+    }
+    await this.sql`
+      INSERT INTO chain_preferences (root_chain, root_address, chain_id, trusted)
+      SELECT ${owner.chain}, ${owner.address}, id, FALSE FROM custom_chains WHERE enabled = TRUE
+      ON CONFLICT DO NOTHING`;
+    for (const asset of BUILTIN_ASSETS) {
+      await this.sql`
+        INSERT INTO asset_preferences (root_chain, root_address, asset_id, trust_state)
+        VALUES (${owner.chain}, ${owner.address}, ${asset.id}, 'allowed')
+        ON CONFLICT DO NOTHING`;
+    }
+  }
+
+  async listCatalog(rawOwner: CatalogOwner): Promise<CatalogSnapshot> {
+    const owner = normalizeCatalogOwner(rawOwner);
+    await this.ensureCatalogPreferences(owner);
+    const customRows = await this.sql`
+      SELECT id, name, network, evm_chain_id FROM custom_chains WHERE enabled = TRUE ORDER BY name, id`;
+    const customChains: SupportedChain[] = customRows.flatMap((row) => {
+      const id = row.id as string;
+      const evmChainId = Number(row.evm_chain_id);
+      if (BUILTIN_CHAINS.some((chain) => chain.id === id) || !Number.isSafeInteger(evmChainId) || evmChainId <= 0) {
+        return [];
+      }
+      return [{
+        id,
+        name: row.name as string,
+        family: 'evm' as const,
+        network: row.network as NetworkTag,
+        source: 'database' as const,
+        evmChainId,
+      }];
+    });
+    const chainRows = await this.sql`
+      SELECT chain_id, trusted FROM chain_preferences
+      WHERE root_chain = ${owner.chain} AND root_address = ${owner.address}`;
+    const chainTrust = new Map(chainRows.map((row) => [row.chain_id as string, row.trusted as boolean]));
+    const assetRows = await this.sql`
+      SELECT asset_id, trust_state FROM asset_preferences
+      WHERE root_chain = ${owner.chain} AND root_address = ${owner.address}`;
+    const assetTrust = new Map(assetRows.map((row) => [row.asset_id as string, row.trust_state as AssetTrustState]));
+    return {
+      chains: [...BUILTIN_CHAINS, ...customChains].map((chain) => ({ ...chain, trusted: chainTrust.get(chain.id) ?? false })),
+      assets: BUILTIN_ASSETS.map((asset) => ({
+        ...asset,
+        deployments: [...asset.deployments],
+        trustState: assetTrust.get(asset.id) ?? 'review',
+      })),
+    };
+  }
+
+  async setChainTrust(owner: CatalogOwner, chainId: string, trusted: boolean): Promise<ChainWithTrust> {
+    const catalog = await this.listCatalog(owner);
+    const chain = catalog.chains.find(({ id }) => id === chainId);
+    if (!chain) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainId}`);
+    const normalized = normalizeCatalogOwner(owner);
+    await this.sql`
+      INSERT INTO chain_preferences (root_chain, root_address, chain_id, trusted, updated_at)
+      VALUES (${normalized.chain}, ${normalized.address}, ${chainId}, ${trusted}, now())
+      ON CONFLICT (root_chain, root_address, chain_id)
+      DO UPDATE SET trusted = EXCLUDED.trusted, updated_at = now()`;
+    return { ...chain, trusted };
+  }
+
+  async setAssetTrust(owner: CatalogOwner, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
+    if (!(['hidden', 'review', 'allowed'] as const).includes(state)) {
+      throw new MosaicMcpError('VALIDATION_FAILED', `invalid asset trust state: ${String(state)}`);
+    }
+    const catalog = await this.listCatalog(owner);
+    const asset = catalog.assets.find(({ id }) => id === assetId);
+    if (!asset) throw new MosaicMcpError('NOT_FOUND', `unknown asset: ${assetId}`);
+    const normalized = normalizeCatalogOwner(owner);
+    await this.sql`
+      INSERT INTO asset_preferences (root_chain, root_address, asset_id, trust_state, updated_at)
+      VALUES (${normalized.chain}, ${normalized.address}, ${assetId}, ${state}, now())
+      ON CONFLICT (root_chain, root_address, asset_id)
+      DO UPDATE SET trust_state = EXCLUDED.trust_state, updated_at = now()`;
+    return { ...asset, trustState: state };
+  }
+
+  async upsertCustomChain(record: CustomChainRecord): Promise<void> {
+    validateCustomChain(record);
+    await this.sql`
+      INSERT INTO custom_chains (id, name, family, network, evm_chain_id, enabled)
+      VALUES (${record.id}, ${record.name.trim()}, 'evm', ${record.network}, ${record.evmChainId}, ${record.enabled})
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name, network = EXCLUDED.network, evm_chain_id = EXCLUDED.evm_chain_id,
+        enabled = EXCLUDED.enabled, updated_at = now()`;
+  }
+
   async sweepExpired(): Promise<void> {
     await this.sql`DELETE FROM sessions WHERE expires_at < now()`;
     await this.sql`DELETE FROM auth_challenges WHERE expires_at < now() - interval '1 day'`;
@@ -302,6 +450,9 @@ export class MemoryStore implements MosaicStore {
   private zones = new Map<string, ZoneRecord>();
   private blobs = new Map<string, BlobRecord[]>();
   private nonces = new Set<string>();
+  private customChains = new Map<string, CustomChainRecord>();
+  private chainPreferences = new Map<string, Map<string, boolean>>();
+  private assetPreferences = new Map<string, Map<string, AssetTrustState>>();
 
   async init(): Promise<void> {}
   async healthCheck(): Promise<{ ok: true }> {
@@ -335,6 +486,7 @@ export class MemoryStore implements MosaicStore {
   async createSession(record: SessionRecord): Promise<{ token: string }> {
     const token = newToken();
     this.sessions.set(hashToken(token), { ...record });
+    await this.ensureCatalogPreferences({ chain: record.chain, address: record.address });
     return { token };
   }
 
@@ -383,6 +535,63 @@ export class MemoryStore implements MosaicStore {
       if (blob) out.push({ kind, version: blob.version });
     }
     return out;
+  }
+
+  async ensureCatalogPreferences(rawOwner: CatalogOwner): Promise<void> {
+    const owner = normalizeCatalogOwner(rawOwner);
+    const key = `${owner.chain}|${owner.address}`;
+    const chains = this.chainPreferences.get(key) ?? new Map<string, boolean>();
+    for (const chain of BUILTIN_CHAINS) if (!chains.has(chain.id)) chains.set(chain.id, true);
+    for (const chain of this.customChains.values()) if (chain.enabled && !chains.has(chain.id)) chains.set(chain.id, false);
+    this.chainPreferences.set(key, chains);
+    const assets = this.assetPreferences.get(key) ?? new Map<string, AssetTrustState>();
+    for (const asset of BUILTIN_ASSETS) if (!assets.has(asset.id)) assets.set(asset.id, 'allowed');
+    this.assetPreferences.set(key, assets);
+  }
+
+  async listCatalog(rawOwner: CatalogOwner): Promise<CatalogSnapshot> {
+    const owner = normalizeCatalogOwner(rawOwner);
+    await this.ensureCatalogPreferences(owner);
+    const key = `${owner.chain}|${owner.address}`;
+    const trusts = this.chainPreferences.get(key)!;
+    const custom: SupportedChain[] = [...this.customChains.values()]
+      .filter(({ enabled }) => enabled)
+      .map(({ id, name, network, evmChainId }) => ({ id, name, family: 'evm', network, source: 'database', evmChainId }));
+    const states = this.assetPreferences.get(key)!;
+    return {
+      chains: [...BUILTIN_CHAINS, ...custom].map((chain) => ({ ...chain, trusted: trusts.get(chain.id) ?? false })),
+      assets: BUILTIN_ASSETS.map((asset) => ({
+        ...asset,
+        deployments: [...asset.deployments],
+        trustState: states.get(asset.id) ?? 'review',
+      })),
+    };
+  }
+
+  async setChainTrust(owner: CatalogOwner, chainId: string, trusted: boolean): Promise<ChainWithTrust> {
+    const catalog = await this.listCatalog(owner);
+    const chain = catalog.chains.find(({ id }) => id === chainId);
+    if (!chain) throw new MosaicMcpError('NOT_FOUND', `unknown chain: ${chainId}`);
+    const normalized = normalizeCatalogOwner(owner);
+    this.chainPreferences.get(`${normalized.chain}|${normalized.address}`)!.set(chainId, trusted);
+    return { ...chain, trusted };
+  }
+
+  async setAssetTrust(owner: CatalogOwner, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
+    if (!(['hidden', 'review', 'allowed'] as const).includes(state)) {
+      throw new MosaicMcpError('VALIDATION_FAILED', `invalid asset trust state: ${String(state)}`);
+    }
+    const catalog = await this.listCatalog(owner);
+    const asset = catalog.assets.find(({ id }) => id === assetId);
+    if (!asset) throw new MosaicMcpError('NOT_FOUND', `unknown asset: ${assetId}`);
+    const normalized = normalizeCatalogOwner(owner);
+    this.assetPreferences.get(`${normalized.chain}|${normalized.address}`)!.set(assetId, state);
+    return { ...asset, trustState: state };
+  }
+
+  async upsertCustomChain(record: CustomChainRecord): Promise<void> {
+    validateCustomChain(record);
+    this.customChains.set(record.id, { ...record, name: record.name.trim() });
   }
 
   async sweepExpired(): Promise<void> {

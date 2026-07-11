@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import type { AssetTrustState } from '@mosaic/catalog';
 import { authorizeZoneMessage, backupWrapMessage, type ZoneRef } from '@mosaic/zone-keys';
 import { xrplSignInTxJson } from '@mosaic/zone-keys/verify';
 import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, type Session } from './auth.js';
@@ -118,6 +119,54 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     async (args) => {
       await auth.logout(String(args.token));
       return ok({ ok: true });
+    },
+  );
+
+  reg(
+    'catalog_list',
+    {
+      description: 'List supported chains and assets with trust preferences for the authenticated root wallet.',
+      inputSchema: { token: z.string() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(await store.listCatalog({ chain: session.chain, address: session.address }));
+    },
+  );
+
+  reg(
+    'chain_trust_set',
+    {
+      description: 'Set whether the authenticated root wallet trusts a supported chain.',
+      inputSchema: { token: z.string(), chainId: z.string().min(1), trusted: z.boolean() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(
+        await store.setChainTrust(
+          { chain: session.chain, address: session.address },
+          String(args.chainId),
+          Boolean(args.trusted),
+        ),
+      );
+    },
+  );
+
+  reg(
+    'asset_trust_set',
+    {
+      description: 'Set an asset to Hidden, Review, or Allowed for the authenticated root wallet.',
+      inputSchema: { token: z.string(), assetId: z.string().min(1), state: z.enum(['hidden', 'review', 'allowed']) },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(
+        await store.setAssetTrust(
+          { chain: session.chain, address: session.address },
+          String(args.assetId),
+          String(args.state) as AssetTrustState,
+        ),
+      );
     },
   );
 

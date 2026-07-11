@@ -6,9 +6,11 @@ import App from './App';
 import Home from './pages/Home';
 import DexPage from './pages/DexPage';
 import SettingsPage from './pages/SettingsPage';
+import AssetsPage from './pages/AssetsPage';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import { SessionProvider } from './contexts/SessionContext';
+import { CatalogProvider } from './contexts/CatalogContext';
 
 if (import.meta.env.DEV) {
   console.info(
@@ -24,7 +26,9 @@ function AppRoute() {
     <ThemeProvider>
       <SettingsProvider>
         <SessionProvider>
-          <App />
+          <CatalogProvider>
+            <App />
+          </CatalogProvider>
         </SessionProvider>
       </SettingsProvider>
     </ThemeProvider>
@@ -38,6 +42,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'dex', element: <DexPage /> },
+      { path: 'assets', element: <AssetsPage /> },
       { path: 'settings', element: <SettingsPage /> },
     ],
   },

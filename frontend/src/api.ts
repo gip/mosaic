@@ -1,4 +1,5 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainWithTrust } from '@mosaic/catalog';
 import type { Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
 import { MCP_URL } from './config';
 
@@ -90,6 +91,18 @@ class MosaicApi {
 
   authLogout(token: string): Promise<{ ok: boolean }> {
     return this.call('auth_logout', { token });
+  }
+
+  catalogList(token: string): Promise<CatalogSnapshot> {
+    return this.call('catalog_list', { token });
+  }
+
+  chainTrustSet(token: string, chainId: string, trusted: boolean): Promise<ChainWithTrust> {
+    return this.call('chain_trust_set', { token, chainId, trusted });
+  }
+
+  assetTrustSet(token: string, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
+    return this.call('asset_trust_set', { token, assetId, state });
   }
 
   zoneBegin(token: string, zone: string): Promise<{ challengeId: string; nonce: string; issuedAt: string; expiresAt: string }> {
