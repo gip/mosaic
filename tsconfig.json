@@ -10,7 +10,7 @@
     { "path": "./packages/mosaic-evm" },
     { "path": "./packages/mcp" },
     { "path": "./packages/local-runtime" },
-    { "path": "./packages/local-signer" },
+    { "path": "./packages/guardian" },
     { "path": "./packages/agent-runner" },
     { "path": "./local-app" }
   ]

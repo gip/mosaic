@@ -1,18 +1,7 @@
 import process from 'node:process';
+import type { MosaicNetwork, ServiceMessage, ServiceName } from './contracts.js';
 
-export type ServiceName = 'signer-policy-manager' | 'agent-runner';
-export type ServicePhase = 'starting' | 'running' | 'stopping' | 'stopped' | 'failed';
-
-export interface ServiceStatus {
-  name: ServiceName;
-  phase: ServicePhase;
-  pid?: number;
-  detail?: string;
-}
-
-export type ServiceMessage =
-  | { type: 'ready'; service: ServiceName; pid: number }
-  | { type: 'stopping'; service: ServiceName };
+export * from './contracts.js';
 
 type ParentPort = {
   on(event: 'message', listener: (event: { data: unknown }) => void): void;
@@ -23,7 +12,7 @@ type ParentPort = {
  * Keep a local utility process alive and expose the same lifecycle contract
  * over Electron parentPort and Node child-process IPC.
  */
-export function runLocalService(service: ServiceName): void {
+export function runLocalService(service: ServiceName, details: { vault?: string; network?: MosaicNetwork } = {}): void {
   const parentPort = (process as NodeJS.Process & { parentPort?: ParentPort }).parentPort;
   let stopping = false;
 
@@ -51,9 +40,20 @@ export function runLocalService(service: ServiceName): void {
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 
-  send({ type: 'ready', service, pid: process.pid });
+  send({ type: 'ready', service, pid: process.pid, ...details });
 }
 
 function isShutdown(message: unknown): boolean {
   return typeof message === 'object' && message !== null && 'type' in message && message.type === 'shutdown';
 }
+
+export {
+  mosaicRuntimeDirectory,
+  guardianControlAddress,
+  guardianControlToken,
+  startGuardianControlServer,
+  callGuardianControl,
+  type GuardianControlRequest,
+  type GuardianControlHandlers,
+  type LocalMcpSession,
+} from './control.js';

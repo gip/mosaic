@@ -153,4 +153,8 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
   ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server'));
   `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server','data'));
+  `,
 ];

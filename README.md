@@ -24,9 +24,9 @@ Conventions and custody boundary: [`CLAUDE.md`](CLAUDE.md).
 | `packages/mcp` | `@mosaic/mcp` | MCP server (Streamable HTTP) with Postgres: per-chain session auth, zone registry, encrypted blob storage, Xaman payload proxy, XRPL authoritative-key checks. |
 | `packages/ui-theme` | `@mosaic/ui-theme` | Shared Web/Local design tokens: palette, spacing, typography scale, radii, and dark/light themes. |
 | `packages/local-runtime` | `@mosaic/local-runtime` | Shared Electron/Node utility-process lifecycle and IPC contract. |
-| `packages/local-signer` | `@mosaic/local-signer` | Local Signer and Policy Manager process boundary. Currently a lifecycle-only scaffold; it does not unlock or sign. |
-| `packages/agent-runner` | `@mosaic/agent-runner` | Independently supervised Agent Runner process. Execution and state are intentionally deferred. |
-| `local-app` | `@mosaic/local-app` | Electron host for the shared frontend plus Signer/Policy Manager and Agent Runner processes. It adds a narrow preload bridge, not a second UI. |
+| `packages/guardian` | `@mosaic/guardian` | Mosaic Guardian: local MCP session, vault unlock, encrypted vault data, XMTP control identity, and networkless lease/policy core. |
+| `packages/agent-runner` | `@mosaic/agent-runner` | Independently supervised Agent Runner that verifies Guardian grants and spawns isolated QuickJS agents. |
+| `local-app` | `@mosaic/local-app` | Electron host for the shared frontend plus Mosaic Guardian and Agent Runner processes. It adds a narrow preload bridge, not a second UI. |
 | `frontend` | — | The shared Vite + React 19 application rendered by both Web and Local. Local exposes an additional `/agents` navigation item through its Electron bridge. |
 
 ## Quick start

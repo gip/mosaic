@@ -31,6 +31,7 @@ const fail = (error: unknown): ToolResult => ({
 });
 
 const MAX_BLOB_BYTES = 4 * 1024;
+const MAX_DATA_BLOB_BYTES = 64 * 1024 + 16; // v1 plaintext limit plus XChaCha20-Poly1305 tag
 const zoneNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 const signatureSchema = z.union([
@@ -463,27 +464,30 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   reg(
     'blob_put',
     {
-      description: `Store an encrypted recovery blob (ciphertext only, max ${MAX_BLOB_BYTES} bytes).`,
+      description: `Store an encrypted blob. Recovery blobs are capped at ${MAX_BLOB_BYTES} bytes; data blobs at ${MAX_DATA_BLOB_BYTES} bytes.`,
       inputSchema: {
         token: z.string(),
         zone: z.string(),
-        kind: z.enum(['sig', 'pass', 'device']),
+        kind: z.enum(['sig', 'pass', 'device', 'data']),
         ciphertextB64: z.string(),
         header: z.record(z.string(), z.unknown()),
+        expectedVersion: z.number().int().nonnegative().optional(),
       },
     },
     async (args) => {
       const session = await requireSession(args);
       const zone = await requireZone(session, String(args.zone));
       const ciphertext = Buffer.from(String(args.ciphertextB64), 'base64');
-      if (ciphertext.byteLength === 0 || ciphertext.byteLength > MAX_BLOB_BYTES) {
-        throw new MosaicMcpError('VALIDATION_FAILED', `ciphertext must be 1..${MAX_BLOB_BYTES} bytes`);
+      const maxBytes = args.kind === 'data' ? MAX_DATA_BLOB_BYTES : MAX_BLOB_BYTES;
+      if (ciphertext.byteLength === 0 || ciphertext.byteLength > maxBytes) {
+        throw new MosaicMcpError('VALIDATION_FAILED', `ciphertext must be 1..${maxBytes} bytes`);
       }
       const { version } = await store.putBlob({
         zoneId: zone.id,
         kind: args.kind as BlobKind,
         ciphertext: new Uint8Array(ciphertext),
         header: args.header as Record<string, unknown>,
+        ...(args.expectedVersion === undefined ? {} : { expectedVersion: Number(args.expectedVersion) }),
       });
       return ok({ version });
     },
@@ -494,7 +498,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     {
       description:
         'Fetch the latest encrypted recovery blob of a kind. Served only to a session authenticated via session-auth — never ask users to sign backup-wrap to log in.',
-      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device', 'server']) },
+      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device', 'server', 'data']) },
     },
     async (args) => {
       const session = await requireSession(args);

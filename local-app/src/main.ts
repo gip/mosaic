@@ -4,7 +4,15 @@ import { createServer, type Server } from 'node:http';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, ipcMain, utilityProcess, type UtilityProcess } from 'electron';
-import type { ServiceName, ServiceStatus } from './status.js';
+import {
+  DEFAULT_GUARDIAN_VAULT,
+  DEFAULT_RUNNER_VAULT,
+  callGuardianControl,
+  type LocalMcpSession,
+  type MosaicNetwork,
+  type ServiceName,
+  type ServiceStatus,
+} from '@mosaic/local-runtime';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,9 +43,10 @@ function publish(status: ServiceStatus): void {
   window?.webContents.send('services:status', [...statuses.values()]);
 }
 
-function startService(name: ServiceName, packageName: string): void {
+function startService(name: ServiceName, packageName: string, args: string[] = []): void {
+  if (children.has(name)) throw new Error(`${name} is already running`);
   publish({ name, phase: 'starting' });
-  const child = utilityProcess.fork(serviceEntry(packageName), [], {
+  const child = utilityProcess.fork(serviceEntry(packageName), args, {
     serviceName: `Mosaic ${name}`,
     stdio: 'inherit',
   });
@@ -45,7 +54,15 @@ function startService(name: ServiceName, packageName: string): void {
 
   child.on('spawn', () => publish({ name, phase: 'starting', pid: child.pid }));
   child.on('message', (message: unknown) => {
-    if (isReadyMessage(message, name)) publish({ name, phase: 'running', pid: message.pid });
+    if (isReadyMessage(message, name)) {
+      publish({
+        name,
+        phase: name === 'mosaic-guardian' ? 'awaiting-wallet' : 'running',
+        pid: message.pid,
+        ...(message.vault ? { vault: message.vault } : {}),
+        ...(message.network ? { network: message.network } : {}),
+      });
+    }
   });
   child.on('exit', (code) => {
     children.delete(name);
@@ -58,7 +75,65 @@ function startService(name: ServiceName, packageName: string): void {
   });
 }
 
-function isReadyMessage(message: unknown, name: ServiceName): message is { type: 'ready'; service: ServiceName; pid: number } {
+async function waitForGuardianControl(): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try { await callGuardianControl<ServiceStatus>('status', undefined, 500); return; }
+    catch (error) { lastError = error; await new Promise((resolve) => setTimeout(resolve, 100)); }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Mosaic Guardian control endpoint did not start');
+}
+
+async function startGuardian(args: {
+  vault?: string;
+  network?: MosaicNetwork;
+  session: LocalMcpSession;
+  signatureB64?: string;
+  passphrase?: string;
+}): Promise<ServiceStatus> {
+  const vault = args.vault?.trim() || DEFAULT_GUARDIAN_VAULT;
+  const network = args.network ?? 'testnet';
+  try {
+    await callGuardianControl<ServiceStatus>('status', undefined, 500);
+  } catch {
+    startService('mosaic-guardian', '@mosaic/guardian', [vault, '--network', network]);
+    await waitForGuardianControl();
+  }
+  await callGuardianControl('session.attach', args.session as unknown as Record<string, unknown>);
+  await callGuardianControl('guardian.start', {
+    vault,
+    network,
+    ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
+    ...(args.passphrase ? { passphrase: args.passphrase } : {}),
+  }, 180_000);
+  const status = await callGuardianControl<ServiceStatus>('status');
+  publish(status);
+  return status;
+}
+
+async function startAgent(args: { vault?: string; network?: MosaicNetwork }): Promise<void> {
+  const vault = args.vault?.trim() || DEFAULT_RUNNER_VAULT;
+  const network = args.network ?? 'testnet';
+  const guardian = await callGuardianControl<ServiceStatus>('status');
+  if (guardian.phase !== 'running') throw new Error('Unlock Mosaic Guardian before starting an agent');
+  // The explicit UI start action is the local pairing approval. The Runner
+  // creates its own device key and requests a signed, short-lived grant.
+  startService('agent-runner', '@mosaic/agent-runner', [vault, '--network', network]);
+}
+
+async function stopService(name: ServiceName): Promise<void> {
+  if (name === 'mosaic-guardian') {
+    await callGuardianControl('shutdown').catch(() => {});
+    publish({ name, phase: 'stopped' });
+    return;
+  }
+  const child = children.get(name);
+  if (!child) { publish({ name, phase: 'stopped' }); return; }
+  publish({ ...statuses.get(name), name, phase: 'stopping' });
+  child.postMessage({ type: 'shutdown' });
+}
+
+function isReadyMessage(message: unknown, name: ServiceName): message is { type: 'ready'; service: ServiceName; pid: number; vault?: string; network?: MosaicNetwork } {
   return (
     typeof message === 'object' && message !== null &&
     'type' in message && message.type === 'ready' &&
@@ -131,6 +206,9 @@ async function stopChildren(): Promise<void> {
 }
 
 ipcMain.handle('services:list', () => [...statuses.values()]);
+ipcMain.handle('services:start-guardian', (_event, args) => startGuardian(args));
+ipcMain.handle('services:start-agent', (_event, args) => startAgent(args));
+ipcMain.handle('services:stop', (_event, name: ServiceName) => stopService(name));
 
 app.whenReady().then(() => {
   const rendererUrl = process.env.MOSAIC_RENDERER_URL
@@ -138,8 +216,15 @@ app.whenReady().then(() => {
     : startRendererServer();
   void rendererUrl.then((url) => {
     createWindow(url);
-    startService('signer-policy-manager', '@mosaic/local-signer');
-    startService('agent-runner', '@mosaic/agent-runner');
+    publish({ name: 'mosaic-guardian', phase: 'stopped', vault: DEFAULT_GUARDIAN_VAULT, network: 'testnet' });
+    publish({ name: 'agent-runner', phase: 'stopped', vault: DEFAULT_RUNNER_VAULT, network: 'testnet' });
+    setInterval(() => {
+      void callGuardianControl<ServiceStatus>('status', undefined, 500).then(publish).catch(() => {
+        if (!children.has('mosaic-guardian') && statuses.get('mosaic-guardian')?.phase !== 'stopped') {
+          publish({ name: 'mosaic-guardian', phase: 'stopped', vault: DEFAULT_GUARDIAN_VAULT, network: 'testnet' });
+        }
+      });
+    }, 1_000).unref();
   });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

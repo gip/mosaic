@@ -56,6 +56,7 @@ export {
   passphraseKdfParams,
   encodeBackupFile,
   decodeBackupBlob,
+  decodeVaultDataBackupBlob,
   type BlobHeader,
   type WrappedBlob,
   type SigKdfInfo,
@@ -65,3 +66,15 @@ export {
 export { evmAddressFromPublicKey, evmAddressFromPrivateKey, toEip55 } from './address/evm.js';
 export { xrplAddressFromPublicKey } from './address/xrpl.js';
 export { stellarAddressFromPublicKey, stellarPublicKeyFromAddress } from './address/stellar.js';
+export {
+  VAULT_DATA_DOMAIN_V1,
+  VAULT_DATA_MAX_PLAINTEXT_BYTES,
+  VAULT_DATA_NONCE_LENGTH,
+  vaultDataKey,
+  sealVaultData,
+  openVaultData,
+  type VaultIdentityV1,
+  type VaultDataV1,
+  type VaultDataBlobHeader,
+  type WrappedVaultData,
+} from './vaultData.js';

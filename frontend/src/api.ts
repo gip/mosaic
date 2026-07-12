@@ -51,7 +51,7 @@ export interface ZoneGetResult {
   layer1Enabled?: boolean;
   createdAt?: string;
   lastUnlockedAt?: string;
-  blobs?: { kind: 'sig' | 'pass' | 'device'; version: number }[];
+  blobs?: { kind: 'sig' | 'pass' | 'device' | 'server' | 'data'; version: number }[];
   chains?: ZoneChainSetting[];
 }
 
@@ -76,7 +76,7 @@ export interface ZoneAddressItem {
 }
 
 export interface BlobGetResult {
-  kind: 'sig' | 'pass' | 'device' | 'server';
+  kind: 'sig' | 'pass' | 'device' | 'server' | 'data';
   version: number;
   header: Record<string, unknown>;
   ciphertextB64: string;
@@ -216,14 +216,15 @@ class MosaicApi {
   blobPut(args: {
     token: string;
     zone: string;
-    kind: 'sig' | 'pass' | 'device';
+    kind: 'sig' | 'pass' | 'device' | 'data';
     ciphertextB64: string;
     header: Record<string, unknown>;
+    expectedVersion?: number;
   }): Promise<{ version: number }> {
     return this.call('blob_put', args);
   }
 
-  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device' | 'server'): Promise<BlobGetResult> {
+  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device' | 'server' | 'data'): Promise<BlobGetResult> {
     return this.call('blob_get', { token, zone, kind });
   }
 

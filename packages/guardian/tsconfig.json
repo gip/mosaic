@@ -7,5 +7,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../local-runtime" }]
+  "references": [{ "path": "../local-runtime" }, { "path": "../zone-keys" }, { "path": "../web-connector" }]
 }

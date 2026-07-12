@@ -6,6 +6,7 @@ import Banner from '../components/ui/Banner';
 import StatusDot from '../components/ui/StatusDot';
 import { useSession } from '../contexts/SessionContext';
 import { useVaults, type VaultState } from '../contexts/VaultContext';
+import { exportLatestVaultBackup } from '../zone/export';
 
 const CreateVaultModal = lazy(() => import('../components/ZonePanel').then((module) => ({ default: module.CreateVaultModal })));
 
@@ -21,12 +22,26 @@ export default function VaultsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [chainModalZone, setChainModalZone] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const isOpen = (vault: VaultState) => expanded[vault.zone] ?? (activeVault?.zone === vault.zone);
   const toggle = (vault: VaultState) => setExpanded((current) => ({ ...current, [vault.zone]: !isOpen(vault) }));
 
   // Resolved from the list so the modal reflects toggles as soon as state updates.
   const chainModalVault = vaults.find(({ zone }) => zone === chainModalZone) ?? null;
+
+  async function exportBackup(vault: VaultState) {
+    if (!session) return;
+    setExportError(null);
+    try {
+      await exportLatestVaultBackup({
+        token: session.token,
+        ref: { rootChain: session.chain, rootAddress: session.address, zone: vault.zone, network: session.network },
+        commitment: vault.commitment,
+        createdAt: vault.createdAt,
+      });
+    } catch (cause) { setExportError(cause instanceof Error ? cause.message : String(cause)); }
+  }
 
   return (
     <section className="reading vaults-page">
@@ -43,6 +58,7 @@ export default function VaultsPage() {
           </div>
           {error && <Banner tone="err">{error}</Banner>}
           {metadataWarning && <Banner tone="warn">{metadataWarning}</Banner>}
+          {exportError && <Banner tone="err">{exportError}</Banner>}
           {loading && <p className="tile-note">Loading vaults…</p>}
           {!loading && vaults.length === 0 && <div className="zone-card"><h3>No vaults yet</h3><p>Create a vault to derive agent addresses for this wallet and network.</p><button type="button" onClick={() => setCreateOpen(true)}>Create vault</button></div>}
           <div className="vault-list">
@@ -72,6 +88,9 @@ export default function VaultsPage() {
                         <button type="button" className="btn-sm" onClick={() => setChainModalZone(vault.zone)}>
                           Change
                         </button>
+                      </div>
+                      <div className="vault-actions">
+                        <button type="button" className="btn-sm" onClick={() => void exportBackup(vault)}>Export latest encrypted backup</button>
                       </div>
                       {vault.status === 'locked' && <p className="tile-note">This vault is locked on this device. Unlock it from the vault switcher in the top bar.</p>}
                       {vault.status === 'unlocked' && vault.derivedAddresses && (

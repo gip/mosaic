@@ -499,6 +499,16 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     assert.equal(got.commitment, commitment);
     await assert.rejects(() => call(client, 'blob_get', { token, zone: 'top', kind: 'pass' }), /no pass blob/);
 
+    const dataCiphertext = Buffer.alloc(64 * 1024 + 16, 3).toString('base64');
+    assert.deepEqual(await call(client, 'blob_put', {
+      token, zone: 'top', kind: 'data', ciphertextB64: dataCiphertext,
+      header: { v: 1, schema: 'mosaic-vault-data', revision: 1 }, expectedVersion: 0,
+    }), { version: 1 });
+    await assert.rejects(() => call(client, 'blob_put', {
+      token, zone: 'top', kind: 'data', ciphertextB64: dataCiphertext,
+      header: { v: 1, schema: 'mosaic-vault-data', revision: 1 }, expectedVersion: 0,
+    }), /version conflict/);
+
     // oversized blob rejected
     await assert.rejects(
       () =>
@@ -703,6 +713,12 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     const data = new Uint8Array(48).fill(3);
     assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'sig', ciphertext: data, header: { v: 1 } }), { version: 1 });
     assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'sig', ciphertext: data, header: { v: 1 } }), { version: 2 });
+    assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'data', ciphertext: data, header: { v: 1 }, expectedVersion: 0 }), { version: 1 });
+    await assert.rejects(
+      () => store.putBlob({ zoneId: zone.id, kind: 'data', ciphertext: data, header: { v: 1 }, expectedVersion: 0 }),
+      /version conflict/,
+    );
+    assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'data', ciphertext: data, header: { v: 1 }, expectedVersion: 1 }), { version: 2 });
     const blob = await store.getBlob(zone.id, 'sig');
     assert.equal(blob?.version, 2);
     assert.deepEqual(blob?.ciphertext, data);

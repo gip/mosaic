@@ -13,6 +13,9 @@ import {
   encodeBackupFile,
   decodeBackupBlob,
   deriveAgentAddresses,
+  sealVaultData,
+  openVaultData,
+  decodeVaultDataBackupBlob,
 } from '../dist/index.js';
 
 const secret = hexToBytes('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f');
@@ -105,7 +108,8 @@ test('backup file encodes/decodes both blobs', () => {
   const kek = new Uint8Array(32).fill(1);
   const sig = sealSignatureBlob(signature, secret, ref);
   const pass = sealPassphraseBlob(kek, new Uint8Array(16).fill(3), secret, ref);
-  const file = encodeBackupFile(ref, commitment, { sig, pass }, '2026-07-08T00:00:00.000Z');
+  const data = sealVaultData(secret, ref, { v: 1, connections: { guardian: { evmAddress: '0x0000000000000000000000000000000000000001', xmtpEnvironment: 'production' } } }, 1);
+  const file = encodeBackupFile(ref, commitment, { sig, pass }, '2026-07-08T00:00:00.000Z', data);
   assert.equal(file.format, 'mosaic-zone-backup');
   assert.equal(file.commitment, commitment);
   const roundtrip = JSON.parse(JSON.stringify(file));
@@ -113,4 +117,8 @@ test('backup file encodes/decodes both blobs', () => {
   assert.deepEqual(openSignatureBlob(signature, sig2, ref, commitment), secret);
   const pass2 = decodeBackupBlob(roundtrip.blobs.pass);
   assert.deepEqual(openPassphraseBlob(kek, pass2, ref, commitment), secret);
+  assert.deepEqual(openVaultData(secret, ref, decodeVaultDataBackupBlob(roundtrip.data)), {
+    v: 1,
+    connections: { guardian: { evmAddress: '0x0000000000000000000000000000000000000001', xmtpEnvironment: 'production' } },
+  });
 });

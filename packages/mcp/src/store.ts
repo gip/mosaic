@@ -21,7 +21,7 @@ import { MIGRATIONS } from './migrations.js';
  * Session tokens are stored hashed.
  */
 
-export type BlobKind = 'sig' | 'pass' | 'device' | 'server';
+export type BlobKind = 'sig' | 'pass' | 'device' | 'server' | 'data';
 export type ChallengePurpose = 'session-auth' | 'authorize-zone';
 
 export interface ChallengeRecord {
@@ -136,7 +136,7 @@ export interface MosaicStore {
   listZoneAddresses(zoneId: string): Promise<ZoneAddressRecord[]>;
   createZoneAddress(zoneId: string, chain: AgentChain, name?: string): Promise<ZoneAddressRecord>;
 
-  putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'>): Promise<{ version: number }>;
+  putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }>;
   /** Latest version of the given kind. */
   getBlob(zoneId: string, kind: BlobKind): Promise<BlobRecord | undefined>;
   listBlobKinds(zoneId: string): Promise<{ kind: BlobKind; version: number }[]>;
@@ -391,15 +391,21 @@ export class PostgresStore implements MosaicStore {
     }
   }
 
-  async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'>): Promise<{ version: number }> {
-    const [row] = await this.sql`
-      INSERT INTO blobs (zone_id, kind, version, ciphertext, header)
-      VALUES (
-        ${record.zoneId}, ${record.kind},
-        COALESCE((SELECT MAX(version) FROM blobs WHERE zone_id = ${record.zoneId} AND kind = ${record.kind}), 0) + 1,
-        ${Buffer.from(record.ciphertext)}, ${this.sql.json(record.header as postgres.JSONValue)}
-      ) RETURNING version`;
-    return { version: row!.version as number };
+  async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }> {
+    return this.sql.begin(async (tx) => {
+      const [zone] = await tx`SELECT id FROM zones WHERE id = ${record.zoneId} FOR UPDATE`;
+      if (!zone) throw new MosaicMcpError('NOT_FOUND', 'zone not found');
+      const [latest] = await tx`SELECT COALESCE(MAX(version), 0) AS version FROM blobs WHERE zone_id = ${record.zoneId} AND kind = ${record.kind}`;
+      const currentVersion = Number(latest!.version);
+      if (record.expectedVersion !== undefined && record.expectedVersion !== currentVersion) {
+        throw new MosaicMcpError('CONFLICT', `blob version conflict: expected ${record.expectedVersion}, current ${currentVersion}`);
+      }
+      const version = currentVersion + 1;
+      await tx`
+        INSERT INTO blobs (zone_id, kind, version, ciphertext, header)
+        VALUES (${record.zoneId}, ${record.kind}, ${version}, ${Buffer.from(record.ciphertext)}, ${tx.json(record.header as postgres.JSONValue)})`;
+      return { version };
+    });
   }
 
   async getBlob(zoneId: string, kind: BlobKind): Promise<BlobRecord | undefined> {
@@ -751,10 +757,14 @@ export class MemoryStore implements MosaicStore {
     return record;
   }
 
-  async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'>): Promise<{ version: number }> {
+  async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }> {
     const key = `${record.zoneId}|${record.kind}`;
     const list = this.blobs.get(key) ?? [];
-    const version = (list[list.length - 1]?.version ?? 0) + 1;
+    const currentVersion = list[list.length - 1]?.version ?? 0;
+    if (record.expectedVersion !== undefined && record.expectedVersion !== currentVersion) {
+      throw new MosaicMcpError('CONFLICT', `blob version conflict: expected ${record.expectedVersion}, current ${currentVersion}`);
+    }
+    const version = currentVersion + 1;
     list.push({ ...record, ciphertext: record.ciphertext.slice(), version, createdAt: new Date().toISOString() });
     this.blobs.set(key, list);
     return { version };

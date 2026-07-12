@@ -5,11 +5,11 @@
   "type": "module",
   "license": "MIT",
   "files": ["dist"],
-  "exports": { ".": "./dist/index.js" },
+  "exports": { ".": "./dist/index.js", "./contracts": "./dist/contracts.js" },
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
-    "test": "tsc -b"
+    "test": "tsc -b && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.12.3",

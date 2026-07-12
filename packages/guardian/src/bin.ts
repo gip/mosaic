@@ -1,0 +1,80 @@
+import {
+  DEFAULT_GUARDIAN_VAULT,
+  parseLocalCli,
+  runLocalService,
+  startGuardianControlServer,
+  type ServiceStatus,
+} from '@mosaic/local-runtime';
+import { loginFromCli, promptSecret } from './login.js';
+import { GuardianService, McpGuardianApi, type GuardianSession, type UnlockCredential } from './service.js';
+
+const options = parseLocalCli(process.argv.slice(2), DEFAULT_GUARDIAN_VAULT);
+if (options.help) {
+  console.log('Usage: mosaic-guardian [vault] [--network testnet|mainnet]');
+  process.exit(0);
+}
+console.log(`Mosaic Guardian · vault ${options.vault} · ${options.network}`);
+let status: ServiceStatus = {
+  name: 'mosaic-guardian', phase: 'awaiting-wallet', pid: process.pid,
+  vault: options.vault, network: options.network,
+  detail: 'Create a root-wallet MCP session to unlock this vault.',
+};
+const api = new McpGuardianApi();
+const guardian = new GuardianService(api);
+if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
+  await startGuardianControlServer({
+    status: () => status,
+    shutdown: () => { guardian.lockAll(); process.kill(process.pid, 'SIGTERM'); },
+    attachSession: (session) => {
+      guardian.attachSession(session);
+      status = { ...status, phase: 'unlocking', detail: `MCP session attached for ${session.address}` };
+    },
+    startGuardian: async (params) => {
+      status = { ...status, phase: 'unlocking', vault: params.vault, network: params.network, detail: 'Unlocking Guardian vault…' };
+      let credential: UnlockCredential | undefined;
+      if (params.signatureB64) credential = { type: 'signature', signature: new Uint8Array(Buffer.from(params.signatureB64, 'base64')) };
+      else if (params.passphrase) credential = { type: 'passphrase', passphrase: params.passphrase };
+      try {
+        const identity = await guardian.startGuardian(params.vault, params.network, credential);
+        status = {
+          ...status, phase: 'running', detail: 'Mosaic Guardian is ready.',
+          evmAddress: identity.address, xmtpAddress: identity.address,
+        };
+        return { evmAddress: identity.address, xmtpAddress: identity.address };
+      } catch (error) {
+        status = { ...status, phase: 'failed', detail: error instanceof Error ? error.message : String(error) };
+        throw error;
+      }
+    },
+    enrollRunner: async (params) => guardian.enrollRunner(params),
+    issueGrant: async (params) => guardian.issueGrant(params),
+  });
+}
+if (process.env.MOSAIC_SESSION_JSON) {
+  const session = JSON.parse(process.env.MOSAIC_SESSION_JSON) as GuardianSession;
+  guardian.attachSession(session);
+  const identity = await guardian.startGuardian(options.vault, options.network);
+  status = { ...status, phase: 'running', evmAddress: identity.address, xmtpAddress: identity.address, detail: 'Mosaic Guardian is ready.' };
+} else if (process.stdin.isTTY && !(process as NodeJS.Process & { parentPort?: unknown }).parentPort) {
+  status = { ...status, phase: 'authenticating', detail: 'Waiting for root-wallet login…' };
+  const login = await loginFromCli(api, options.network);
+  guardian.attachSession(login.session);
+  const item = (await api.zoneList(login.session.token)).find(({ zone }) => zone === options.vault);
+  if (!item) throw new Error(`vault not found: ${options.vault} (${options.network})`);
+  let credential: UnlockCredential | undefined;
+  if (item.mode !== 'testnet-server') {
+    const ref = {
+      rootChain: login.session.chain,
+      rootAddress: login.session.address,
+      zone: options.vault,
+      network: options.network,
+    } as const;
+    if (login.signBackupWrap) credential = { type: 'signature', signature: await login.signBackupWrap(ref) };
+    else credential = { type: 'passphrase', passphrase: await promptSecret('Backup passphrase') };
+  }
+  status = { ...status, phase: 'unlocking', detail: `Unlocking ${options.vault}…` };
+  const identity = await guardian.startGuardian(options.vault, options.network, credential);
+  status = { ...status, phase: 'running', evmAddress: identity.address, xmtpAddress: identity.address, detail: 'Mosaic Guardian is ready.' };
+  console.log(`Guardian XMTP address: ${identity.address}`);
+}
+runLocalService('mosaic-guardian', { vault: options.vault, network: options.network });
