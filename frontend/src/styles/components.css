@@ -178,6 +178,11 @@ header.topbar {
   align-items: center;
   gap: var(--sp-1);
 }
+/* Small-screen hamburger; swapped in for .topnav/.topbar-actions by the
+   responsive header media query below. */
+.mobile-menu-root {
+  display: none;
+}
 
 /* Header icon controls reusing the base button token styles */
 .theme-toggle,
@@ -1239,12 +1244,15 @@ tbody tr:hover {
 }
 
 /* ---------------- Responsive header ----------------
-   Two rows: brand + nav + icon actions on top, wallet chips below. */
+   Nav and icon actions collapse into a hamburger menu pinned top-right;
+   wallet chips wrap below the brand row. */
 @media (max-width: 900px) {
   header.topbar {
     flex-wrap: wrap;
     gap: var(--sp-2) var(--sp-4);
     padding: var(--sp-2) var(--sp-3);
+    /* Reserve room for the pinned hamburger on the right. */
+    padding-right: calc(var(--sp-3) + 45px + var(--sp-3));
   }
   .topbar-spacer {
     display: none;
@@ -1258,31 +1266,111 @@ tbody tr:hover {
     width: 24px;
     height: 24px;
   }
-  .topnav {
-    flex: 1 1 auto;
-    flex-wrap: wrap;
-    gap: var(--sp-2) var(--sp-3);
+  /* Everything but the brand and the login/vault widget collapses into
+     the hamburger. Network selection is reachable via Settings on small
+     screens; once logged in the wallet chip gives way to the vault
+     switcher, and Log out lives in the menu. */
+  .topnav,
+  .topbar-actions,
+  .network-switcher,
+  .wallet-stack--authed {
+    display: none;
   }
-  .topbar-actions {
-    flex-direction: row;
+  /* Pinned to the header's top-right corner so wrapped rows never end up
+     to its right. */
+  .mobile-menu-root {
+    display: block;
+    position: absolute;
+    top: var(--sp-2);
+    right: var(--sp-3);
+  }
+  /* Same height as the vault/login chip beside it. */
+  .hamburger {
+    width: 45px;
+    height: 45px;
+  }
+  .mobile-menu {
+    position: absolute;
+    top: calc(100% + var(--sp-2));
+    right: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    min-width: 180px;
+    padding: var(--sp-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--bg-panel);
+    box-shadow: var(--shadow-2);
+  }
+  .mobile-menu-nav {
+    display: flex;
+    flex-direction: column;
+  }
+  .mobile-menu-nav a {
+    padding: var(--sp-2);
+    border-left: 2px solid transparent;
+    color: var(--fg-muted);
+    font-size: var(--fs-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .mobile-menu-nav a:hover {
+    color: var(--fg);
+  }
+  .mobile-menu-nav a.active {
+    color: var(--fg);
+    border-left-color: var(--accent);
+  }
+  /* Text items below the nav links: Settings, Change theme, Log out. */
+  .mobile-menu-actions {
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--sp-2);
+    border-top: 1px solid var(--line);
+  }
+  .mobile-menu-actions a,
+  .mobile-menu-actions button {
+    padding: var(--sp-2);
+    border: none;
+    border-left: 2px solid transparent;
+    border-radius: 0;
+    background: none;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: var(--fs-sm);
+    text-align: left;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .mobile-menu-actions a:hover,
+  .mobile-menu-actions button:hover {
+    color: var(--fg);
+  }
+  .mobile-menu-actions a.active {
+    color: var(--fg);
+    border-left-color: var(--accent);
+  }
+  /* The login widget (or the vault switcher once logged in) shares the
+     brand row, right-aligned next to the pinned hamburger. */
+  .wallet-stack,
+  .vault-switcher {
     margin-left: auto;
   }
-  .wallet-stack {
-    order: 4;
-    width: 100%;
-    justify-content: flex-start;
+  /* Label and control on one line to keep the header short. */
+  .vault-switcher,
+  .wallet-chain {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--sp-2);
   }
-  /* Same wrapped row as the wallet chips. */
-  .network-switcher {
-    order: 4;
+  .vault-switcher select {
+    min-width: 0;
   }
 }
 
 @media (max-width: 560px) {
-  /* Chips go 2-up (an odd last chip takes the full row) instead of jagged rows. */
-  header.topbar .wallet-chain {
-    flex: 1 1 calc(50% - var(--sp-2));
-  }
   header.topbar .wallet-controls {
     flex-wrap: wrap;
   }
