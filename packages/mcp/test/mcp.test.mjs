@@ -7,6 +7,7 @@ import {
   eip712TypedData,
   stellarAddressFromPublicKey,
   backupWrapMessage,
+  zoneRootCommitmentHex,
 } from '@mosaic/zone-keys';
 import {
   sep53Digest,
@@ -28,6 +29,7 @@ const xrplKeypair = deriveKeypair(generateSeed({ entropy: new Uint8Array(16).fil
 const xrplAddress = deriveAddress(xrplKeypair.publicKey);
 
 const allowAuthority = async () => ({ authoritative: true, reason: 'test' });
+const testnetVaultKey = new Uint8Array(32).fill(0x19);
 
 /** Signs any payload the server creates, like a Xaman wallet would. */
 class FakeXaman {
@@ -337,7 +339,7 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
   const store = new MemoryStore();
   const xaman = new FakeXaman(xrplKeypair, xrplAddress);
   const auth = new AuthService(store, xaman, { checkAuthority: allowAuthority });
-  const server = await startHttpServer({ store, auth, xaman, bind: '127.0.0.1:0' });
+  const server = await startHttpServer({ store, auth, xaman, testnetVaultKey, bind: '127.0.0.1:0' });
   const client = await connectClient(server.url);
   try {
     // login (evm)
@@ -427,18 +429,27 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     assert.deepEqual([evmAddress1.index, evmAddress1.name, evmAddress2.index, evmAddress2.name, xrplAddress1.index, xrplAddress1.name], [1, '#1', 2, 'trading', 1, '#1']);
     await assert.rejects(() => call(client, 'zone_address_create', { token, zone: 'top', chain: 'evm', name: 'trading' }), /already exists/);
 
-    // Testnet device-key vaults require no authorize-zone or backup signatures;
-    // the server receives only commitment metadata and opaque ciphertext.
-    const deviceCiphertext = Buffer.from(new Uint8Array(48).fill(7)).toString('base64');
+    // Testnet sandbox vaults require no authorize-zone or backup signatures;
+    // the server envelope-encrypts the secret and releases it only to the owner session.
+    const testnetSecret = new Uint8Array(32).fill(7);
+    const testnetCommitment = zoneRootCommitmentHex(testnetSecret);
     const quick = await call(client, 'zone_create_testnet', {
-      token, zone: 'quick-test', localSignerPublicKey: 'browser-device', zoneRootCommitment: 'ef'.repeat(32),
-      ciphertextB64: deviceCiphertext, header: { v: 1, alg: 'aes-256-gcm-device-v1', ivB64: 'AA==' },
+      token, zone: 'quick-test', zoneRootCommitment: testnetCommitment,
+      zoneRootSecretB64: Buffer.from(testnetSecret).toString('base64'),
     });
     assert.ok(quick.zoneId);
     const quickRecord = await store.getZone('evm', evmAccount.address, 'quick-test', 'testnet');
+    assert.equal(quickRecord.policyHash, 'testnet-server-v1');
     assert.deepEqual(quickRecord.authorizeSignature, { mode: 'none' });
-    const quickBlob = await call(client, 'blob_get', { token, zone: 'quick-test', kind: 'device' });
-    assert.equal(quickBlob.ciphertextB64, deviceCiphertext);
+    const quickBlob = await store.getBlob(quickRecord.id, 'server');
+    assert.ok(quickBlob);
+    assert.notDeepEqual([...quickBlob.ciphertext], [...testnetSecret]);
+    const unlockedTestnet = await call(client, 'zone_testnet_unlock', { token, zone: 'quick-test' });
+    assert.equal(unlockedTestnet.commitment, testnetCommitment);
+    assert.equal(unlockedTestnet.zoneRootSecretB64, Buffer.from(testnetSecret).toString('base64'));
+    assert.equal((await call(client, 'zone_list', { token })).find(({ zone }) => zone === 'quick-test').mode, 'testnet-server');
+    const quickZone = await call(client, 'zone_get', { token, zone: 'quick-test' });
+    assert.deepEqual(quickZone.blobs, [{ kind: 'server', version: 1 }]);
 
     const unlocked = await call(client, 'zone_unlocked', { token, zone: 'top' });
     assert.ok(unlocked.lastUnlockedAt);
@@ -531,8 +542,8 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     });
     assert.deepEqual(await call(client, 'zone_list', { token: mainnetToken }), []);
     await assert.rejects(() => call(client, 'zone_create_testnet', {
-      token: mainnetToken, zone: 'not-allowed', localSignerPublicKey: 'browser-device',
-      zoneRootCommitment: 'ef'.repeat(32), ciphertextB64: deviceCiphertext, header: { v: 1 },
+      token: mainnetToken, zone: 'not-allowed', zoneRootCommitment: testnetCommitment,
+      zoneRootSecretB64: Buffer.from(testnetSecret).toString('base64'),
     }), /Testnet-only/i);
 
     // Network switching preserves the wallet identity without another signature,

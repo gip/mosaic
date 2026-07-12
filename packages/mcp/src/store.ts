@@ -21,7 +21,7 @@ import { MIGRATIONS } from './migrations.js';
  * Session tokens are stored hashed.
  */
 
-export type BlobKind = 'sig' | 'pass' | 'device';
+export type BlobKind = 'sig' | 'pass' | 'device' | 'server';
 export type ChallengePurpose = 'session-auth' | 'authorize-zone';
 
 export interface ChallengeRecord {
@@ -767,7 +767,7 @@ export class MemoryStore implements MosaicStore {
 
   async listBlobKinds(zoneId: string): Promise<{ kind: BlobKind; version: number }[]> {
     const out: { kind: BlobKind; version: number }[] = [];
-    for (const kind of ['sig', 'pass', 'device'] as const) {
+    for (const kind of ['sig', 'pass', 'device', 'server'] as const) {
       const blob = await this.getBlob(zoneId, kind);
       if (blob) out.push({ kind, version: blob.version });
     }

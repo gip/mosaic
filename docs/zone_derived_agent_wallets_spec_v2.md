@@ -10,11 +10,19 @@ Not claimed: trustless. The user trusts the local signer application and their o
 
 ## Custody Boundary
 
-The platform is non-custodial for key material. The backend never receives:
+The platform is non-custodial for Mainnet and protected browser-zone key
+material. The backend never receives:
 
 1. Raw private keys
 2. `zoneRootSecret`
 3. Any signature usable to derive keys (backup signatures unwrap only ciphertext the attacker must separately obtain)
+
+Testnet sandbox exception: Testnet-only vaults may use the explicitly
+server-managed `testnet-server-v1` policy. The MCP server envelope-encrypts the
+random Testnet `zoneRootSecret` under an operator-held server key and releases
+it only to a session authenticated for the owning root wallet. This exception
+exists because Testnet accounts cannot access Mainnet funds; it is not a
+non-custodial mode and must not be enabled for Mainnet.
 
 The backend **does** hold revocable, policy-bounded spending delegation: it sends agent intents, and the signer auto-signs within policy until session expiry or kill switch. State this honestly; do not claim "backend cannot move funds."
 

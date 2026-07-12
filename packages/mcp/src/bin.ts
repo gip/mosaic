@@ -8,6 +8,7 @@ import { createStderrLogger } from './logging.js';
 import { openMosaicStore } from './store.js';
 import { xamanServiceFromEnv } from './xaman.js';
 import { envString } from './env.js';
+import { parseTestnetServerKey } from './testnetVault.js';
 
 const logger = createStderrLogger();
 
@@ -55,7 +56,12 @@ async function main(): Promise<void> {
   }
   const store = openMosaicStore(envString('MOSAIC_DATABASE_URL'));
   await store.init();
-  const server = createMosaicMcpServer({ store, xaman: xamanServiceFromEnv(), logger });
+  const server = createMosaicMcpServer({
+    store,
+    xaman: xamanServiceFromEnv(),
+    logger,
+    testnetVaultKey: parseTestnetServerKey(envString('MOSAIC_TESTNET_VAULT_KEY')),
+  });
   await server.connect(new StdioServerTransport());
 }
 

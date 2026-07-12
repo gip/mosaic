@@ -17,7 +17,7 @@ import {
 } from '../zone/ceremony';
 import { directCeremonySigner, xamanCeremonySigner } from '../zone/signers';
 import { unlockWithPassphrase, unlockWithSignature } from '../zone/unlock';
-import { createTestnetVault, unlockTestnetVault } from '../zone/testnet';
+import { createTestnetVault, unlockServerTestnetVault, unlockTestnetVault } from '../zone/testnet';
 
 interface XamanPrompt { refs: XamanRefs; label: string }
 const VAULT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -76,7 +76,11 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
       {activeVault?.status === 'locked' && (
         <div className="zone-card">
           <h3>Vault locked</h3>
-          <p>{activeVault.mode === 'testnet-device' ? 'The vault secret is not available on this device. Unlock with this device’s key.' : 'The vault secret is not available on this device. Restore it with your wallet signature or backup passphrase.'}</p>
+          <p>{activeVault.mode === 'testnet-server'
+            ? 'This Testnet sandbox vault unlocks automatically after login on any device.'
+            : activeVault.mode === 'testnet-device'
+              ? 'The vault secret is not available on this device. Unlock with this device’s key.'
+              : 'The vault secret is not available on this device. Restore it with your wallet signature or backup passphrase.'}</p>
           <button type="button" onClick={() => setUnlockOpen(true)}>Unlock vault</button>
         </div>
       )}
@@ -121,7 +125,7 @@ export function CreateVaultModal({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       if (testnet) {
-        setStep('Encrypting Testnet vault for this device…');
+        setStep('Creating Testnet sandbox vault…');
         await createTestnetVault(session.token, ref);
       } else {
         await runZoneCeremony({ token: session.token, ref, passphrase, signer: makeSigner(), onStep: (next) => setStep(CEREMONY_STEP_LABELS[next]) });
@@ -139,7 +143,7 @@ export function CreateVaultModal({ onClose }: { onClose: () => void }) {
   return (
     <>
       <Modal title="Create vault" onClose={onClose}>
-        <p>{testnet ? 'Testnet vaults are encrypted with a device key and require no additional wallet signatures.' : 'Vault names are permanent because they are part of key derivation. Use lowercase letters, numbers, and single hyphens.'}</p>
+        <p>{testnet ? 'Testnet vaults are server-managed sandboxes and unlock on any device after login. They contain no Mainnet funds.' : 'Vault names are permanent because they are part of key derivation. Use lowercase letters, numbers, and single hyphens.'}</p>
         {error && <Banner tone="err">{error}</Banner>}
         {step ? <><ProgressSteps running step={step} /><p className="tile-note">{step}</p></> : (
           <>
@@ -215,6 +219,18 @@ export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClos
     }
   }
 
+  async function unlockServerTestnet() {
+    if (!session || !ref) return;
+    setError(null);
+    try {
+      const addresses = await unlockServerTestnetVault(session.token, ref, vault.commitment, vault.addresses);
+      await markUnlocked(vault.zone, addresses);
+      onClose();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  }
+
   return (
     <>
       <Modal title={<>Unlock vault <span className="mono">{vault.zone === 'default' ? 'Default' : vault.zone}</span></>} onClose={onClose}>
@@ -222,7 +238,11 @@ export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClos
         {phase !== 'signature' && (
           <>
             {error && <Banner tone="warn">{error}</Banner>}
-            {phase === 'choice' && <p>{vault.mode === 'testnet-device' ? 'Unlock with this device’s key. Testnet vaults can only be unlocked on the device that created them.' : 'Restore this vault with one wallet signature. If wallet signing behavior changed, use the backup passphrase.'}</p>}
+            {phase === 'choice' && <p>{vault.mode === 'testnet-server'
+              ? 'This Testnet sandbox vault is available on any device after login.'
+              : vault.mode === 'testnet-device'
+                ? 'Unlock with this device’s key. Legacy Testnet vaults can only be unlocked on the device that created them.'
+                : 'Restore this vault with one wallet signature. If wallet signing behavior changed, use the backup passphrase.'}</p>}
             {phase === 'passphrase' && (
               <Field id={`unlock-passphrase-${vault.zone}`} label="Backup passphrase">
                 <input type="password" value={passphrase} autoComplete="current-password" onChange={(event) => setPassphrase(event.target.value)} />
@@ -230,8 +250,10 @@ export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClos
             )}
             <div className="zone-actions">
               {phase === 'passphrase' && <button type="button" className="btn-primary" disabled={!passphrase} onClick={() => void unlockPassphrase()}>Unlock with passphrase</button>}
-              {vault.mode === 'testnet-device'
-                ? phase === 'choice' && <button type="button" className="btn-primary" onClick={() => void unlockTestnet()}>Unlock on this device</button>
+              {vault.mode === 'testnet-server'
+                ? phase === 'choice' && <button type="button" className="btn-primary" onClick={() => void unlockServerTestnet()}>Unlock on this device</button>
+                : vault.mode === 'testnet-device'
+                  ? phase === 'choice' && <button type="button" className="btn-primary" onClick={() => void unlockTestnet()}>Unlock on this device</button>
                 : <button type="button" className={phase === 'choice' ? 'btn-primary' : 'btn-ghost btn-sm'} onClick={() => void unlockSignature()}>{phase === 'choice' ? 'Unlock with wallet signature' : 'Retry wallet signature'}</button>}
             </div>
           </>

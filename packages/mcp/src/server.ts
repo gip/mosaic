@@ -1,12 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AssetTrustState } from '@mosaic/catalog';
-import { authorizeZoneMessage, backupWrapMessage, type AgentChain, type Network, type ZoneRef } from '@mosaic/zone-keys';
+import { authorizeZoneMessage, backupWrapMessage, verifyCommitment, type AgentChain, type Network, type ZoneRef } from '@mosaic/zone-keys';
 import { xrplSignInTxJson } from '@mosaic/zone-keys/verify';
 import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, type Session } from './auth.js';
 import { MosaicMcpError, mcpErrorContent } from './errors.js';
 import { createStderrLogger, type MosaicLogger } from './logging.js';
 import { MemoryStore, type BlobKind, type MosaicStore } from './store.js';
+import { openTestnetSecret, sealTestnetSecret, TESTNET_SERVER_POLICY } from './testnetVault.js';
 import type { XamanService } from './xaman.js';
 
 export interface MosaicMcpOptions {
@@ -14,6 +15,8 @@ export interface MosaicMcpOptions {
   auth?: AuthService;
   xaman?: XamanService;
   logger?: MosaicLogger;
+  /** Persistent server-side envelope key for the explicitly custodial Testnet sandbox mode. */
+  testnetVaultKey?: Uint8Array;
 }
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
@@ -238,7 +241,9 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         zoneId: record.id,
         zone: record.zone,
         commitment: record.commitment,
-        mode: record.policyHash === 'testnet-device-v1' ? 'testnet-device' : 'signed',
+        mode: record.policyHash === TESTNET_SERVER_POLICY
+          ? 'testnet-server'
+          : record.policyHash === 'testnet-device-v1' ? 'testnet-device' : 'signed',
         createdAt: record.createdAt,
         lastUnlockedAt: record.lastUnlockedAt ?? undefined,
         addresses: await store.listZoneAddresses(record.id),
@@ -308,30 +313,69 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   reg(
     'zone_create_testnet',
     {
-      description: 'Create a Testnet-only vault whose secret is encrypted by a client-held device key.',
+      description: 'Create a Testnet sandbox vault whose secret is envelope-encrypted by the server and available after authenticated login on any device.',
       inputSchema: {
         token: z.string(), zone: zoneNameSchema,
-        localSignerPublicKey: z.string().min(1).max(512),
         zoneRootCommitment: z.string().regex(/^[0-9a-f]{64}$/),
-        ciphertextB64: z.string(), header: z.record(z.string(), z.unknown()),
+        zoneRootSecretB64: z.string().min(1),
       },
     },
     async (args) => {
       const session = await requireSession(args);
-      if (session.network !== 'testnet') throw new MosaicMcpError('VALIDATION_FAILED', 'device-key vault creation is Testnet-only');
-      const ciphertext = Buffer.from(String(args.ciphertextB64), 'base64');
-      if (ciphertext.byteLength === 0 || ciphertext.byteLength > MAX_BLOB_BYTES) {
-        throw new MosaicMcpError('VALIDATION_FAILED', `ciphertext must be 1..${MAX_BLOB_BYTES} bytes`);
+      if (session.network !== 'testnet') throw new MosaicMcpError('VALIDATION_FAILED', 'server-managed vault creation is Testnet-only');
+      if (!opts.testnetVaultKey) throw new MosaicMcpError('INTERNAL', 'Testnet server vault key is not configured');
+      const secret = Buffer.from(String(args.zoneRootSecretB64), 'base64');
+      if (secret.byteLength !== 32) throw new MosaicMcpError('VALIDATION_FAILED', 'zoneRootSecretB64 must decode to exactly 32 bytes');
+      const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: String(args.zone), network: 'testnet' };
+      const commitment = String(args.zoneRootCommitment);
+      if (!verifyCommitment(new Uint8Array(secret), commitment)) {
+        throw new MosaicMcpError('VALIDATION_FAILED', 'zoneRootSecret does not match zoneRootCommitment');
       }
-      const record = await store.createZone({
-        rootChain: session.chain, rootAddress: session.address, zone: String(args.zone), network: 'testnet',
-        commitment: String(args.zoneRootCommitment), policyHash: 'testnet-device-v1',
-        localSignerPublicKey: String(args.localSignerPublicKey),
-        authorizeMessage: { mode: 'testnet-device-v1' }, authorizeSignature: { mode: 'none' },
-        xrplSignInTemplate: null, layer1Enabled: false,
-      });
-      await store.putBlob({ zoneId: record.id, kind: 'device', ciphertext: new Uint8Array(ciphertext), header: args.header as Record<string, unknown> });
-      return ok({ zoneId: record.id, createdAt: record.createdAt });
+      try {
+        const sealed = sealTestnetSecret(new Uint8Array(secret), opts.testnetVaultKey, ref, commitment);
+        const record = await store.createZone({
+          rootChain: ref.rootChain, rootAddress: ref.rootAddress, zone: ref.zone, network: ref.network,
+          commitment, policyHash: TESTNET_SERVER_POLICY,
+          localSignerPublicKey: 'server:testnet-sandbox',
+          authorizeMessage: { mode: TESTNET_SERVER_POLICY }, authorizeSignature: { mode: 'none' },
+          xrplSignInTemplate: null, layer1Enabled: false,
+        });
+        await store.putBlob({ zoneId: record.id, kind: 'server', ciphertext: sealed.ciphertext, header: sealed.header as unknown as Record<string, unknown> });
+        return ok({ zoneId: record.id, createdAt: record.createdAt });
+      } finally {
+        secret.fill(0);
+      }
+    },
+  );
+
+  reg(
+    'zone_testnet_unlock',
+    {
+      description: 'Unlock an explicitly server-managed Testnet sandbox vault for its authenticated owner.',
+      inputSchema: { token: z.string(), zone: zoneNameSchema },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const zone = await requireZone(session, String(args.zone));
+      if (zone.policyHash !== TESTNET_SERVER_POLICY) {
+        throw new MosaicMcpError('VALIDATION_FAILED', 'zone is not a server-managed Testnet sandbox');
+      }
+      if (!opts.testnetVaultKey) throw new MosaicMcpError('INTERNAL', 'Testnet server vault key is not configured');
+      const blob = await store.getBlob(zone.id, 'server');
+      if (!blob) throw new MosaicMcpError('NOT_FOUND', `no server Testnet secret for zone ${zone.zone}`);
+      const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: zone.zone, network: 'testnet' };
+      const secret = openTestnetSecret(
+        blob.ciphertext,
+        blob.header as unknown as Parameters<typeof openTestnetSecret>[1],
+        opts.testnetVaultKey,
+        ref,
+        zone.commitment,
+      );
+      try {
+        return ok({ commitment: zone.commitment, zoneRootSecretB64: Buffer.from(secret).toString('base64') });
+      } finally {
+        secret.fill(0);
+      }
     },
   );
 
@@ -450,7 +494,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     {
       description:
         'Fetch the latest encrypted recovery blob of a kind. Served only to a session authenticated via session-auth — never ask users to sign backup-wrap to log in.',
-      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device']) },
+      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device', 'server']) },
     },
     async (args) => {
       const session = await requireSession(args);

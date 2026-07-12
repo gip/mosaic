@@ -59,7 +59,7 @@ export interface ZoneListItem {
   zoneId: string;
   zone: string;
   commitment: string;
-  mode: 'signed' | 'testnet-device';
+  mode: 'signed' | 'testnet-device' | 'testnet-server';
   createdAt: string;
   lastUnlockedAt?: string;
   addresses: ZoneAddressItem[];
@@ -76,7 +76,7 @@ export interface ZoneAddressItem {
 }
 
 export interface BlobGetResult {
-  kind: 'sig' | 'pass' | 'device';
+  kind: 'sig' | 'pass' | 'device' | 'server';
   version: number;
   header: Record<string, unknown>;
   ciphertextB64: string;
@@ -183,10 +183,13 @@ class MosaicApi {
   }
 
   zoneCreateTestnet(args: {
-    token: string; zone: string; localSignerPublicKey: string; zoneRootCommitment: string;
-    ciphertextB64: string; header: Record<string, unknown>;
+    token: string; zone: string; zoneRootCommitment: string; zoneRootSecretB64: string;
   }): Promise<{ zoneId: string; createdAt: string }> {
     return this.call('zone_create_testnet', args);
+  }
+
+  zoneTestnetUnlock(token: string, zone: string): Promise<{ commitment: string; zoneRootSecretB64: string }> {
+    return this.call('zone_testnet_unlock', { token, zone });
   }
 
   zoneGet(token: string, zone: string): Promise<ZoneGetResult> {
@@ -220,7 +223,7 @@ class MosaicApi {
     return this.call('blob_put', args);
   }
 
-  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device'): Promise<BlobGetResult> {
+  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device' | 'server'): Promise<BlobGetResult> {
     return this.call('blob_get', { token, zone, kind });
   }
 

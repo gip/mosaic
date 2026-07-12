@@ -1,7 +1,7 @@
 {
   "name": "@mosaic/mcp",
   "version": "0.0.0",
-  "description": "Authenticated MCP server for Mosaic zone-derived agent wallets. Minimal first release: per-chain wallet session auth, zone registry, and encrypted recovery-blob storage in Postgres. Stores only ciphertext it cannot decrypt.",
+  "description": "Authenticated MCP server for Mosaic zone-derived agent wallets. Mainnet recovery blobs remain ciphertext-only; Testnet sandbox vaults use explicit server-managed envelope encryption.",
   "type": "module",
   "license": "MIT",
   "bin": {

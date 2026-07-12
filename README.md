@@ -7,9 +7,10 @@ MetaMask mobile on EVM, Freighter mobile on Stellar; browser extensions are a
 small fallback that can't authorize agents) — create a zone, and get
 deterministic agent
 addresses on EVM, XRPL, and Stellar derived from a locally generated
-`zoneRootSecret`. The backend stores only ciphertext it cannot decrypt; the
-signature-wrapped recovery blob is the source of truth, and browser storage is
-just a session cache — the secret is always one wallet signature away.
+`zoneRootSecret`. Mainnet and protected browser zones are non-custodial: the
+backend stores only ciphertext it cannot decrypt. Testnet uses an explicit
+server-managed sandbox mode because its accounts have no Mainnet funds; an
+authenticated session can unlock those vaults on any device.
 
 Spec: [`docs/zone_derived_agent_wallets_spec_v2.md`](docs/zone_derived_agent_wallets_spec_v2.md).
 Conventions and custody boundary: [`CLAUDE.md`](CLAUDE.md).
@@ -78,7 +79,8 @@ strand existing layer-1 blobs; never update the recorded values.
 
 ## Custody model (browser zones)
 
-Non-custodial for key material, with a software-delivery trust assumption:
+Mainnet and signed browser zones are non-custodial for key material, with a
+software-delivery trust assumption:
 
 - `zoneRootSecret` is generated in the browser (CSPRNG) and held in memory;
   IndexedDB caches it wrapped under a non-extractable WebCrypto key.
@@ -90,3 +92,12 @@ Non-custodial for key material, with a software-delivery trust assumption:
   wallet signing-behavior drift.
 - Sessions authenticate via `session-auth` messages only — users are never
   asked to sign `backup-wrap` to log in.
+
+Testnet sandbox exception:
+
+- New Testnet sandbox vaults use `testnet-server-v1` and are envelope-encrypted
+  under `MOSAIC_TESTNET_VAULT_KEY` on the MCP server.
+- A session authenticated for the owning root wallet may request the secret on
+  any device; the browser still caches it locally for the current session.
+- This is intentionally server-managed and must never be used for Mainnet
+  vaults. Legacy `testnet-device-v1` vaults remain device-bound.

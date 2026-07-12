@@ -149,4 +149,8 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (zone_id, chain_id)
   );
   `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server'));
+  `,
 ];

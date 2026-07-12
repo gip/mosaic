@@ -6,13 +6,20 @@ addresses on EVM, XRPL, and Stellar derived from a locally generated
 `zoneRootSecret`. Spec: `docs/zone_derived_agent_wallets_spec_v2.md` — read it
 before touching anything cryptographic.
 
-## Custody boundary (do not weaken)
+## Custody boundary (do not weaken for Mainnet)
 
-The backend stores only ciphertext. It must never receive raw private keys,
-`zoneRootSecret`, or any signature usable to derive keys. Browser zones are
+For Mainnet and protected browser zones, the backend stores only ciphertext. It
+must never receive raw private keys, `zoneRootSecret`, or any signature usable
+to derive keys. Browser zones are
 "non-custodial with a software-delivery trust assumption": the wrapped blob on
 the backend is the source of truth; browser storage is only a session cache;
 the secret is always one wallet signature away.
+
+Testnet has an explicit `testnet-server-v1` sandbox exception: the MCP server
+may envelope-encrypt and release the Testnet `zoneRootSecret` to the owning
+authenticated session because Testnet accounts cannot access Mainnet funds.
+This mode is server-managed, must be clearly labeled, and must never be used
+for Mainnet.
 
 - `backup-wrap` signatures unwrap blobs. Never ask users to sign `backup-wrap`
   for login — sessions use `session-auth` only.

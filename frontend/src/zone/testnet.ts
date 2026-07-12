@@ -1,7 +1,6 @@
 import { canonicalJson, deriveAgentAddresses, verifyCommitment, zoneRootCommitmentHex, type ZoneRef } from '@mosaic/zone-keys';
 import { api, type ZoneAddressItem } from '../api';
-import { browserHostId } from './ceremony';
-import { cacheTestnetDeviceKey, cacheZoneSecret, readTestnetDeviceKey } from './cache';
+import { cacheZoneSecret, readTestnetDeviceKey } from './cache';
 import type { DerivedVaultAddress } from './unlock';
 
 interface DeviceHeader { v: 1; alg: 'aes-256-gcm-device-v1'; ivB64: string }
@@ -28,21 +27,27 @@ function derive(secret: Uint8Array, ref: ZoneRef, entries: ZoneAddressItem[]): D
 }
 
 export async function createTestnetVault(token: string, ref: ZoneRef): Promise<void> {
-  if (ref.network !== 'testnet') throw new Error('device-key vault creation is Testnet-only');
+  if (ref.network !== 'testnet') throw new Error('server-managed vault creation is Testnet-only');
   const secret = crypto.getRandomValues(new Uint8Array(32));
-  const deviceKey = crypto.getRandomValues(new Uint8Array(32));
   try {
     const commitment = zoneRootCommitmentHex(secret);
-    const key = await crypto.subtle.importKey('raw', deviceKey as BufferSource, 'AES-GCM', false, ['encrypt']);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv as BufferSource, additionalData: aad(ref, commitment) as BufferSource }, key, secret as BufferSource));
     await api.zoneCreateTestnet({
-      token, zone: ref.zone, localSignerPublicKey: browserHostId(), zoneRootCommitment: commitment,
-      ciphertextB64: b64(ciphertext), header: { v: 1, alg: 'aes-256-gcm-device-v1', ivB64: b64(iv) },
+      token, zone: ref.zone, zoneRootCommitment: commitment, zoneRootSecretB64: b64(secret),
     });
-    await cacheTestnetDeviceKey(ref, deviceKey);
     await cacheZoneSecret(ref, secret, commitment);
-  } finally { secret.fill(0); deviceKey.fill(0); }
+  } finally { secret.fill(0); }
+}
+
+export async function unlockServerTestnetVault(token: string, ref: ZoneRef, commitment: string, entries: ZoneAddressItem[]): Promise<DerivedVaultAddress[]> {
+  if (ref.network !== 'testnet') throw new Error('server-managed vault unlock is Testnet-only');
+  const result = await api.zoneTestnetUnlock(token, ref.zone);
+  if (result.commitment !== commitment) throw new Error('Testnet vault commitment mismatch');
+  const secret = unb64(result.zoneRootSecretB64);
+  try {
+    if (secret.byteLength !== 32 || !verifyCommitment(secret, commitment)) throw new Error('Testnet vault commitment mismatch');
+    await cacheZoneSecret(ref, secret, commitment);
+    return derive(secret, ref, entries);
+  } finally { secret.fill(0); }
 }
 
 export async function unlockTestnetVault(token: string, ref: ZoneRef, commitment: string, entries: ZoneAddressItem[]): Promise<DerivedVaultAddress[]> {

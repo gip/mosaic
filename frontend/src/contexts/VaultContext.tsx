@@ -3,6 +3,7 @@ import type { AgentChain, ZoneRef } from '@mosaic/zone-keys';
 import { api, type ZoneListItem } from '../api';
 import { dropCachedZoneSecret } from '../zone/cache';
 import { unlockFromCache, type DerivedVaultAddress } from '../zone/unlock';
+import { unlockServerTestnetVault } from '../zone/testnet';
 import { useSession } from './SessionContext';
 
 export interface VaultState extends ZoneListItem {
@@ -83,6 +84,15 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         if (cached) {
           void reportUnlocked(item.zone);
           return { ...item, status: 'unlocked', derivedAddresses: cached.addresses };
+        }
+        if (item.mode === 'testnet-server') {
+          try {
+            const unlocked = await unlockServerTestnetVault(session.token, ref, item.commitment, item.addresses);
+            void reportUnlocked(item.zone);
+            return { ...item, status: 'unlocked', derivedAddresses: unlocked };
+          } catch {
+            // Keep the vault visible and locked if the sandbox server is unavailable.
+          }
         }
         return { ...item, status: 'locked' };
       }));
