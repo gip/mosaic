@@ -1,0 +1,69 @@
+import { canonicalJson, deriveAgentAddresses, verifyCommitment, zoneRootCommitmentHex, type ZoneRef } from '@mosaic/zone-keys';
+import { api, type ZoneAddressItem } from '../api';
+import { cacheZoneSecret, readTestnetDeviceKey } from './cache';
+import type { DerivedVaultAddress } from './unlock';
+
+interface DeviceHeader { v: 1; alg: 'aes-256-gcm-device-v1'; ivB64: string }
+
+function b64(bytes: Uint8Array): string {
+  let value = '';
+  for (const byte of bytes) value += String.fromCharCode(byte);
+  return btoa(value);
+}
+function unb64(value: string): Uint8Array {
+  const raw = atob(value);
+  return Uint8Array.from(raw, (char) => char.charCodeAt(0));
+}
+function aad(ref: ZoneRef, commitment: string): Uint8Array {
+  return new TextEncoder().encode(canonicalJson({ ...ref, commitment, v: 1 }));
+}
+function derive(secret: Uint8Array, ref: ZoneRef, entries: ZoneAddressItem[]): DerivedVaultAddress[] {
+  const byIndex = new Map<number, ReturnType<typeof deriveAgentAddresses>>();
+  return entries.map((entry) => {
+    let addresses = byIndex.get(entry.index);
+    if (!addresses) { addresses = deriveAgentAddresses(secret, ref, entry.index); byIndex.set(entry.index, addresses); }
+    return { ...entry, address: addresses[entry.chain] };
+  });
+}
+
+export async function createTestnetVault(token: string, ref: ZoneRef): Promise<void> {
+  if (ref.network !== 'testnet') throw new Error('server-managed vault creation is Testnet-only');
+  const secret = crypto.getRandomValues(new Uint8Array(32));
+  try {
+    const commitment = zoneRootCommitmentHex(secret);
+    await api.zoneCreateTestnet({
+      token, zone: ref.zone, zoneRootCommitment: commitment, zoneRootSecretB64: b64(secret),
+    });
+    await cacheZoneSecret(ref, secret, commitment);
+  } finally { secret.fill(0); }
+}
+
+export async function unlockServerTestnetVault(token: string, ref: ZoneRef, commitment: string, entries: ZoneAddressItem[]): Promise<DerivedVaultAddress[]> {
+  if (ref.network !== 'testnet') throw new Error('server-managed vault unlock is Testnet-only');
+  const result = await api.zoneTestnetUnlock(token, ref.zone);
+  if (result.commitment !== commitment) throw new Error('Testnet vault commitment mismatch');
+  const secret = unb64(result.zoneRootSecretB64);
+  try {
+    if (secret.byteLength !== 32 || !verifyCommitment(secret, commitment)) throw new Error('Testnet vault commitment mismatch');
+    await cacheZoneSecret(ref, secret, commitment);
+    return derive(secret, ref, entries);
+  } finally { secret.fill(0); }
+}
+
+export async function unlockTestnetVault(token: string, ref: ZoneRef, commitment: string, entries: ZoneAddressItem[]): Promise<DerivedVaultAddress[]> {
+  const deviceKey = await readTestnetDeviceKey(ref);
+  if (!deviceKey) throw new Error('This device does not hold the vault key. Testnet vaults unlock only on the device that created them.');
+  try {
+    const blob = await api.blobGet(token, ref.zone, 'device');
+    const header = blob.header as unknown as DeviceHeader;
+    if (header.v !== 1 || header.alg !== 'aes-256-gcm-device-v1') throw new Error('Unsupported Testnet device blob');
+    const key = await crypto.subtle.importKey('raw', deviceKey as BufferSource, 'AES-GCM', false, ['decrypt']);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(header.ivB64) as BufferSource, additionalData: aad(ref, commitment) as BufferSource }, key, unb64(blob.ciphertextB64) as BufferSource);
+    const secret = new Uint8Array(plaintext);
+    try {
+      if (!verifyCommitment(secret, commitment)) throw new Error('Testnet vault commitment mismatch');
+      await cacheZoneSecret(ref, secret, commitment);
+      return derive(secret, ref, entries);
+    } finally { secret.fill(0); }
+  } finally { deviceKey.fill(0); }
+}

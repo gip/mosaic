@@ -1,5 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
+import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainFamily, ChainWithEnabled, NetworkTag } from '@mosaic/catalog';
+import type { AgentChain, Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
 import { MCP_URL } from './config';
 
 export type SignatureEnvelope =
@@ -30,6 +31,17 @@ export interface AuthVerifyResult {
   expiresAt: number;
 }
 
+/** Per-vault chain support; copied from the account settings at creation, then independent. */
+export interface ZoneChainSetting {
+  chainId: string;
+  chainKey: string;
+  name: string;
+  family: ChainFamily;
+  network: NetworkTag;
+  evmChainId?: number;
+  enabled: boolean;
+}
+
 export interface ZoneGetResult {
   exists: boolean;
   zoneId?: string;
@@ -38,15 +50,52 @@ export interface ZoneGetResult {
   localSignerPublicKey?: string;
   layer1Enabled?: boolean;
   createdAt?: string;
-  blobs?: { kind: 'sig' | 'pass'; version: number }[];
+  lastUnlockedAt?: string;
+  blobs?: { kind: 'sig' | 'pass' | 'device'; version: number }[];
+  chains?: ZoneChainSetting[];
+}
+
+export interface ZoneListItem {
+  zoneId: string;
+  zone: string;
+  commitment: string;
+  mode: 'signed' | 'testnet-device' | 'testnet-server';
+  createdAt: string;
+  lastUnlockedAt?: string;
+  addresses: ZoneAddressItem[];
+  chains: ZoneChainSetting[];
+}
+
+export interface ZoneAddressItem {
+  id: string;
+  zoneId: string;
+  chain: AgentChain;
+  index: number;
+  name: string;
+  createdAt: string;
 }
 
 export interface BlobGetResult {
-  kind: 'sig' | 'pass';
+  kind: 'sig' | 'pass' | 'device' | 'server';
   version: number;
   header: Record<string, unknown>;
   ciphertextB64: string;
   commitment: string;
+}
+
+export interface WalletSettingsResult {
+  /** 0 disables the Mainnet lock reminder. */
+  lockReminderMinutes: number;
+}
+
+export class ApiError extends Error {
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+  }
 }
 
 class MosaicApi {
@@ -75,8 +124,8 @@ class MosaicApi {
     const result = await client.callTool({ name, arguments: args });
     const content = result.content as { type: string; text?: string }[] | undefined;
     const text = content?.[0]?.text ?? '{}';
-    const data = JSON.parse(text) as T & { error?: { message?: string } };
-    if (result.isError) throw new Error(data.error?.message ?? `tool ${name} failed`);
+    const data = JSON.parse(text) as T & { error?: { code?: string; message?: string } };
+    if (result.isError) throw new ApiError(data.error?.message ?? `tool ${name} failed`, data.error?.code);
     return data;
   }
 
@@ -90,6 +139,31 @@ class MosaicApi {
 
   authLogout(token: string): Promise<{ ok: boolean }> {
     return this.call('auth_logout', { token });
+  }
+
+  authNetworkSwitch(token: string, network: Network): Promise<AuthVerifyResult> {
+    return this.call('auth_network_switch', { token, network });
+  }
+
+  catalogList(token: string): Promise<CatalogSnapshot> {
+    return this.call('catalog_list', { token });
+  }
+
+  /** Toggles every network variant of the logical chain; returns the updated variants. */
+  chainEnabledSet(token: string, chainKey: string, enabled: boolean): Promise<ChainWithEnabled[]> {
+    return this.call('chain_enabled_set', { token, chainKey, enabled });
+  }
+
+  assetTrustSet(token: string, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
+    return this.call('asset_trust_set', { token, assetId, state });
+  }
+
+  settingsGet(token: string): Promise<WalletSettingsResult> {
+    return this.call('settings_get', { token });
+  }
+
+  settingsSet(token: string, patch: Partial<WalletSettingsResult>): Promise<WalletSettingsResult> {
+    return this.call('settings_set', { token, ...patch });
   }
 
   zoneBegin(token: string, zone: string): Promise<{ challengeId: string; nonce: string; issuedAt: string; expiresAt: string }> {
@@ -108,21 +182,48 @@ class MosaicApi {
     return this.call('zone_create', args);
   }
 
+  zoneCreateTestnet(args: {
+    token: string; zone: string; zoneRootCommitment: string; zoneRootSecretB64: string;
+  }): Promise<{ zoneId: string; createdAt: string }> {
+    return this.call('zone_create_testnet', args);
+  }
+
+  zoneTestnetUnlock(token: string, zone: string): Promise<{ commitment: string; zoneRootSecretB64: string }> {
+    return this.call('zone_testnet_unlock', { token, zone });
+  }
+
   zoneGet(token: string, zone: string): Promise<ZoneGetResult> {
     return this.call('zone_get', { token, zone });
+  }
+
+  zoneList(token: string): Promise<ZoneListItem[]> {
+    return this.call('zone_list', { token });
+  }
+
+  zoneUnlocked(token: string, zone: string): Promise<{ lastUnlockedAt: string }> {
+    return this.call('zone_unlocked', { token, zone });
+  }
+
+  zoneAddressCreate(token: string, zone: string, chain: AgentChain, name?: string): Promise<ZoneAddressItem> {
+    return this.call('zone_address_create', { token, zone, chain, ...(name ? { name } : {}) });
+  }
+
+  /** Returns the vault's full chain list after the toggle. */
+  zoneChainSet(token: string, zone: string, chainKey: string, enabled: boolean): Promise<ZoneChainSetting[]> {
+    return this.call('zone_chain_set', { token, zone, chainKey, enabled });
   }
 
   blobPut(args: {
     token: string;
     zone: string;
-    kind: 'sig' | 'pass';
+    kind: 'sig' | 'pass' | 'device';
     ciphertextB64: string;
     header: Record<string, unknown>;
   }): Promise<{ version: number }> {
     return this.call('blob_put', args);
   }
 
-  blobGet(token: string, zone: string, kind: 'sig' | 'pass'): Promise<BlobGetResult> {
+  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device' | 'server'): Promise<BlobGetResult> {
     return this.call('blob_get', { token, zone, kind });
   }
 

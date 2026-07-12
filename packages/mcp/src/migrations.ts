@@ -57,4 +57,100 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
   `,
+  `
+  CREATE TABLE custom_chains (
+    id TEXT PRIMARY KEY CHECK (id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+    family TEXT NOT NULL DEFAULT 'evm' CHECK (family = 'evm'),
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    evm_chain_id BIGINT NOT NULL UNIQUE CHECK (evm_chain_id > 0),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE TABLE chain_preferences (
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    chain_id TEXT NOT NULL,
+    trusted BOOLEAN NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (root_chain, root_address, chain_id)
+  );
+
+  CREATE TABLE asset_preferences (
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    trust_state TEXT NOT NULL CHECK (trust_state IN ('hidden','review','allowed')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (root_chain, root_address, asset_id)
+  );
+
+  CREATE INDEX chain_preferences_owner_idx ON chain_preferences (root_chain, root_address);
+  CREATE INDEX asset_preferences_owner_idx ON asset_preferences (root_chain, root_address);
+  `,
+  `
+  ALTER TABLE zones ADD COLUMN last_unlocked_at TIMESTAMPTZ;
+  `,
+  `
+  CREATE TABLE zone_addresses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
+    chain TEXT NOT NULL CHECK (chain IN ('evm','xrpl','stellar')),
+    derivation_index INT NOT NULL CHECK (derivation_index >= 0),
+    name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (zone_id, chain, derivation_index),
+    UNIQUE (zone_id, chain, name)
+  );
+  INSERT INTO zone_addresses (zone_id, chain, derivation_index, name)
+  SELECT id, chain, 0, '#0' FROM zones CROSS JOIN (VALUES ('evm'), ('xrpl'), ('stellar')) AS chains(chain);
+  `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device'));
+  `,
+  `
+  CREATE TABLE wallet_settings (
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    lock_reminder_minutes INT NOT NULL CHECK (lock_reminder_minutes IN (0,1,3,5,10,30)),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (root_chain, root_address)
+  );
+  `,
+  `
+  ALTER TABLE wallet_settings ADD COLUMN hidden_chains TEXT NOT NULL DEFAULT '';
+  `,
+  `
+  ALTER TABLE chain_preferences RENAME COLUMN trusted TO enabled;
+
+  -- Fold the retired "Active" flag (wallet_settings.hidden_chains) into enabled.
+  UPDATE chain_preferences cp SET enabled = FALSE
+  FROM wallet_settings ws
+  WHERE ws.root_chain = cp.root_chain AND ws.root_address = cp.root_address
+    AND cp.chain_id = ANY(string_to_array(ws.hidden_chains, ','));
+
+  -- One flag per logical chain: builtin testnet variants take the mainnet value.
+  UPDATE chain_preferences cp SET enabled = m.enabled, updated_at = now()
+  FROM chain_preferences m
+  WHERE m.root_chain = cp.root_chain AND m.root_address = cp.root_address
+    AND (cp.chain_id, m.chain_id) IN (('base-sepolia','base-mainnet'),
+        ('xrpl-testnet','xrpl-mainnet'),('stellar-testnet','stellar-mainnet'));
+
+  ALTER TABLE wallet_settings DROP COLUMN hidden_chains;
+
+  CREATE TABLE zone_chain_settings (
+    zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
+    chain_id TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (zone_id, chain_id)
+  );
+  `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server'));
+  `,
 ];

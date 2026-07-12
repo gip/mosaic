@@ -1,0 +1,29 @@
+{
+  "name": "@mosaic/stellar",
+  "version": "0.0.0",
+  "description": "Stellar market data (Horizon order books via SSE, /paths quote surfaces) and trusted-asset balances",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mosaic/chain-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "typescript": "~6.0.2"
+  }
+}

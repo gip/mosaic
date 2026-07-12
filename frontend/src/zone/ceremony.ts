@@ -26,21 +26,21 @@ export type CeremonyStep =
   | 'done';
 
 export const CEREMONY_STEP_LABELS: Record<CeremonyStep, string> = {
-  begin: 'Preparing zone…',
-  authorize: 'Sign the zone authorization with your wallet',
+  begin: 'Preparing vault…',
+  authorize: 'Sign the vault authorization with your wallet',
   'selftest-1': 'Backup signature 1 of 2 (determinism self-test)',
   'selftest-2': 'Backup signature 2 of 2 (determinism self-test)',
   wrap: 'Encrypting recovery blobs…',
   'passphrase-kdf': 'Deriving passphrase key (intentionally slow)…',
   upload: 'Storing recovery blobs…',
-  done: 'Zone ready',
+  done: 'Vault ready',
 };
 
 export class NonDeterministicWalletError extends Error {
   constructor() {
     super(
       'This wallet does not produce repeatable signatures (hardware or smart-contract wallet). ' +
-        'Browser zones require a deterministic wallet — signature recovery would be impossible.',
+        'Browser vaults require a deterministic wallet — signature recovery would be impossible.',
     );
     this.name = 'NonDeterministicWalletError';
   }
@@ -105,6 +105,8 @@ function downloadBackupFile(name: string, contents: object): void {
 }
 
 export interface CeremonyResult {
+  zoneId: string;
+  createdAt: string;
   commitment: string;
   addresses: AgentAddresses;
 }
@@ -159,7 +161,7 @@ export async function runZoneCeremony(opts: {
     kek.fill(0);
 
     onStep('upload');
-    await api.zoneCreate({
+    const created = await api.zoneCreate({
       token,
       challengeId: begin.challengeId,
       zone: ref.zone,
@@ -171,14 +173,14 @@ export async function runZoneCeremony(opts: {
     await putBlob(token, ref.zone, 'sig', blobSig);
     await putBlob(token, ref.zone, 'pass', blobPass);
     downloadBackupFile(
-      `mosaic-zone-backup-${ref.zone}-${ref.network}.json`,
+      `mosaic-vault-backup-${ref.zone}-${ref.network}.json`,
       encodeBackupFile(ref, commitment, { sig: blobSig, pass: blobPass }, new Date().toISOString()),
     );
 
     await cacheZoneSecret(ref, secret, commitment);
     const addresses = deriveAgentAddresses(secret, ref, 0);
     onStep('done');
-    return { commitment, addresses };
+    return { zoneId: created.zoneId, createdAt: created.createdAt, commitment, addresses };
   } finally {
     secret.fill(0);
   }

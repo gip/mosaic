@@ -1,8 +1,17 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/catalog" },
     { "path": "./packages/zone-keys" },
     { "path": "./packages/web-connector" },
-    { "path": "./packages/mcp" }
+    { "path": "./packages/chain-core" },
+    { "path": "./packages/mosaic-xrpl" },
+    { "path": "./packages/mosaic-stellar" },
+    { "path": "./packages/mosaic-evm" },
+    { "path": "./packages/mcp" },
+    { "path": "./packages/local-runtime" },
+    { "path": "./packages/local-signer" },
+    { "path": "./packages/agent-runner" },
+    { "path": "./local-app" }
   ]
 }

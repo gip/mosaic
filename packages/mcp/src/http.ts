@@ -9,6 +9,7 @@ import { createMosaicMcpServer, type MosaicMcpOptions } from './server.js';
 import { openMosaicStore } from './store.js';
 import { xamanServiceFromEnv } from './xaman.js';
 import { xrplRpcUrl } from './xrplLedger.js';
+import { parseTestnetServerKey } from './testnetVault.js';
 
 export interface HttpServerOptions extends MosaicMcpOptions {
   bind?: string;
@@ -127,7 +128,7 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ c
   const bind = opts.bind ?? envString('MOSAIC_BIND') ?? `127.0.0.1:${envNumber('MOSAIC_MCP_PORT', 8788)}`;
   const { host, port } = parseBind(bind);
   const corsOrigins = parseOrigins(
-    opts.corsOrigin ?? envString('MOSAIC_CORS_ORIGIN') ?? 'http://localhost:5173,http://127.0.0.1:5173',
+    opts.corsOrigin ?? envString('MOSAIC_CORS_ORIGIN') ?? 'http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:4174',
   );
   const store = opts.store ?? openMosaicStore(envString('MOSAIC_DATABASE_URL'));
   await store.init();
@@ -135,7 +136,13 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ c
   // One AuthService for the whole process: a per-session AuthService would
   // reset the rate limiter on each initialize and leave verify brute-forceable.
   const auth = opts.auth ?? new AuthService(store, xaman);
-  const serverOptions: MosaicMcpOptions = { ...opts, store, xaman, auth };
+  const serverOptions: MosaicMcpOptions = {
+    ...opts,
+    store,
+    xaman,
+    auth,
+    testnetVaultKey: opts.testnetVaultKey ?? parseTestnetServerKey(envString('MOSAIC_TESTNET_VAULT_KEY')),
+  };
 
   const transports = new Map<string, TransportRecord>();
   const maxBodyBytes = envNumber('MOSAIC_MCP_MAX_BODY_BYTES', 1024 * 1024, { allowZero: true });

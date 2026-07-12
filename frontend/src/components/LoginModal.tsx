@@ -26,13 +26,13 @@ export default function LoginModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal title="Log in with your root wallet" onClose={onClose}>
       <p className="login-intro">
-        Your root wallet authorizes zones and recovers agent keys. Pick the chain it lives on and
+        Your root wallet authorizes vaults and recovers agent keys. Pick the chain it lives on and
         scan with your wallet&rsquo;s mobile app.
       </p>
       <div className="login-tiles">
         <XamanTile />
-        <EvmTile />
         <StellarTile />
+        <EvmTile />
       </div>
     </Modal>
   );

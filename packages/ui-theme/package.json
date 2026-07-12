@@ -1,0 +1,9 @@
+{
+  "name": "@mosaic/ui-theme",
+  "version": "0.0.0",
+  "description": "Shared Mosaic visual design tokens for web and desktop surfaces.",
+  "type": "module",
+  "license": "MIT",
+  "files": ["theme.css"],
+  "exports": { "./theme.css": "./theme.css" }
+}

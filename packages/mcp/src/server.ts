@@ -1,11 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { authorizeZoneMessage, backupWrapMessage, type ZoneRef } from '@mosaic/zone-keys';
+import type { AssetTrustState } from '@mosaic/catalog';
+import { authorizeZoneMessage, backupWrapMessage, verifyCommitment, type AgentChain, type Network, type ZoneRef } from '@mosaic/zone-keys';
 import { xrplSignInTxJson } from '@mosaic/zone-keys/verify';
 import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, type Session } from './auth.js';
 import { MosaicMcpError, mcpErrorContent } from './errors.js';
 import { createStderrLogger, type MosaicLogger } from './logging.js';
 import { MemoryStore, type BlobKind, type MosaicStore } from './store.js';
+import { openTestnetSecret, sealTestnetSecret, TESTNET_SERVER_POLICY } from './testnetVault.js';
 import type { XamanService } from './xaman.js';
 
 export interface MosaicMcpOptions {
@@ -13,6 +15,8 @@ export interface MosaicMcpOptions {
   auth?: AuthService;
   xaman?: XamanService;
   logger?: MosaicLogger;
+  /** Persistent server-side envelope key for the explicitly custodial Testnet sandbox mode. */
+  testnetVaultKey?: Uint8Array;
 }
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
@@ -27,6 +31,7 @@ const fail = (error: unknown): ToolResult => ({
 });
 
 const MAX_BLOB_BYTES = 4 * 1024;
+const zoneNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 const signatureSchema = z.union([
   z.object({ type: z.literal('evm'), signature: z.string().regex(/^0x[0-9a-fA-F]+$/) }),
@@ -122,14 +127,255 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   );
 
   reg(
-    'zone_begin',
+    'auth_network_switch',
     {
-      description: 'Issue server freshness (nonce, issuedAt, expiresAt) for an authorize-zone signature.',
+      description: 'Exchange a valid session for the same wallet on another derivation network without another signature.',
+      inputSchema: { token: z.string(), network: z.enum(['mainnet', 'testnet']) },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const network = String(args.network) as Network;
+      if (network === session.network) return ok(session);
+      const { token } = await store.createSession({
+        chain: session.chain, address: session.address, network, expiresAt: session.expiresAt,
+      });
+      await store.deleteSession(session.token);
+      return ok({ token, chain: session.chain, address: session.address, network, expiresAt: session.expiresAt });
+    },
+  );
+
+  reg(
+    'catalog_list',
+    {
+      description: 'List supported chains (with enabled state) and assets (with trust preferences) for the authenticated root wallet.',
+      inputSchema: { token: z.string() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(await store.listCatalog({ chain: session.chain, address: session.address }));
+    },
+  );
+
+  reg(
+    'chain_enabled_set',
+    {
+      description:
+        'Enable or disable a supported chain for the authenticated root wallet. Applies to every network '
+        + 'variant of the chain (mainnet and testnet); new vaults copy these settings at creation. Returns '
+        + 'the updated chain variants.',
+      inputSchema: { token: z.string(), chainKey: z.string().min(1), enabled: z.boolean() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(
+        await store.setChainEnabled(
+          { chain: session.chain, address: session.address },
+          String(args.chainKey),
+          Boolean(args.enabled),
+        ),
+      );
+    },
+  );
+
+  reg(
+    'asset_trust_set',
+    {
+      description: 'Set an asset to Hidden, Review, or Allowed for the authenticated root wallet.',
+      inputSchema: { token: z.string(), assetId: z.string().min(1), state: z.enum(['hidden', 'review', 'allowed']) },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(
+        await store.setAssetTrust(
+          { chain: session.chain, address: session.address },
+          String(args.assetId),
+          String(args.state) as AssetTrustState,
+        ),
+      );
+    },
+  );
+
+  reg(
+    'settings_get',
+    {
+      description: 'Read per-wallet settings (Mainnet vault lock reminder) for the authenticated root wallet.',
+      inputSchema: { token: z.string() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(await store.getWalletSettings({ chain: session.chain, address: session.address }));
+    },
+  );
+
+  reg(
+    'settings_set',
+    {
+      description:
+        'Update per-wallet settings; omitted fields keep their current value. lockReminderMinutes must be one of '
+        + '0 (disabled), 1, 3, 5, 10, 30.',
+      inputSchema: {
+        token: z.string(),
+        lockReminderMinutes: z.number().int().optional(),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const owner = { chain: session.chain, address: session.address };
+      const current = await store.getWalletSettings(owner);
+      return ok(await store.setWalletSettings(owner, {
+        lockReminderMinutes: args.lockReminderMinutes === undefined ? current.lockReminderMinutes : Number(args.lockReminderMinutes),
+      }));
+    },
+  );
+
+  reg(
+    'zone_list',
+    {
+      description: 'List zone metadata for the authenticated root wallet and session network.',
+      inputSchema: { token: z.string() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const records = await store.listZones(session.chain, session.address, session.network);
+      return ok(await Promise.all(records.map(async (record) => ({
+        zoneId: record.id,
+        zone: record.zone,
+        commitment: record.commitment,
+        mode: record.policyHash === TESTNET_SERVER_POLICY
+          ? 'testnet-server'
+          : record.policyHash === 'testnet-device-v1' ? 'testnet-device' : 'signed',
+        createdAt: record.createdAt,
+        lastUnlockedAt: record.lastUnlockedAt ?? undefined,
+        addresses: await store.listZoneAddresses(record.id),
+        chains: await store.listZoneChainSettings(record.id),
+      }))));
+    },
+  );
+
+  reg(
+    'zone_chain_set',
+    {
+      description:
+        'Enable or disable a chain for one owned vault. Vault chain settings start as a copy of the '
+        + 'account-level settings and change independently afterwards. Returns the vault\'s full chain list.',
+      inputSchema: { token: z.string(), zone: z.string().min(1).max(64), chainKey: z.string().min(1), enabled: z.boolean() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const zone = await requireZone(session, String(args.zone));
+      return ok(await store.setZoneChainEnabled(zone.id, String(args.chainKey), Boolean(args.enabled)));
+    },
+  );
+
+  reg(
+    'zone_address_create',
+    {
+      description: 'Allocate the next deterministic address index for one chain in an owned zone.',
+      inputSchema: {
+        token: z.string(), zone: z.string().min(1).max(64),
+        chain: z.enum(['evm', 'xrpl', 'stellar']),
+        name: z.string().trim().min(1).max(64).optional(),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const zone = await requireZone(session, String(args.zone));
+      return ok(await store.createZoneAddress(zone.id, String(args.chain) as AgentChain, args.name ? String(args.name) : undefined));
+    },
+  );
+
+  reg(
+    'zone_unlocked',
+    {
+      description: 'Record that the authenticated owner successfully unlocked a zone.',
       inputSchema: { token: z.string(), zone: z.string().min(1).max(64) },
     },
     async (args) => {
       const session = await requireSession(args);
+      const record = await store.markZoneUnlocked(session.chain, session.address, String(args.zone), session.network);
+      if (!record) throw new MosaicMcpError('NOT_FOUND', `zone not found: ${String(args.zone)} (${session.network})`);
+      return ok({ lastUnlockedAt: record.lastUnlockedAt });
+    },
+  );
+
+  reg(
+    'zone_begin',
+    {
+      description: 'Issue server freshness (nonce, issuedAt, expiresAt) for an authorize-zone signature.',
+      inputSchema: { token: z.string(), zone: zoneNameSchema },
+    },
+    async (args) => {
+      const session = await requireSession(args);
       return ok(await auth.zoneBegin(session, String(args.zone)));
+    },
+  );
+
+  reg(
+    'zone_create_testnet',
+    {
+      description: 'Create a Testnet sandbox vault whose secret is envelope-encrypted by the server and available after authenticated login on any device.',
+      inputSchema: {
+        token: z.string(), zone: zoneNameSchema,
+        zoneRootCommitment: z.string().regex(/^[0-9a-f]{64}$/),
+        zoneRootSecretB64: z.string().min(1),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      if (session.network !== 'testnet') throw new MosaicMcpError('VALIDATION_FAILED', 'server-managed vault creation is Testnet-only');
+      if (!opts.testnetVaultKey) throw new MosaicMcpError('INTERNAL', 'Testnet server vault key is not configured');
+      const secret = Buffer.from(String(args.zoneRootSecretB64), 'base64');
+      if (secret.byteLength !== 32) throw new MosaicMcpError('VALIDATION_FAILED', 'zoneRootSecretB64 must decode to exactly 32 bytes');
+      const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: String(args.zone), network: 'testnet' };
+      const commitment = String(args.zoneRootCommitment);
+      if (!verifyCommitment(new Uint8Array(secret), commitment)) {
+        throw new MosaicMcpError('VALIDATION_FAILED', 'zoneRootSecret does not match zoneRootCommitment');
+      }
+      try {
+        const sealed = sealTestnetSecret(new Uint8Array(secret), opts.testnetVaultKey, ref, commitment);
+        const record = await store.createZone({
+          rootChain: ref.rootChain, rootAddress: ref.rootAddress, zone: ref.zone, network: ref.network,
+          commitment, policyHash: TESTNET_SERVER_POLICY,
+          localSignerPublicKey: 'server:testnet-sandbox',
+          authorizeMessage: { mode: TESTNET_SERVER_POLICY }, authorizeSignature: { mode: 'none' },
+          xrplSignInTemplate: null, layer1Enabled: false,
+        });
+        await store.putBlob({ zoneId: record.id, kind: 'server', ciphertext: sealed.ciphertext, header: sealed.header as unknown as Record<string, unknown> });
+        return ok({ zoneId: record.id, createdAt: record.createdAt });
+      } finally {
+        secret.fill(0);
+      }
+    },
+  );
+
+  reg(
+    'zone_testnet_unlock',
+    {
+      description: 'Unlock an explicitly server-managed Testnet sandbox vault for its authenticated owner.',
+      inputSchema: { token: z.string(), zone: zoneNameSchema },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const zone = await requireZone(session, String(args.zone));
+      if (zone.policyHash !== TESTNET_SERVER_POLICY) {
+        throw new MosaicMcpError('VALIDATION_FAILED', 'zone is not a server-managed Testnet sandbox');
+      }
+      if (!opts.testnetVaultKey) throw new MosaicMcpError('INTERNAL', 'Testnet server vault key is not configured');
+      const blob = await store.getBlob(zone.id, 'server');
+      if (!blob) throw new MosaicMcpError('NOT_FOUND', `no server Testnet secret for zone ${zone.zone}`);
+      const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: zone.zone, network: 'testnet' };
+      const secret = openTestnetSecret(
+        blob.ciphertext,
+        blob.header as unknown as Parameters<typeof openTestnetSecret>[1],
+        opts.testnetVaultKey,
+        ref,
+        zone.commitment,
+      );
+      try {
+        return ok({ commitment: zone.commitment, zoneRootSecretB64: Buffer.from(secret).toString('base64') });
+      } finally {
+        secret.fill(0);
+      }
     },
   );
 
@@ -141,7 +387,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       inputSchema: {
         token: z.string(),
         challengeId: z.string(),
-        zone: z.string().min(1).max(64),
+        zone: zoneNameSchema,
         localSignerPublicKey: z.string().min(1).max(512),
         policyHash: z.string().min(1).max(128),
         zoneRootCommitment: z.string().regex(/^[0-9a-f]{64}$/),
@@ -207,7 +453,9 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         localSignerPublicKey: record.localSignerPublicKey,
         layer1Enabled: record.layer1Enabled,
         createdAt: record.createdAt,
+        lastUnlockedAt: record.lastUnlockedAt ?? undefined,
         blobs,
+        chains: await store.listZoneChainSettings(record.id),
       });
     },
   );
@@ -219,7 +467,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       inputSchema: {
         token: z.string(),
         zone: z.string(),
-        kind: z.enum(['sig', 'pass']),
+        kind: z.enum(['sig', 'pass', 'device']),
         ciphertextB64: z.string(),
         header: z.record(z.string(), z.unknown()),
       },
@@ -246,7 +494,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     {
       description:
         'Fetch the latest encrypted recovery blob of a kind. Served only to a session authenticated via session-auth — never ask users to sign backup-wrap to log in.',
-      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass']) },
+      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device', 'server']) },
     },
     async (args) => {
       const session = await requireSession(args);
@@ -295,7 +543,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       if (args.purpose === 'backup-wrap') {
         const refs = await opts.xaman.createSignInPayload(
           backupWrapMessage(ref),
-          `Mosaic backup key for zone "${ref.zone}" (${ref.network})`,
+          `Mosaic backup key for vault "${ref.zone}" (${ref.network})`,
         );
         return ok(refs);
       }
@@ -318,7 +566,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       });
       const refs = await opts.xaman.createSignInPayload(
         message,
-        `Authorize Mosaic zone "${ref.zone}" (${ref.network})`,
+        `Authorize Mosaic vault "${ref.zone}" (${ref.network})`,
       );
       return ok(refs);
     },

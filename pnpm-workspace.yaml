@@ -1,6 +1,7 @@
 packages:
   - 'packages/*'
   - 'frontend'
+  - 'local-app'
 allowBuilds:
   '@reown/appkit': false
   bufferutil: false

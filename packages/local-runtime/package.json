@@ -1,0 +1,18 @@
+{
+  "name": "@mosaic/local-runtime",
+  "version": "0.0.0",
+  "description": "Shared lifecycle and IPC contract for Mosaic local utility processes.",
+  "type": "module",
+  "license": "MIT",
+  "files": ["dist"],
+  "exports": { ".": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "tsc -b"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "typescript": "~6.0.2"
+  }
+}

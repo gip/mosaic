@@ -18,13 +18,32 @@ interface CacheRecord {
 
 const DB_NAME = 'mosaic-zone-cache';
 const STORE = 'secrets';
+const DEVICE_KEYS = 'deviceKeys';
 
 function dbPromise(): Promise<IDBPDatabase> {
-  return openDB(DB_NAME, 1, {
+  return openDB(DB_NAME, 2, {
     upgrade(db) {
-      db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains(DEVICE_KEYS)) db.createObjectStore(DEVICE_KEYS);
     },
   });
+}
+
+export async function cacheTestnetDeviceKey(ref: ZoneRef, rawKey: Uint8Array): Promise<void> {
+  const wrappingKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrappingKey, rawKey as BufferSource);
+  const db = await dbPromise();
+  await db.put(DEVICE_KEYS, { key: wrappingKey, iv, ciphertext }, cacheKey(ref));
+}
+
+export async function readTestnetDeviceKey(ref: ZoneRef): Promise<Uint8Array | undefined> {
+  try {
+    const db = await dbPromise();
+    const record = await db.get(DEVICE_KEYS, cacheKey(ref)) as { key: CryptoKey; iv: Uint8Array; ciphertext: ArrayBuffer } | undefined;
+    if (!record) return undefined;
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.iv as BufferSource }, record.key, record.ciphertext));
+  } catch { return undefined; }
 }
 
 function cacheKey(ref: ZoneRef): string {
@@ -58,6 +77,39 @@ export async function dropCachedZoneSecret(ref: ZoneRef): Promise<void> {
   try {
     const db = await dbPromise();
     await db.delete(STORE, cacheKey(ref));
+  } catch {
+    /* cache is best-effort */
+  }
+}
+
+export type ZoneCacheScope = Pick<ZoneRef, 'rootChain' | 'rootAddress' | 'network'>;
+
+/* Zone names may contain '|', so keys are matched by chain/address prefix and
+   network suffix (both '|'-free) instead of splitting on the separator. */
+async function matchingCacheKeys(scope: ZoneCacheScope): Promise<string[]> {
+  const db = await dbPromise();
+  const keys = (await db.getAllKeys(STORE)) as string[];
+  const prefix = `${scope.rootChain}|${scope.rootAddress}|`;
+  const suffix = `|${scope.network}`;
+  return keys.filter((key) => key.startsWith(prefix) && key.endsWith(suffix));
+}
+
+/** Zone names with a cached (unlocked) secret for one wallet and network. */
+export async function cachedZoneNames(scope: ZoneCacheScope): Promise<string[]> {
+  try {
+    const prefix = `${scope.rootChain}|${scope.rootAddress}|`;
+    const suffix = `|${scope.network}`;
+    return (await matchingCacheKeys(scope)).map((key) => key.slice(prefix.length, key.length - suffix.length));
+  } catch {
+    return [];
+  }
+}
+
+export async function dropCachedZoneSecretsForNetwork(scope: ZoneCacheScope): Promise<void> {
+  try {
+    const db = await dbPromise();
+    const keys = await matchingCacheKeys(scope);
+    await Promise.all(keys.map((key) => db.delete(STORE, key)));
   } catch {
     /* cache is best-effort */
   }

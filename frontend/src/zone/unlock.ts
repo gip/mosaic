@@ -4,11 +4,10 @@ import {
   openPassphraseBlob,
   openSignatureBlob,
   passphraseKdfParams,
-  type AgentAddresses,
   type BlobHeader,
   type ZoneRef,
 } from '@mosaic/zone-keys';
-import { api } from '../api';
+import { api, type ZoneAddressItem } from '../api';
 import { deriveKek } from './argon2';
 import { cacheZoneSecret, readCachedZoneSecret } from './cache';
 
@@ -19,14 +18,28 @@ import { cacheZoneSecret, readCachedZoneSecret } from './cache';
  */
 
 export interface UnlockResult {
-  addresses: AgentAddresses;
+  addresses: DerivedVaultAddress[];
 }
 
-export async function unlockFromCache(ref: ZoneRef, commitment: string): Promise<UnlockResult | undefined> {
+export interface DerivedVaultAddress extends ZoneAddressItem { address: string }
+
+function deriveConfiguredAddresses(secret: Uint8Array, ref: ZoneRef, entries: ZoneAddressItem[]): DerivedVaultAddress[] {
+  const byIndex = new Map<number, ReturnType<typeof deriveAgentAddresses>>();
+  return entries.map((entry) => {
+    let addresses = byIndex.get(entry.index);
+    if (!addresses) {
+      addresses = deriveAgentAddresses(secret, ref, entry.index);
+      byIndex.set(entry.index, addresses);
+    }
+    return { ...entry, address: addresses[entry.chain] };
+  });
+}
+
+export async function unlockFromCache(ref: ZoneRef, commitment: string, entries: ZoneAddressItem[]): Promise<UnlockResult | undefined> {
   const secret = await readCachedZoneSecret(ref, commitment);
   if (!secret) return undefined;
   try {
-    return { addresses: deriveAgentAddresses(secret, ref, 0) };
+    return { addresses: deriveConfiguredAddresses(secret, ref, entries) };
   } finally {
     secret.fill(0);
   }
@@ -36,6 +49,7 @@ export async function unlockWithSignature(opts: {
   token: string;
   ref: ZoneRef;
   commitment: string;
+  entries: ZoneAddressItem[];
   /** One backup-wrap re-signature (byte-identical message). */
   signBackupWrap: () => Promise<Uint8Array>;
 }): Promise<UnlockResult> {
@@ -47,7 +61,7 @@ export async function unlockWithSignature(opts: {
   const secret = openSignatureBlob(signature, wrapped, opts.ref, opts.commitment);
   try {
     await cacheZoneSecret(opts.ref, secret, opts.commitment);
-    return { addresses: deriveAgentAddresses(secret, opts.ref, 0) };
+    return { addresses: deriveConfiguredAddresses(secret, opts.ref, opts.entries) };
   } finally {
     secret.fill(0);
   }
@@ -58,6 +72,7 @@ export async function unlockWithPassphrase(opts: {
   ref: ZoneRef;
   commitment: string;
   passphrase: string;
+  entries: ZoneAddressItem[];
 }): Promise<UnlockResult> {
   const blob = await api.blobGet(opts.token, opts.ref.zone, 'pass');
   const wrapped = decodeBackupBlob({ header: blob.header as unknown as BlobHeader, ciphertext: blob.ciphertextB64 });
@@ -67,7 +82,7 @@ export async function unlockWithPassphrase(opts: {
     const secret = openPassphraseBlob(kek, wrapped, opts.ref, opts.commitment);
     try {
       await cacheZoneSecret(opts.ref, secret, opts.commitment);
-      return { addresses: deriveAgentAddresses(secret, opts.ref, 0) };
+      return { addresses: deriveConfiguredAddresses(secret, opts.ref, opts.entries) };
     } finally {
       secret.fill(0);
     }

@@ -1,0 +1,25 @@
+{
+  "name": "@mosaic/local-app",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Electron host for the local Mosaic Signer, Policy Manager, and Agent Runner.",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "pnpm --filter frontend build && pnpm --filter @mosaic/local-signer build && pnpm --filter @mosaic/agent-runner build && tsc -b",
+    "clean": "tsc -b --clean",
+    "dev": "pnpm build && electron .",
+    "start": "pnpm build && electron .",
+    "test": "tsc -b"
+  },
+  "dependencies": {
+    "@mosaic/agent-runner": "workspace:*",
+    "@mosaic/local-runtime": "workspace:*",
+    "@mosaic/local-signer": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "electron": "^43.1.0",
+    "typescript": "~6.0.2"
+  }
+}

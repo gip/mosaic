@@ -64,7 +64,7 @@ export function xamanCeremonySigner(opts: { token: string; ref: ZoneRef } & Xama
         challengeId: begin.challengeId,
         ...fields,
       });
-      const { uuid } = await signViaPayload(refs, 'Authorize the zone in Xaman');
+      const { uuid } = await signViaPayload(refs, 'Authorize the vault in Xaman');
       return { type: 'xrpl', payloadUuid: uuid };
     },
     async signBackupWrap() {

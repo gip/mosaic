@@ -6,5 +6,5 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "references": [{ "path": "../zone-keys" }]
+  "references": [{ "path": "../catalog" }, { "path": "../zone-keys" }]
 }

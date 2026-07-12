@@ -3,7 +3,7 @@ import type { ZoneMessage } from '@mosaic/zone-keys';
 import type { SignedZoneMessage } from '@mosaic/web-connector/types';
 import type { Eip1193Provider } from '@mosaic/web-connector/evm';
 import type { StellarWalletConnectSession } from '@mosaic/web-connector/stellar';
-import { api, type AuthVerifyResult } from '../api';
+import { api, ApiError, type AuthVerifyResult } from '../api';
 import { useSettings } from './SettingsContext';
 import { clearZoneCache } from '../zone/cache';
 
@@ -25,6 +25,8 @@ interface SessionValue {
   session: AuthVerifyResult | null;
   login: (session: AuthVerifyResult, signer: RootSigner) => void;
   logout: () => Promise<void>;
+  networkSwitching: boolean;
+  networkSwitchError: string | null;
   /**
    * Sign a canonical zone message with the root wallet (EVM/Stellar only —
    * XRPL signs via server-created Xaman payloads).
@@ -50,20 +52,42 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const { network } = useSettings();
   const [session, setSession] = useState<AuthVerifyResult | null>(loadStoredSession);
   const signerRef = useRef<RootSigner | null>(null);
+  const switchingRef = useRef(false);
+  const [networkSwitching, setNetworkSwitching] = useState(false);
+  const [networkSwitchError, setNetworkSwitchError] = useState<string | null>(null);
 
-  // Sessions are network-bound (the signed session-auth message includes the
-  // network). Toggling networks invalidates the login.
+  // Canonical session signatures remain network-bound. A valid live session
+  // can be exchanged server-side for the same wallet on another network.
   useEffect(() => {
-    if (session && session.network !== network) {
-      void api.authLogout(session.token).catch(() => {});
-      signerRef.current = null;
-      sessionStorage.removeItem(SESSION_KEY);
-      queueMicrotask(() => setSession(null));
-    }
+    if (!session || session.network === network || switchingRef.current) return;
+    switchingRef.current = true;
+    queueMicrotask(() => {
+      setNetworkSwitching(true);
+      setNetworkSwitchError(null);
+      void api.authNetworkSwitch(session.token, network).then((next) => {
+        try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* memory-only */ }
+        setSession(next);
+      }).catch((cause: unknown) => {
+        if (cause instanceof ApiError && cause.code === 'AUTH_EXPIRED') {
+          // The stored session is already dead server-side; drop it so pages
+          // reflect reality instead of showing stale previous-network data.
+          signerRef.current = null;
+          sessionStorage.removeItem(SESSION_KEY);
+          setSession(null);
+          setNetworkSwitchError('Your session has expired. Log in again to continue on the selected network.');
+          return;
+        }
+        setNetworkSwitchError(cause instanceof Error ? cause.message : String(cause));
+      }).finally(() => {
+        switchingRef.current = false;
+        setNetworkSwitching(false);
+      });
+    });
   }, [network, session]);
 
   const login = useCallback((next: AuthVerifyResult, signer: RootSigner) => {
     signerRef.current = signer;
+    setNetworkSwitchError(null);
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
     } catch {
@@ -130,8 +154,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ session, login, logout, signZoneMessage }),
-    [session, login, logout, signZoneMessage],
+    () => ({ session, login, logout, networkSwitching, networkSwitchError, signZoneMessage }),
+    [session, login, logout, networkSwitching, networkSwitchError, signZoneMessage],
   );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
