@@ -207,15 +207,6 @@ importers:
       '@walletconnect/sign-client':
         specifier: ^2.23.1
         version: 2.23.10(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@5.0.10)(zod@3.25.76)
-      '@xmtp/content-type-primitives':
-        specifier: 3.0.1
-        version: 3.0.1
-      '@xmtp/node-bindings':
-        specifier: 1.11.0-dev.57a7203
-        version: 1.11.0-dev.57a7203
-      '@xmtp/node-sdk':
-        specifier: 6.0.0
-        version: 6.0.0
       hash-wasm:
         specifier: ^4.12.0
         version: 4.12.0
@@ -247,6 +238,9 @@ importers:
       '@mosaic/catalog':
         specifier: workspace:*
         version: link:../catalog
+      '@mosaic/local-runtime':
+        specifier: workspace:*
+        version: link:../local-runtime
       '@mosaic/zone-keys':
         specifier: workspace:*
         version: link:../zone-keys

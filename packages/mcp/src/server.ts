@@ -1,6 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AssetTrustState } from '@mosaic/catalog';
+import {
+  AGENT_ARTIFACT_PROTOCOL,
+  AGENT_RUNTIME_VERSION,
+  artifactDigest,
+  assertArtifactManifest,
+  sha256Hex,
+  type AgentArtifactManifest,
+} from '@mosaic/local-runtime';
 import { authorizeZoneMessage, backupWrapMessage, verifyCommitment, type AgentChain, type Network, type ZoneRef } from '@mosaic/zone-keys';
 import { xrplSignInTxJson } from '@mosaic/zone-keys/verify';
 import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, type Session } from './auth.js';
@@ -32,6 +40,8 @@ const fail = (error: unknown): ToolResult => ({
 
 const MAX_BLOB_BYTES = 4 * 1024;
 const MAX_DATA_BLOB_BYTES = 64 * 1024 + 16; // v1 plaintext limit plus XChaCha20-Poly1305 tag
+const MAX_AGENT_SECRET_BLOB_BYTES = 64 * 1024 + 16;
+const MAX_AGENT_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const zoneNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 const signatureSchema = z.union([
@@ -464,11 +474,11 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   reg(
     'blob_put',
     {
-      description: `Store an encrypted blob. Recovery blobs are capped at ${MAX_BLOB_BYTES} bytes; data blobs at ${MAX_DATA_BLOB_BYTES} bytes.`,
+      description: `Store an encrypted blob. Recovery blobs are capped at ${MAX_BLOB_BYTES} bytes; data and agent-secret ciphertext at ${MAX_DATA_BLOB_BYTES} bytes.`,
       inputSchema: {
         token: z.string(),
         zone: z.string(),
-        kind: z.enum(['sig', 'pass', 'device', 'data']),
+        kind: z.enum(['sig', 'pass', 'device', 'data', 'agent-secrets']),
         ciphertextB64: z.string(),
         header: z.record(z.string(), z.unknown()),
         expectedVersion: z.number().int().nonnegative().optional(),
@@ -478,7 +488,9 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       const session = await requireSession(args);
       const zone = await requireZone(session, String(args.zone));
       const ciphertext = Buffer.from(String(args.ciphertextB64), 'base64');
-      const maxBytes = args.kind === 'data' ? MAX_DATA_BLOB_BYTES : MAX_BLOB_BYTES;
+      const maxBytes = args.kind === 'data'
+        ? MAX_DATA_BLOB_BYTES
+        : args.kind === 'agent-secrets' ? MAX_AGENT_SECRET_BLOB_BYTES : MAX_BLOB_BYTES;
       if (ciphertext.byteLength === 0 || ciphertext.byteLength > maxBytes) {
         throw new MosaicMcpError('VALIDATION_FAILED', `ciphertext must be 1..${maxBytes} bytes`);
       }
@@ -498,7 +510,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     {
       description:
         'Fetch the latest encrypted recovery blob of a kind. Served only to a session authenticated via session-auth — never ask users to sign backup-wrap to log in.',
-      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device', 'server', 'data']) },
+      inputSchema: { token: z.string(), zone: z.string(), kind: z.enum(['sig', 'pass', 'device', 'server', 'data', 'agent-secrets']) },
     },
     async (args) => {
       const session = await requireSession(args);
@@ -512,6 +524,77 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         ciphertextB64: Buffer.from(blob.ciphertext).toString('base64'),
         commitment: zone.commitment,
       });
+    },
+  );
+
+  reg(
+    'agent_artifact_put',
+    {
+      description: 'Store one immutable, content-addressed UTF-8 JavaScript agent bundle and its canonical manifest.',
+      inputSchema: {
+        token: z.string(),
+        manifest: z.record(z.string(), z.unknown()),
+        source: z.string().min(1),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const manifest = args.manifest as unknown as AgentArtifactManifest;
+      try { assertArtifactManifest(manifest); } catch (error) {
+        throw new MosaicMcpError('VALIDATION_FAILED', error instanceof Error ? error.message : String(error));
+      }
+      const source = String(args.source);
+      const sourceBytes = Buffer.from(source, 'utf8');
+      if (sourceBytes.byteLength === 0 || sourceBytes.byteLength > MAX_AGENT_ARTIFACT_BYTES) {
+        throw new MosaicMcpError('VALIDATION_FAILED', `agent source must be 1..${MAX_AGENT_ARTIFACT_BYTES} UTF-8 bytes`);
+      }
+      if (sourceBytes.toString('utf8') !== source) throw new MosaicMcpError('VALIDATION_FAILED', 'agent source is not canonical UTF-8');
+      const actualSourceDigest = sha256Hex(sourceBytes);
+      if (manifest.sourceDigest !== actualSourceDigest) throw new MosaicMcpError('VALIDATION_FAILED', 'agent source digest mismatch');
+      const digest = artifactDigest(manifest);
+      const result = await store.putAgentArtifact({
+        owner: { chain: session.chain, address: session.address },
+        network: session.network,
+        artifactDigest: digest,
+        manifest,
+        source: new Uint8Array(sourceBytes),
+      });
+      return ok({ protocol: AGENT_ARTIFACT_PROTOCOL, runtimeVersion: AGENT_RUNTIME_VERSION, artifactDigest: digest, created: result.created });
+    },
+  );
+
+  reg(
+    'agent_artifact_get',
+    {
+      description: 'Fetch an immutable agent artifact owned by the authenticated root wallet.',
+      inputSchema: { token: z.string(), artifactDigest: z.string().regex(/^[0-9a-f]{64}$/) },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const digest = String(args.artifactDigest);
+      const record = await store.getAgentArtifact({ chain: session.chain, address: session.address }, session.network, digest);
+      if (!record) throw new MosaicMcpError('NOT_FOUND', `agent artifact not found: ${digest}`);
+      if (artifactDigest(record.manifest) !== digest || sha256Hex(record.source) !== record.manifest.sourceDigest) {
+        throw new MosaicMcpError('INTERNAL', 'stored agent artifact failed integrity verification');
+      }
+      return ok({ artifactDigest: digest, manifest: record.manifest, source: Buffer.from(record.source).toString('utf8'), createdAt: record.createdAt });
+    },
+  );
+
+  reg(
+    'agent_artifact_list',
+    {
+      description: 'List immutable agent artifact manifests owned by the authenticated root wallet.',
+      inputSchema: { token: z.string(), agentId: zoneNameSchema.optional() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const records = await store.listAgentArtifacts(
+        { chain: session.chain, address: session.address },
+        session.network,
+        args.agentId === undefined ? undefined : String(args.agentId),
+      );
+      return ok({ artifacts: records.map(({ owner: _owner, network: _network, ...record }) => record) });
     },
   );
 

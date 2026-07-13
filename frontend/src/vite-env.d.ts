@@ -11,7 +11,12 @@ declare global {
     mosaicLocal?: {
       listServices(): Promise<ServiceStatus[]>;
       startGuardian(args: { vault?: string; network?: MosaicNetwork; session: LocalMcpSession; signatureB64?: string; passphrase?: string }): Promise<ServiceStatus>;
-      startAgent(args: { vault?: string; network?: MosaicNetwork }): Promise<void>;
+      startAgent(args: { agentId?: string; vault?: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<unknown>;
+      startSupervisor(args?: { network?: MosaicNetwork }): Promise<void>;
+      agentStart(args: { agentId: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<unknown>;
+      agentStop(agentId: string): Promise<void>;
+      agentList(): Promise<unknown[]>;
+      agentStatus(agentId: string): Promise<unknown>;
       stopService(name: ServiceName): Promise<void>;
       onStatus(listener: (statuses: ServiceStatus[]) => void): () => void;
     };

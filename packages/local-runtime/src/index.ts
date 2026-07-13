@@ -3,6 +3,7 @@ import type { MosaicNetwork, ServiceMessage, ServiceName } from './contracts.js'
 
 export * from './contracts.js';
 export * from './digest.js';
+export * from './keyLease.js';
 
 type ParentPort = {
   on(event: 'message', listener: (event: { data: unknown }) => void): void;
@@ -54,6 +55,8 @@ export {
   guardianControlToken,
   startGuardianControlServer,
   callGuardianControl,
+  GuardianControlClient,
+  type GuardianControlMethod,
   type GuardianControlRequest,
   type GuardianControlHandlers,
   type LocalMcpSession,

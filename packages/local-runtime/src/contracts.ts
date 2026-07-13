@@ -15,7 +15,6 @@ export interface ServiceStatus {
   vault?: string;
   network?: MosaicNetwork;
   evmAddress?: string;
-  xmtpAddress?: string;
 }
 
 export type ServiceMessage =
@@ -54,9 +53,10 @@ export function parseLocalCli(argv: string[], defaultVault: string): LocalCliOpt
 }
 
 /** Versioned application protocol. XMTP is transport, never lease authority. */
-export const AGENT_CONTROL_PROTOCOL = 'MOSAIC_AGENT_CONTROL_V1' as const;
-export const AGENT_RUNTIME_VERSION = '1.0.0' as const;
-export const DEFAULT_GRANT_TTL_MS = 5 * 60_000;
+export const AGENT_CONTROL_PROTOCOL = 'MOSAIC_AGENT_CONTROL_V2' as const;
+export const AGENT_RUNTIME_VERSION = '2.0.0' as const;
+export const AGENT_ARTIFACT_PROTOCOL = 'MOSAIC_AGENT_ARTIFACT_V1' as const;
+export const DEFAULT_GRANT_TTL_MS = 60_000;
 export const DEFAULT_OFFLINE_GRACE_MS = 15_000;
 
 export type DigestHex = string;
@@ -64,7 +64,7 @@ export type CapabilityOperation =
   | 'state.get' | 'state.put' | 'state.compareAndSet'
   | 'llm.complete'
   | 'xmtp.receive' | 'xmtp.send'
-  | 'websocket.connect' | 'websocket.send' | 'websocket.receive'
+  | 'websocket.connect' | 'websocket.send' | 'websocket.receive' | 'websocket.close'
   | 'transaction.propose'
   | 'log.emit' | 'clock.now' | 'random.bytes' | 'schedule.once';
 
@@ -82,6 +82,47 @@ export interface AgentResourceLimits {
   maxPendingJobs: number;
   maxHookConcurrency: number;
   maxHookResponseBytes: number;
+  maxEventQueue?: number;
+  maxEventConcurrency?: number;
+  maxEventBytes?: number;
+}
+
+export interface XmtpResourceDescriptor {
+  kind: 'xmtp-contact';
+  resourceId: string;
+  label: string;
+  peerAddress: string;
+  environment: 'dev' | 'production';
+}
+
+export interface WssResourceDescriptor {
+  kind: 'wss-endpoint';
+  resourceId: string;
+  label: string;
+  url: string;
+  subprotocols: string[];
+}
+
+export type AgentResourceDescriptor = XmtpResourceDescriptor | WssResourceDescriptor;
+
+export interface AgentArtifactManifest {
+  protocol: typeof AGENT_ARTIFACT_PROTOCOL;
+  agentId: string;
+  version: string;
+  sourceDigest: DigestHex;
+  requiredHooks: CapabilityOperation[];
+  limits: AgentResourceLimits;
+  minimumRuntimeVersion: string;
+}
+
+export interface AgentPolicyV1 {
+  v: 1;
+  revision: number;
+  enabled: boolean;
+  artifactDigest: DigestHex;
+  capabilities: CapabilityAllowance[];
+  resources: AgentResourceDescriptor[];
+  keyIds: string[];
 }
 
 export interface RunnerCertificate {
@@ -93,23 +134,11 @@ export interface RunnerCertificate {
   guardianAddress: string;
   network: MosaicNetwork;
   environment: 'local' | 'remote';
+  trustTier: 'software-local';
   issuedAt: string;
   expiresAt: string;
   revocationId: string;
   signatureB64: string;
-}
-
-export interface AgentManifest {
-  protocol: typeof AGENT_CONTROL_PROTOCOL;
-  kind: 'agent-manifest';
-  agentId: string;
-  version: string;
-  sourceDigest: DigestHex;
-  requiredHooks: CapabilityOperation[];
-  limits: AgentResourceLimits;
-  minimumRuntimeVersion: string;
-  publisher: string;
-  publisherSignatureB64: string;
 }
 
 export interface ExecutionGrant {
@@ -122,6 +151,11 @@ export interface ExecutionGrant {
   guardianAddress: string;
   network: MosaicNetwork;
   agentId: string;
+  trustTier: 'software-local';
+  artifactDigest: DigestHex;
+  policyRevision: number;
+  xmtpAddress: string;
+  resources: AgentResourceDescriptor[];
   manifestDigest: DigestHex;
   sourceDigest: DigestHex;
   configDigest: DigestHex;
@@ -140,6 +174,7 @@ export interface CapabilityRequest {
   protocol: typeof AGENT_CONTROL_PROTOCOL;
   kind: 'capability-request';
   grantId: string;
+  agentId: string;
   runnerId: string;
   sequence: number;
   requestId: string;
@@ -158,6 +193,7 @@ export interface CapabilityResult {
   protocol: typeof AGENT_CONTROL_PROTOCOL;
   kind: 'capability-result';
   grantId: string;
+  agentId: string;
   requestId: string;
   sequence: number;
   ok: boolean;
@@ -171,8 +207,10 @@ export interface LeaseRenewal {
   protocol: typeof AGENT_CONTROL_PROTOCOL;
   kind: 'lease-renewal';
   grantId: string;
+  agentId: string;
   sequence: number;
   capabilities: CapabilityAllowance[];
+  resources: AgentResourceDescriptor[];
   expiresAt: string;
   maxOfflineMs: number;
   signatureB64: string;
@@ -182,6 +220,7 @@ export interface Revocation {
   protocol: typeof AGENT_CONTROL_PROTOCOL;
   kind: 'revocation';
   revocationId: string;
+  agentId: string;
   sequence: number;
   issuedAt: string;
   reason: string;
@@ -189,6 +228,96 @@ export interface Revocation {
 }
 
 export type SignedAgentControlMessage = RunnerCertificate | ExecutionGrant | LeaseRenewal | Revocation;
+
+export interface AgentExecutionPackage {
+  agentId: string;
+  manifest: AgentArtifactManifest;
+  source: string;
+  grant: ExecutionGrant;
+  sealedKeyLease: SealedAgentKeyLease;
+}
+
+export interface AgentRuntimeEvent {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  type: 'runtime-event';
+  agentId: string;
+  grantId: string;
+  eventId: string;
+  eventType: 'xmtp.message' | 'websocket.message' | 'runtime.stopping';
+  resourceId?: string;
+  messageId?: string;
+  sentAt: string;
+  payload: unknown;
+}
+
+export interface AgentEventAck {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  type: 'event-ack';
+  agentId: string;
+  grantId: string;
+  eventId: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface TransactionProposal {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  kind: 'transaction-proposal';
+  agentId: string;
+  grantId: string;
+  runnerId: string;
+  sequence: number;
+  requestId: string;
+  keyId: string;
+  chain: 'evm' | 'xrpl' | 'stellar';
+  network: MosaicNetwork;
+  intentType: string;
+  intent: Record<string, unknown>;
+  deadline: string;
+  idempotencyKey: string;
+}
+
+export interface TransactionResult {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  kind: 'transaction-result';
+  agentId: string;
+  grantId: string;
+  requestId: string;
+  ok: false;
+  error: { code: 'TRANSACTION_BROKER_UNAVAILABLE' | 'INVALID_TRANSACTION_PROPOSAL'; message: string };
+  auditEventDigest: DigestHex;
+}
+
+export interface AgentKeyLeasePayload {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  agentId: string;
+  grantId: string;
+  runnerId: string;
+  certificateDigest: DigestHex;
+  network: MosaicNetwork;
+  expiresAt: string;
+  secrets: Array<{ keyId: string; purpose: string; algorithm: string; materialB64: string }>;
+}
+
+export interface SealedAgentKeyLease {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  alg: 'x25519-hkdf-sha256-chacha20poly1305';
+  ephemeralPublicKeyB64: string;
+  nonceB64: string;
+  ciphertextB64: string;
+  tagB64: string;
+  agentId: string;
+  grantId: string;
+  runnerId: string;
+  certificateDigest: DigestHex;
+  network: MosaicNetwork;
+  expiresAt: string;
+}
+
+export interface AgentLeaseRenewalPackage {
+  renewal: LeaseRenewal;
+  sealedKeyLease: SealedAgentKeyLease;
+}
 
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
@@ -211,11 +340,6 @@ export function controlSignatureText(message: SignedAgentControlMessage): string
   return `${AGENT_CONTROL_PROTOCOL}:${message.kind}\n${canonicalJson(unsignedControlMessage(message))}`;
 }
 
-export function manifestSignatureText(manifest: AgentManifest): string {
-  const { publisherSignatureB64: _signature, ...unsigned } = manifest;
-  return `${AGENT_CONTROL_PROTOCOL}:${manifest.kind}\n${canonicalJson(unsigned)}`;
-}
-
 export function assertDigestHex(value: string, label = 'digest'): void {
   if (!/^[0-9a-f]{64}$/.test(value)) throw new Error(`${label} must be lowercase SHA-256 hex`);
 }
@@ -228,21 +352,23 @@ export function assertActiveWindow(issuedAt: string, expiresAt: string, now = Da
   if (expires <= now) throw new Error('authorization is expired');
 }
 
-export function assertManifest(manifest: AgentManifest): void {
-  if (manifest.protocol !== AGENT_CONTROL_PROTOCOL || manifest.kind !== 'agent-manifest') throw new Error('unsupported agent manifest');
-  if (!manifest.agentId || !manifest.version || !manifest.publisher) throw new Error('agent manifest identity is incomplete');
+export function assertArtifactManifest(manifest: AgentArtifactManifest): void {
+  if (manifest.protocol !== AGENT_ARTIFACT_PROTOCOL) throw new Error('unsupported agent artifact');
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.agentId) || !manifest.version) throw new Error('agent artifact identity is invalid');
   assertDigestHex(manifest.sourceDigest, 'sourceDigest');
   if (manifest.minimumRuntimeVersion !== AGENT_RUNTIME_VERSION) throw new Error('agent runtime version is incompatible');
-  if (new Set(manifest.requiredHooks).size !== manifest.requiredHooks.length) throw new Error('agent manifest has duplicate hooks');
+  if (new Set(manifest.requiredHooks).size !== manifest.requiredHooks.length) throw new Error('agent artifact has duplicate hooks');
   assertResourceLimits(manifest.limits);
 }
 
 export function assertResourceLimits(limits: AgentResourceLimits): void {
-  const integers = Object.values(limits);
+  const integers = Object.values(limits).filter((value): value is number => value !== undefined);
   if (integers.some((value) => !Number.isSafeInteger(value) || value <= 0)) throw new Error('resource limits must be positive integers');
   if (limits.memoryBytes > 256 * 1024 * 1024) throw new Error('agent memory limit exceeds maximum');
   if (limits.wallTimeMs > 60 * 60_000) throw new Error('agent wall-time limit exceeds maximum');
   if (limits.maxHookConcurrency > 32) throw new Error('hook concurrency exceeds maximum');
+  if ((limits.maxEventConcurrency ?? 1) > 32) throw new Error('event concurrency exceeds maximum');
+  if ((limits.maxEventQueue ?? 1) > 4096) throw new Error('event queue exceeds maximum');
 }
 
 export function assertCapabilitySubset(next: CapabilityAllowance[], previous: CapabilityAllowance[]): void {

@@ -17,6 +17,11 @@ function grant(source, overrides = {}) {
     guardianAddress: '0x0000000000000000000000000000000000000001',
     network: 'testnet',
     agentId: 'test',
+    trustTier: 'software-local',
+    artifactDigest: '5'.repeat(64),
+    policyRevision: 1,
+    xmtpAddress: '0x0000000000000000000000000000000000000002',
+    resources: [],
     manifestDigest: '1'.repeat(64),
     sourceDigest: sha256Hex(source),
     configDigest: '2'.repeat(64),
@@ -80,6 +85,32 @@ test('QuickJS interrupts non-terminating agent code', async () => {
   await assert.rejects(() => new AgentSupervisor().run(source, limited), /interrupted|exited|status/i);
 });
 
+test('Supervisor pushes an agent-bound XMTP event and advances only after acknowledgement', async () => {
+  const source = `
+await mosaic.xmtp.onMessage(async (message) => {
+  await mosaic.log.emit({ message: 'received', resourceId: message.resourceId, text: message.text });
+});
+await mosaic.runtime.waitUntilStopped();
+`;
+  const supervisor = new AgentSupervisor();
+  const authorization = grant(source, {
+    capabilities: [
+      { operation: 'xmtp.receive', maxCalls: 2, maxResponseBytes: 4096 },
+      { operation: 'log.emit', maxCalls: 10, maxResponseBytes: 4096 },
+    ],
+  });
+  const completion = supervisor.run(source, authorization);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await supervisor.deliverEvent({
+    protocol: AGENT_CONTROL_PROTOCOL, type: 'runtime-event', agentId: 'test', grantId: 'grant-test',
+    eventId: 'event-1', eventType: 'xmtp.message', resourceId: 'frank', messageId: 'message-1',
+    sentAt: new Date().toISOString(), payload: { resourceId: 'frank', text: 'hello' },
+  });
+  supervisor.stop();
+  const result = await completion;
+  assert.deepEqual(result.logs, [{ message: 'received', resourceId: 'frank', text: 'hello' }]);
+});
+
 test('Runner pins Guardian identity and all authorization digests', () => {
   const keys = secp256k1.keygen();
   const publicKey = secp256k1.Point.fromBytes(keys.publicKey).toBytes(false);
@@ -88,6 +119,7 @@ test('Runner pins Guardian identity and all authorization digests', () => {
   const certificate = signEnvelope({
     protocol: AGENT_CONTROL_PROTOCOL, kind: 'runner-certificate', runnerId: 'runner', runnerPublicKey: 'key',
     guardianId: 'guardian', guardianAddress, network: 'testnet', environment: 'remote',
+    trustTier: 'software-local',
     issuedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
     revocationId: 'revoke', signatureB64: '',
   }, keys.secretKey);

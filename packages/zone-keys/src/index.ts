@@ -78,3 +78,17 @@ export {
   type VaultDataBlobHeader,
   type WrappedVaultData,
 } from './vaultData.js';
+export {
+  AGENT_SECRET_STORE_DOMAIN_V1,
+  AGENT_SECRET_STORE_MAX_PLAINTEXT_BYTES,
+  AGENT_SECRET_STORE_NONCE_LENGTH,
+  agentSecretStoreKey,
+  sealAgentSecretStore,
+  openAgentSecretStore,
+  type AgentSecretCustody,
+  type AgentSecretPurpose,
+  type AgentSecretRecordV1,
+  type AgentSecretStoreV1,
+  type AgentSecretStoreHeaderV1,
+  type WrappedAgentSecretStore,
+} from './agentSecrets.js';

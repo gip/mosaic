@@ -1,4 +1,4 @@
-import { randomUUID, verify } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   AGENT_CONTROL_PROTOCOL,
   DEFAULT_GRANT_TTL_MS,
@@ -6,21 +6,23 @@ import {
   assertActiveWindow,
   assertCapabilitySubset,
   assertDigestHex,
-  assertManifest,
+  assertArtifactManifest,
   canonicalJson,
   contractDigest,
   controlSignatureText,
-  manifestSignatureText,
-  type AgentManifest,
+  type AgentArtifactManifest,
   type CapabilityAllowance,
   type CapabilityRequest,
   type CapabilityResult,
   type ExecutionGrant,
   type LeaseRenewal,
   type MosaicNetwork,
+  type AgentResourceDescriptor,
   type Revocation,
   type RunnerCertificate,
   type SignedAgentControlMessage,
+  type TransactionProposal,
+  type TransactionResult,
 } from '@mosaic/local-runtime';
 
 export interface VaultControlSigner {
@@ -32,14 +34,22 @@ export interface VaultControlSigner {
 
 interface GrantState {
   grant: ExecutionGrant;
+  capabilities: CapabilityAllowance[];
+  expiresAt: string;
+  maxOfflineMs: number;
+  renewalSequence: number;
+  resources: AgentResourceDescriptor[];
   nextSequence: number;
   calls: Map<string, number>;
   idempotency: Map<string, CapabilityResult>;
+  nextTransactionSequence: number;
+  transactions: Map<string, TransactionResult>;
 }
 
 const SAFE_LOCAL_OPERATIONS = new Set([
   'state.get', 'state.put', 'state.compareAndSet',
   'log.emit', 'clock.now', 'random.bytes', 'schedule.once',
+  'xmtp.receive', 'xmtp.send', 'transaction.propose',
 ]);
 
 /**
@@ -74,6 +84,7 @@ export class VaultCore {
       guardianAddress: this.signer.guardianAddress,
       network: params.network,
       environment: params.environment,
+      trustTier: 'software-local',
       issuedAt: new Date(issued).toISOString(),
       expiresAt: new Date(issued + Math.min(params.ttlMs ?? 24 * 60 * 60_000, 7 * 24 * 60 * 60_000)).toISOString(),
       revocationId: randomUUID(),
@@ -86,17 +97,22 @@ export class VaultCore {
 
   issueGrant(params: {
     certificate: RunnerCertificate;
-    manifest: AgentManifest;
+    manifest: AgentArtifactManifest;
     configDigest: string;
     policyDigest: string;
     capabilities: CapabilityAllowance[];
+    artifactDigest: string;
+    policyRevision: number;
+    xmtpAddress: string;
+    resources: AgentResourceDescriptor[];
     ttlMs?: number;
   }): ExecutionGrant {
     this.assertCertificate(params.certificate);
-    assertManifest(params.manifest);
+    assertArtifactManifest(params.manifest);
     assertDigestHex(params.configDigest, 'configDigest');
     assertDigestHex(params.policyDigest, 'policyDigest');
-    verifyManifest(params.manifest, params.certificate);
+    assertDigestHex(params.artifactDigest, 'artifactDigest');
+    if (!Number.isSafeInteger(params.policyRevision) || params.policyRevision < 1) throw new Error('invalid policy revision');
     this.assertCapabilities(params.manifest, params.capabilities);
     const issued = this.now();
     const certificateExpiry = Date.parse(params.certificate.expiresAt);
@@ -111,6 +127,11 @@ export class VaultCore {
       guardianAddress: this.signer.guardianAddress,
       network: this.signer.network,
       agentId: params.manifest.agentId,
+      trustTier: 'software-local',
+      artifactDigest: params.artifactDigest,
+      policyRevision: params.policyRevision,
+      xmtpAddress: params.xmtpAddress,
+      resources: structuredClone(params.resources),
       manifestDigest: contractDigest(params.manifest),
       sourceDigest: params.manifest.sourceDigest,
       configDigest: params.configDigest,
@@ -124,19 +145,26 @@ export class VaultCore {
       sequence: 1,
     } as const;
     const grant = this.sign({ ...unsigned, signatureB64: '' });
-    this.grants.set(grant.grantId, { grant, nextSequence: 1, calls: new Map(), idempotency: new Map() });
+    this.grants.set(grant.grantId, {
+      grant, capabilities: structuredClone(grant.capabilities), expiresAt: grant.expiresAt,
+      maxOfflineMs: grant.maxOfflineMs, renewalSequence: grant.sequence,
+      resources: structuredClone(grant.resources),
+      nextSequence: 1, calls: new Map(), idempotency: new Map(),
+      nextTransactionSequence: 1, transactions: new Map(),
+    });
     this.appendAudit('grant.issued', { grantId: grant.grantId, manifestDigest: grant.manifestDigest });
     return grant;
   }
 
   authorizeCapability(request: CapabilityRequest): CapabilityResult | undefined {
     const state = this.requireGrant(request.grantId);
+    if (request.agentId !== state.grant.agentId) throw new Error('capability agent binding mismatch');
     if (request.runnerId !== state.grant.runnerId) throw new Error('capability Runner mismatch');
     const replay = state.idempotency.get(request.idempotencyKey);
     if (replay) return structuredClone(replay);
     if (request.sequence !== state.nextSequence) throw new Error('capability sequence mismatch');
     if (Date.parse(request.deadline) <= this.now()) throw new Error('capability request expired');
-    const allowance = state.grant.capabilities.find(({ operation }) => operation === request.operation);
+    const allowance = state.capabilities.find(({ operation }) => operation === request.operation);
     if (!allowance) throw new Error(`capability ${request.operation} is not granted`);
     const calls = state.calls.get(request.operation) ?? 0;
     if (calls >= allowance.maxCalls) throw new Error(`capability ${request.operation} quota exhausted`);
@@ -147,6 +175,8 @@ export class VaultCore {
 
   recordCapability(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): CapabilityResult {
     const state = this.requireGrant(request.grantId);
+    if (request.agentId !== state.grant.agentId || result.agentId !== state.grant.agentId) throw new Error('capability result agent binding mismatch');
+    if (result.grantId !== request.grantId || result.requestId !== request.requestId) throw new Error('capability result request binding mismatch');
     const auditEventDigest = this.appendAudit('capability.result', {
       grantId: request.grantId,
       requestId: request.requestId,
@@ -159,35 +189,58 @@ export class VaultCore {
     return recorded;
   }
 
-  renew(grantId: string, capabilities: CapabilityAllowance[], expiresAt: string, maxOfflineMs: number): LeaseRenewal {
+  renew(
+    grantId: string,
+    capabilities: CapabilityAllowance[],
+    expiresAt: string,
+    maxOfflineMs: number,
+    agentId?: string,
+    resources?: AgentResourceDescriptor[],
+  ): LeaseRenewal {
     const state = this.requireGrant(grantId);
-    assertCapabilitySubset(capabilities, state.grant.capabilities);
-    const expires = Date.parse(expiresAt);
-    if (!Number.isFinite(expires) || expires <= this.now() || expires > Date.parse(state.grant.expiresAt)) {
-      throw new Error('renewal cannot extend the original grant');
+    if (agentId !== undefined && agentId !== state.grant.agentId) throw new Error('lease agent binding mismatch');
+    assertCapabilitySubset(capabilities, state.capabilities);
+    const nextResources = resources ?? state.resources;
+    const priorResources = new Map(state.resources.map((resource) => [resource.resourceId, canonicalJson(resource)]));
+    if (nextResources.some((resource) => priorResources.get(resource.resourceId) !== canonicalJson(resource))) {
+      throw new Error('lease renewal expands or changes resources');
     }
-    if (!Number.isSafeInteger(maxOfflineMs) || maxOfflineMs < 0 || maxOfflineMs > state.grant.maxOfflineMs) {
+    const expires = Date.parse(expiresAt);
+    const certificate = this.certificates.get(state.grant.runnerId);
+    if (!Number.isFinite(expires) || expires <= this.now() || expires > this.now() + DEFAULT_GRANT_TTL_MS || !certificate || expires > Date.parse(certificate.expiresAt)) {
+      throw new Error('renewal expiry is invalid');
+    }
+    if (!Number.isSafeInteger(maxOfflineMs) || maxOfflineMs < 0 || maxOfflineMs > state.maxOfflineMs) {
       throw new Error('renewal cannot expand offline grace');
     }
-    return this.sign({
+    const renewal = this.sign({
       protocol: AGENT_CONTROL_PROTOCOL,
       kind: 'lease-renewal',
       grantId,
-      sequence: state.grant.sequence + 1,
+      agentId: state.grant.agentId,
+      sequence: state.renewalSequence + 1,
       capabilities: structuredClone(capabilities),
+      resources: structuredClone(nextResources),
       expiresAt,
       maxOfflineMs,
       signatureB64: '',
     });
+    state.capabilities = structuredClone(capabilities);
+    state.resources = structuredClone(nextResources);
+    state.expiresAt = expiresAt;
+    state.maxOfflineMs = maxOfflineMs;
+    state.renewalSequence = renewal.sequence;
+    return renewal;
   }
 
-  revoke(revocationId: string, reason: string): Revocation {
-    if (!revocationId || !reason) throw new Error('revocation ID and reason are required');
+  revoke(agentId: string, revocationId: string, reason: string): Revocation {
+    if (!agentId || !revocationId || !reason) throw new Error('agent, revocation ID and reason are required');
     this.revoked.add(revocationId);
     return this.sign({
       protocol: AGENT_CONTROL_PROTOCOL,
       kind: 'revocation',
       revocationId,
+      agentId,
       sequence: 1,
       issuedAt: new Date(this.now()).toISOString(),
       reason,
@@ -196,6 +249,57 @@ export class VaultCore {
   }
 
   auditDigest(): string { return this.auditHead; }
+
+  dropAgent(agentId: string): void {
+    for (const [grantId, state] of this.grants) {
+      if (state.grant.agentId === agentId) this.grants.delete(grantId);
+    }
+    this.appendAudit('agent.locked', { agentId });
+  }
+
+  getGrant(grantId: string, agentId: string): ExecutionGrant {
+    const state = this.requireGrant(grantId);
+    if (state.grant.agentId !== agentId) throw new Error('grant agent binding mismatch');
+    return structuredClone(state.grant);
+  }
+
+  rejectTransaction(proposal: TransactionProposal): TransactionResult {
+    const state = this.requireGrant(proposal.grantId);
+    if (proposal.agentId !== state.grant.agentId || proposal.runnerId !== state.grant.runnerId) {
+      throw new Error('transaction proposal agent binding mismatch');
+    }
+    if (proposal.network !== state.grant.network || Date.parse(proposal.deadline) <= this.now()) {
+      throw new Error('invalid transaction proposal network or deadline');
+    }
+    const replay = state.transactions.get(proposal.idempotencyKey);
+    if (replay) return structuredClone(replay);
+    if (proposal.sequence !== state.nextTransactionSequence) throw new Error('transaction proposal sequence mismatch');
+    if (!state.grant.capabilities.some(({ operation }) => operation === 'transaction.propose')) {
+      throw new Error('transaction proposals are not granted');
+    }
+    if (!state.grant.agentId || !proposal.keyId || !proposal.intentType || Buffer.byteLength(canonicalJson(proposal.intent)) > 64 * 1024) {
+      throw new Error('invalid transaction proposal');
+    }
+    const calls = state.calls.get('transaction.propose') ?? 0;
+    const allowance = state.capabilities.find(({ operation }) => operation === 'transaction.propose')!;
+    if (calls >= allowance.maxCalls) throw new Error('transaction proposal quota exhausted');
+    state.calls.set('transaction.propose', calls + 1);
+    state.nextTransactionSequence += 1;
+    const result: TransactionResult = {
+      protocol: AGENT_CONTROL_PROTOCOL,
+      kind: 'transaction-result',
+      agentId: proposal.agentId,
+      grantId: proposal.grantId,
+      requestId: proposal.requestId,
+      ok: false,
+      error: { code: 'TRANSACTION_BROKER_UNAVAILABLE', message: 'Transaction approval, signing, and broadcast are not implemented.' },
+      auditEventDigest: this.appendAudit('transaction.rejected', {
+        agentId: proposal.agentId, grantId: proposal.grantId, requestId: proposal.requestId, keyId: proposal.keyId,
+      }),
+    };
+    state.transactions.set(proposal.idempotencyKey, structuredClone(result));
+    return result;
+  }
 
   private assertCertificate(certificate: RunnerCertificate): void {
     if (certificate.protocol !== AGENT_CONTROL_PROTOCOL || certificate.kind !== 'runner-certificate') throw new Error('unsupported Runner certificate');
@@ -209,7 +313,7 @@ export class VaultCore {
     if (!issued || canonicalJson(issued) !== canonicalJson(certificate)) throw new Error('Runner certificate was not issued by this Vault');
   }
 
-  private assertCapabilities(manifest: AgentManifest, capabilities: CapabilityAllowance[]): void {
+  private assertCapabilities(manifest: AgentArtifactManifest, capabilities: CapabilityAllowance[]): void {
     if (capabilities.length !== manifest.requiredHooks.length) throw new Error('grant capabilities must exactly match required hooks');
     const unique = new Set<string>();
     for (const allowance of capabilities) {
@@ -227,7 +331,7 @@ export class VaultCore {
   private requireGrant(grantId: string): GrantState {
     const state = this.grants.get(grantId);
     if (!state) throw new Error('unknown execution grant');
-    assertActiveWindow(state.grant.issuedAt, state.grant.expiresAt, this.now());
+    assertActiveWindow(state.grant.issuedAt, state.expiresAt, this.now());
     return state;
   }
 
@@ -249,14 +353,4 @@ function assertEd25519PublicKey(value: string): void {
   } catch {
     throw new Error('invalid Runner public key');
   }
-}
-
-function verifyManifest(manifest: AgentManifest, certificate: RunnerCertificate): void {
-  const publicKey = {
-    key: Buffer.from(certificate.runnerPublicKey, 'base64'),
-    format: 'der',
-    type: 'spki',
-  } as const;
-  const valid = verify(null, Buffer.from(manifestSignatureText(manifest)), publicKey, Buffer.from(manifest.publisherSignatureB64, 'base64'));
-  if (!valid || manifest.publisher !== certificate.runnerId) throw new Error('agent manifest publisher signature is invalid');
 }

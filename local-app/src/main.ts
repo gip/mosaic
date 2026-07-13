@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, ipcMain, utilityProcess, type UtilityProcess } from 'electron';
+import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_GUARDIAN_VAULT,
   DEFAULT_RUNNER_VAULT,
@@ -21,6 +22,8 @@ const children = new Map<ServiceName, UtilityProcess>();
 let window: BrowserWindow | null = null;
 let rendererServer: Server | null = null;
 let quitting = false;
+let supervisorEnrolled = false;
+const supervisorPending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -54,6 +57,15 @@ function startService(name: ServiceName, packageName: string, args: string[] = [
 
   child.on('spawn', () => publish({ name, phase: 'starting', pid: child.pid }));
   child.on('message', (message: unknown) => {
+    if (isSupervisorResponse(message)) {
+      const pending = supervisorPending.get(message.requestId);
+      if (pending) {
+        supervisorPending.delete(message.requestId);
+        clearTimeout(pending.timeout);
+        if (message.ok) pending.resolve(message.result); else pending.reject(new Error(message.error || 'Supervisor request failed'));
+      }
+      return;
+    }
     if (isReadyMessage(message, name)) {
       publish({
         name,
@@ -66,12 +78,29 @@ function startService(name: ServiceName, packageName: string, args: string[] = [
   });
   child.on('exit', (code) => {
     children.delete(name);
+    if (name === 'agent-runner') supervisorEnrolled = false;
     const expected = quitting || statuses.get(name)?.phase === 'stopping';
     publish({
       name,
       phase: expected ? 'stopped' : 'failed',
       detail: `Exited with code ${code}`,
     });
+  });
+}
+
+function isSupervisorResponse(message: unknown): message is { type: 'supervisor-response'; requestId: string; ok: boolean; result?: unknown; error?: string } {
+  return typeof message === 'object' && message !== null && 'type' in message && message.type === 'supervisor-response' &&
+    'requestId' in message && typeof message.requestId === 'string' && 'ok' in message && typeof message.ok === 'boolean';
+}
+
+function supervisorRequest<T>(type: 'supervisor.start' | 'agent.start' | 'agent.stop' | 'agent.list' | 'agent.status', params: Record<string, unknown> = {}, timeoutMs = 120_000): Promise<T> {
+  const child = children.get('agent-runner');
+  if (!child) throw new Error('Mosaic Supervisor is not running');
+  const requestId = randomUUID();
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => { supervisorPending.delete(requestId); reject(new Error(`Supervisor ${type} timed out`)); }, timeoutMs);
+    supervisorPending.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout });
+    child.postMessage({ type, requestId, ...params });
   });
 }
 
@@ -117,20 +146,37 @@ async function startGuardian(args: {
   }, 180_000);
   const status = await callGuardianControl<ServiceStatus>('status');
   publish(status);
+  // One idle Supervisor service is shared by every agent for this Local
+  // session. Enrollment remains deferred until the first explicit agent start.
+  if (!children.has('agent-runner')) startService('agent-runner', '@mosaic/agent-runner', ['--network', network]);
   return status;
 }
 
-async function startAgent(args: { vault?: string; network?: MosaicNetwork }): Promise<void> {
-  const vault = args.vault?.trim() || DEFAULT_RUNNER_VAULT;
+async function startAgent(args: { agentId?: string; vault?: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<unknown> {
+  const vault = args.agentId?.trim() || args.vault?.trim() || DEFAULT_RUNNER_VAULT;
   const network = args.network ?? 'testnet';
   const guardian = await callGuardianControl<ServiceStatus>('status');
   if (guardian.phase !== 'running') throw new Error('Unlock Mosaic Guardian before starting an agent');
-  // The explicit UI start action is the local pairing approval: register it
-  // with the Guardian so the Runner's enrollment is accepted. The Runner
-  // creates its own device key and requests a signed, short-lived grant.
-  await callGuardianControl('runner.approve', { runnerId: `local:${vault}` });
-  startService('agent-runner', '@mosaic/agent-runner', [vault, '--network', network]);
+  await callGuardianControl('agent.unlock', {
+    agentId: vault, network,
+    ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
+    ...(args.passphrase ? { passphrase: args.passphrase } : {}),
+  }, 180_000);
+  if (!children.has('agent-runner')) startService('agent-runner', '@mosaic/agent-runner', ['--network', network]);
+  while (statuses.get('agent-runner')?.phase !== 'running') await new Promise((resolve) => setTimeout(resolve, 25));
+  if (!supervisorEnrolled) {
+    const approved = await callGuardianControl<{ pairingCredential: string }>('runner.approve', { runnerId: 'local-supervisor' });
+    await supervisorRequest('supervisor.start', { pairingCredential: approved.pairingCredential });
+    supervisorEnrolled = true;
+  }
+  try { return await supervisorRequest('agent.start', { agentId: vault }); }
+  catch (error) {
+    await callGuardianControl('agent.lock', { agentId: vault }).catch(() => {});
+    throw error;
+  }
 }
+
+async function stopAgent(agentId: string): Promise<void> { await supervisorRequest('agent.stop', { agentId }); }
 
 async function stopService(name: ServiceName): Promise<void> {
   if (name === 'mosaic-guardian') {
@@ -219,6 +265,13 @@ async function stopChildren(): Promise<void> {
 ipcMain.handle('services:list', () => [...statuses.values()]);
 ipcMain.handle('services:start-guardian', (_event, args) => startGuardian(args));
 ipcMain.handle('services:start-agent', (_event, args) => startAgent(args));
+ipcMain.handle('supervisor:start', async (_event, args: { network?: MosaicNetwork } = {}) => {
+  if (!children.has('agent-runner')) startService('agent-runner', '@mosaic/agent-runner', ['--network', args.network ?? 'testnet']);
+});
+ipcMain.handle('agent:start', (_event, args) => startAgent(args));
+ipcMain.handle('agent:stop', (_event, agentId: string) => stopAgent(agentId));
+ipcMain.handle('agent:list', () => supervisorRequest('agent.list'));
+ipcMain.handle('agent:status', (_event, agentId: string) => supervisorRequest('agent.status', { agentId }));
 ipcMain.handle('services:stop', (_event, name: ServiceName) => stopService(name));
 
 app.whenReady().then(() => {

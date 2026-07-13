@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { canonicalJson, type DigestHex } from './contracts.js';
+import {
+  AGENT_ARTIFACT_PROTOCOL,
+  canonicalJson,
+  type AgentArtifactManifest,
+  type DigestHex,
+} from './contracts.js';
 
 /**
  * Node-only digest helpers. Kept out of contracts.ts so the browser frontend
@@ -12,4 +17,9 @@ export function sha256Hex(value: string | Uint8Array): DigestHex {
 
 export function contractDigest(value: unknown): DigestHex {
   return sha256Hex(canonicalJson(value));
+}
+
+/** Content address for the canonical manifest. The manifest already commits to sourceDigest. */
+export function artifactDigest(manifest: AgentArtifactManifest): DigestHex {
+  return sha256Hex(`${AGENT_ARTIFACT_PROTOCOL}\n${canonicalJson(manifest)}`);
 }

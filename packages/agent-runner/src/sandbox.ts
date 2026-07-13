@@ -7,6 +7,9 @@ interface StartMessage {
   source: string;
   limits: AgentResourceLimits;
   allowedOperations: string[];
+  agentId: string;
+  grantId: string;
+  xmtpAddress: string;
 }
 
 interface HookResultMessage {
@@ -23,15 +26,24 @@ interface PendingHook {
 }
 
 const pending = new Map<string, PendingHook>();
+let dispatchRuntimeEvent: ((message: Record<string, unknown>) => Promise<void>) | undefined;
+let stopRuntime: (() => void) | undefined;
+let activeBinding: { agentId: string; grantId: string } | undefined;
 
 process.on('message', (message: unknown) => {
   if (!isRecord(message)) return;
   if (message.type === 'start') void run(message as unknown as StartMessage);
   if (message.type === 'hook-result') settleHook(message as unknown as HookResultMessage);
+  if (
+    message.type === 'runtime-event' && activeBinding &&
+    message.agentId === activeBinding.agentId && message.grantId === activeBinding.grantId
+  ) void dispatchRuntimeEvent?.(message);
+  if (message.type === 'stop') stopRuntime?.();
 });
 
 async function run(message: StartMessage): Promise<void> {
   try {
+    activeBinding = { agentId: message.agentId, grantId: message.grantId };
     if (typeof message.source !== 'string' || message.source.length > 2 * 1024 * 1024) throw new Error('agent source is invalid or too large');
     const QuickJS = await getQuickJS();
     const runtime = QuickJS.newRuntime();
@@ -41,8 +53,28 @@ async function run(message: StartMessage): Promise<void> {
     const vm = runtime.newContext();
     try {
       installHookBridge(vm, new Set(message.allowedOperations), message.limits.maxPendingJobs);
-      const bootstrap = vm.evalCode(BOOTSTRAP, 'mosaic-bootstrap.js');
+      const bootstrap = vm.evalCode(BOOTSTRAP(message.xmtpAddress), 'mosaic-bootstrap.js');
       vm.unwrapResult(bootstrap).dispose();
+      stopRuntime = () => {
+        const result = vm.evalCode('__mosaicStop()', 'mosaic-stop.js');
+        vm.unwrapResult(result).dispose();
+        void vm.runtime.executePendingJobs(message.limits.maxPendingJobs);
+      };
+      dispatchRuntimeEvent = async (event) => {
+        const eventId = typeof event.eventId === 'string' ? event.eventId : '';
+        try {
+          const encoded = JSON.stringify(event);
+          if (Buffer.byteLength(encoded) > (message.limits.maxEventBytes ?? 64 * 1024)) throw new Error('runtime event too large');
+          const evaluation = vm.evalCode(`__mosaicRuntimeEvent(${JSON.stringify(encoded)})`, 'mosaic-event.js');
+          const promise = vm.unwrapResult(evaluation);
+          const settled = await vm.resolvePromise(promise);
+          promise.dispose();
+          vm.unwrapResult(settled).dispose();
+          process.send?.({ type: 'event-ack', agentId: message.agentId, grantId: message.grantId, eventId, ok: true });
+        } catch (error) {
+          process.send?.({ type: 'event-ack', agentId: message.agentId, grantId: message.grantId, eventId, ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      };
       const evaluation = vm.evalCode(`(async () => {\n${message.source}\n})()`, 'agent.mjs');
       const promiseHandle = vm.unwrapResult(evaluation);
       const settled = await vm.resolvePromise(promiseHandle);
@@ -52,6 +84,9 @@ async function run(message: StartMessage): Promise<void> {
     } finally {
       for (const hook of pending.values()) hook.promise.dispose();
       pending.clear();
+      dispatchRuntimeEvent = undefined;
+      stopRuntime = undefined;
+      activeBinding = undefined;
       vm.dispose();
       runtime.dispose();
     }
@@ -105,10 +140,14 @@ function sendTerminal(message: Record<string, unknown>, exitCode: number): void 
   if (process.send) process.send(message, () => process.disconnect());
 }
 
-const BOOTSTRAP = `
+const BOOTSTRAP = (xmtpAddress: string) => `
 (() => {
   'use strict';
   const call = async (operation, args = {}) => JSON.parse(await __mosaicHook(operation, JSON.stringify(args)));
+  let xmtpHandler = null;
+  let websocketHandler = null;
+  let stopResolve;
+  const stopped = new Promise((resolve) => { stopResolve = resolve; });
   const api = {
     log: Object.freeze({ emit: (entry) => call('log.emit', { entry }) }),
     clock: Object.freeze({ now: () => call('clock.now') }),
@@ -118,8 +157,37 @@ const BOOTSTRAP = `
       put: (key, value) => call('state.put', { key, value }),
       compareAndSet: (key, expectedRevision, value) => call('state.compareAndSet', { key, expectedRevision, value }),
     }),
+    xmtp: Object.freeze({
+      address: () => ${JSON.stringify(xmtpAddress)},
+      send: (resourceId, text) => call('xmtp.send', { resourceId, text }),
+      onMessage: async (handler) => {
+        if (typeof handler !== 'function') throw new TypeError('XMTP message handler must be a function');
+        xmtpHandler = handler;
+        return call('xmtp.receive');
+      },
+    }),
+    websocket: Object.freeze({
+      open: (resourceId) => call('websocket.connect', { resourceId }),
+      send: (resourceId, data) => call('websocket.send', { resourceId, data }),
+      onMessage: async (handler) => {
+        if (typeof handler !== 'function') throw new TypeError('WebSocket message handler must be a function');
+        websocketHandler = handler;
+        return call('websocket.receive');
+      },
+      close: (resourceId) => call('websocket.close', { resourceId }),
+    }),
+    transaction: Object.freeze({
+      propose: (keyId, chain, intentType, intent) => call('transaction.propose', { keyId, chain, intentType, intent }),
+    }),
+    runtime: Object.freeze({ waitUntilStopped: () => stopped }),
   };
   Object.defineProperty(globalThis, 'mosaic', { value: Object.freeze(api), writable: false, configurable: false });
   Object.defineProperty(globalThis, '__mosaicHook', { value: __mosaicHook, writable: false, configurable: false });
+  Object.defineProperty(globalThis, '__mosaicRuntimeEvent', { value: async (raw) => {
+    const event = JSON.parse(raw);
+    if (event.eventType === 'xmtp.message' && xmtpHandler) await xmtpHandler(event.payload);
+    if (event.eventType === 'websocket.message' && websocketHandler) await websocketHandler(event.payload);
+  }, writable: false, configurable: false });
+  Object.defineProperty(globalThis, '__mosaicStop', { value: () => stopResolve(), writable: false, configurable: false });
 })();
 `;

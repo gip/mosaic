@@ -1,7 +1,6 @@
 export {
   GuardianService,
   McpGuardianApi,
-  assertXmtpSignatureText,
   type GuardianApi,
   type GuardianSession,
   type UnlockCredential,

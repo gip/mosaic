@@ -9,7 +9,7 @@ test('agent runner starts and shuts down over IPC', async () => {
     child.once('message', resolve);
   });
 
-  assert.deepEqual(ready, { type: 'ready', service: 'agent-runner', pid: child.pid, vault: 'mosaic-agent-runner', network: 'testnet' });
+  assert.deepEqual(ready, { type: 'ready', service: 'agent-runner', pid: child.pid, network: 'testnet' });
   child.send({ type: 'shutdown' });
   const code = await new Promise((resolve) => child.once('exit', resolve));
   assert.equal(code, 0);

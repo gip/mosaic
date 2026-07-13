@@ -19,6 +19,7 @@ import {
   type CapabilityRequest,
   type CapabilityResult,
   type ExecutionGrant,
+  type AgentRuntimeEvent,
   type RunnerCertificate,
   type SignedAgentControlMessage,
 } from '@mosaic/local-runtime';
@@ -28,6 +29,9 @@ interface SandboxStart {
   source: string;
   limits: ExecutionGrant['limits'];
   allowedOperations: string[];
+  agentId: string;
+  grantId: string;
+  xmtpAddress: string;
 }
 
 interface HookRequest {
@@ -57,6 +61,11 @@ export interface SupervisorResult {
 export interface CapabilityAuthorizer {
   authorize(request: CapabilityRequest): Promise<void>;
   record(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): Promise<void>;
+}
+
+export interface SupervisorExternalHooks {
+  xmtpSend(resourceId: string, text: string): Promise<{ messageId: string }>;
+  transactionPropose(argumentsValue: Record<string, unknown>): Promise<unknown>;
 }
 
 /**
@@ -116,8 +125,10 @@ export class AgentSupervisor {
   private auditHead = '0'.repeat(64);
   private sequence = 0;
   private authorizeQueue: Promise<void> = Promise.resolve();
+  private child?: ChildProcess;
+  private readonly eventAcks = new Map<string, { resolve(): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
 
-  constructor(private readonly authorizer?: CapabilityAuthorizer) {}
+  constructor(private readonly authorizer?: CapabilityAuthorizer, private readonly external?: SupervisorExternalHooks) {}
 
   async run(source: string, grant: ExecutionGrant): Promise<SupervisorResult> {
     if (sha256Hex(source) !== grant.sourceDigest) throw new Error('refusing source that does not match grant');
@@ -129,6 +140,7 @@ export class AgentSupervisor {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       detached: false,
     });
+    this.child = child;
     const killChild = () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     };
@@ -144,6 +156,9 @@ export class AgentSupervisor {
         source,
         limits: grant.limits,
         allowedOperations: grant.capabilities.map(({ operation }) => operation),
+        agentId: grant.agentId,
+        grantId: grant.grantId,
+        xmtpAddress: grant.xmtpAddress,
       } satisfies SandboxStart);
       const exitCode = await completion;
       return { exitCode, logs: structuredClone(this.logs), auditDigest: this.auditHead };
@@ -151,8 +166,28 @@ export class AgentSupervisor {
       clearTimeout(timeout);
       process.off('exit', killChild);
       killChild();
+      this.child = undefined;
+      for (const pending of this.eventAcks.values()) { clearTimeout(pending.timeout); pending.reject(new Error('agent stopped')); }
+      this.eventAcks.clear();
       await rm(workdir, { recursive: true, force: true });
     }
+  }
+
+  async deliverEvent(event: AgentRuntimeEvent, timeoutMs = 10_000): Promise<void> {
+    const child = this.child;
+    if (!child?.connected) throw new Error('agent sandbox is not running');
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => { this.eventAcks.delete(event.eventId); reject(new Error('agent event acknowledgement timed out')); }, timeoutMs);
+      this.eventAcks.set(event.eventId, { resolve, reject, timeout });
+      child.send(event);
+    });
+  }
+
+  stop(): void {
+    const child = this.child;
+    if (!child?.connected) return;
+    child.send({ type: 'stop' });
+    setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 1_000).unref();
   }
 
   private monitor(child: ChildProcess, grant: ExecutionGrant): Promise<number> {
@@ -171,6 +206,17 @@ export class AgentSupervisor {
         if (!isRecord(message) || typeof message.type !== 'string') return;
         if (message.type === 'complete' || message.type === 'failed') {
           terminal = message as unknown as SandboxExit;
+          return;
+        }
+        if (message.type === 'event-ack' && typeof message.eventId === 'string') {
+          const pending = this.eventAcks.get(message.eventId);
+          if (!pending) return;
+          this.eventAcks.delete(message.eventId);
+          clearTimeout(pending.timeout);
+          if (message.agentId !== grant.agentId || message.grantId !== grant.grantId) {
+            pending.reject(new Error('event acknowledgement agent binding mismatch'));
+          } else if (message.ok === true) pending.resolve();
+          else pending.reject(new Error(typeof message.error === 'string' ? message.error : 'event handler failed'));
           return;
         }
         if (message.type !== 'hook') return;
@@ -201,6 +247,7 @@ export class AgentSupervisor {
         protocol: AGENT_CONTROL_PROTOCOL,
         kind: 'capability-request',
         grantId: grant.grantId,
+        agentId: grant.agentId,
         runnerId: grant.runnerId,
         sequence: this.sequence + 1,
         requestId: request.id,
@@ -223,6 +270,7 @@ export class AgentSupervisor {
       protocol: AGENT_CONTROL_PROTOCOL,
       kind: 'capability-result',
       grantId: capabilityRequest.grantId,
+      agentId: capabilityRequest.agentId,
       requestId: capabilityRequest.requestId,
       sequence: capabilityRequest.sequence,
       ok,
@@ -250,7 +298,7 @@ export class AgentSupervisor {
     let value: unknown;
     let bytes: number;
     try {
-      value = this.executeHook(request);
+      value = await this.executeHook(request, grant);
       bytes = Buffer.byteLength(JSON.stringify(value));
       if (bytes > allowance.maxResponseBytes) throw new Error(`hook ${request.operation} response too large`);
     } catch (error) {
@@ -262,7 +310,7 @@ export class AgentSupervisor {
     return value;
   }
 
-  private executeHook(request: HookRequest): unknown {
+  private async executeHook(request: HookRequest, grant: ExecutionGrant): Promise<unknown> {
     let value: unknown;
     switch (request.operation) {
       case 'log.emit': {
@@ -302,6 +350,24 @@ export class AgentSupervisor {
           this.state.set(key, next);
           value = { updated: true, ...next };
         }
+        break;
+      }
+      case 'xmtp.receive': value = { registered: true }; break;
+      case 'xmtp.send': {
+        if (!this.external) throw new Error('XMTP adapter is unavailable');
+        const resourceId = stateKey(request.arguments.resourceId);
+        const text = request.arguments.text;
+        if (typeof text !== 'string' || Buffer.byteLength(text) > (grant.limits.maxEventBytes ?? 64 * 1024)) throw new Error('XMTP text is invalid or too large');
+        value = await this.external.xmtpSend(resourceId, text);
+        break;
+      }
+      case 'websocket.connect':
+      case 'websocket.send':
+      case 'websocket.receive': throw new Error('WSS_ADAPTER_UNAVAILABLE');
+      case 'websocket.close': throw new Error('WSS_ADAPTER_UNAVAILABLE');
+      case 'transaction.propose': {
+        if (!this.external) throw new Error('transaction broker is unavailable');
+        value = await this.external.transactionPropose(request.arguments);
         break;
       }
       default: throw new Error(`hook broker ${request.operation} is not implemented`);

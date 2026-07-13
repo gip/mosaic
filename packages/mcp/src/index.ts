@@ -11,6 +11,7 @@ export {
   type ChallengeRecord,
   type SessionRecord,
   type BlobKind,
+  type AgentArtifactRecord,
 } from './store.js';
 export { XummXamanService, xamanServiceFromEnv, type XamanService, type XamanPayloadRefs, type XamanPayloadResult } from './xaman.js';
 export { checkXrplSignerAuthority, xrplRpcUrl } from './xrplLedger.js';

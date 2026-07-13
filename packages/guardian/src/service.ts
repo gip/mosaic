@@ -1,38 +1,52 @@
-import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { Client, ClientOptions, Signer, XmtpEnv } from '@xmtp/node-sdk';
+import { randomBytes } from 'node:crypto';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { argon2id } from 'hash-wasm';
 import {
   decodeBackupBlob,
   deriveEvmAgentKey,
+  evmAddressFromPrivateKey,
   openPassphraseBlob,
+  openAgentSecretStore,
   openSignatureBlob,
   openVaultData,
   passphraseKdfParams,
   sealVaultData,
+  sealAgentSecretStore,
   zoneSeed,
   type BlobHeader,
   type Network,
   type RootChain,
   type VaultDataBlobHeader,
   type VaultDataV1,
+  type AgentSecretRecordV1,
+  type AgentSecretStoreHeaderV1,
+  type AgentSecretStoreV1,
   type ZoneRef,
 } from '@mosaic/zone-keys';
 import {
-  mosaicRuntimeDirectory,
-  type AgentManifest,
+  artifactDigest,
+  canonicalJson,
+  contractDigest,
+  DEFAULT_GRANT_TTL_MS,
+  DEFAULT_OFFLINE_GRACE_MS,
+  sealAgentKeyLease,
+  sha256Hex,
+  type AgentArtifactManifest,
+  type AgentExecutionPackage,
+  type AgentLeaseRenewalPackage,
+  type AgentPolicyV1,
   type CapabilityAllowance,
   type CapabilityRequest,
   type CapabilityResult,
   type ExecutionGrant,
   type MosaicNetwork,
   type RunnerCertificate,
+  type TransactionProposal,
+  type TransactionResult,
 } from '@mosaic/local-runtime';
 import { VaultCore } from './vault.js';
 
@@ -77,8 +91,9 @@ export interface GuardianApi {
   zoneAddressCreate(token: string, zone: string, chain: 'evm', name: string): Promise<ZoneAddress>;
   zoneTestnetUnlock(token: string, zone: string): Promise<{ commitment: string; zoneRootSecretB64: string }>;
   zoneUnlocked(token: string, zone: string): Promise<void>;
-  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'data'): Promise<BlobResult>;
-  blobPut(args: { token: string; zone: string; kind: 'data'; ciphertextB64: string; header: Record<string, unknown>; expectedVersion: number }): Promise<{ version: number }>;
+  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'data' | 'agent-secrets'): Promise<BlobResult>;
+  blobPut(args: { token: string; zone: string; kind: 'data' | 'agent-secrets'; ciphertextB64: string; header: Record<string, unknown>; expectedVersion: number }): Promise<{ version: number }>;
+  agentArtifactGet(token: string, artifactDigest: string): Promise<{ artifactDigest: string; manifest: AgentArtifactManifest; source: string }>;
 }
 
 export class McpGuardianApi implements GuardianApi {
@@ -142,11 +157,14 @@ export class McpGuardianApi implements GuardianApi {
     return this.call('zone_testnet_unlock', { token, zone });
   }
   async zoneUnlocked(token: string, zone: string): Promise<void> { await this.call('zone_unlocked', { token, zone }); }
-  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'data'): Promise<BlobResult> {
+  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'data' | 'agent-secrets'): Promise<BlobResult> {
     return this.call('blob_get', { token, zone, kind });
   }
-  blobPut(args: { token: string; zone: string; kind: 'data'; ciphertextB64: string; header: Record<string, unknown>; expectedVersion: number }): Promise<{ version: number }> {
+  blobPut(args: { token: string; zone: string; kind: 'data' | 'agent-secrets'; ciphertextB64: string; header: Record<string, unknown>; expectedVersion: number }): Promise<{ version: number }> {
     return this.call('blob_put', args);
+  }
+  agentArtifactGet(token: string, artifactDigestValue: string): Promise<{ artifactDigest: string; manifest: AgentArtifactManifest; source: string }> {
+    return this.call('agent_artifact_get', { token, artifactDigest: artifactDigestValue });
   }
   authChallenge(args: { chain: RootChain; network: Network; address?: string }): Promise<{
     challengeId: string;
@@ -171,19 +189,34 @@ interface UnlockedVault {
   secret: Uint8Array;
   data: VaultDataV1;
   dataVersion: number;
+  secretRecords: AgentSecretMetadata[];
+  secretBuffers: Map<string, Uint8Array>;
+  secretStoreVersion: number;
   keys: Map<string, Uint8Array>;
 }
+
+type AgentSecretMetadata = Omit<AgentSecretRecordV1, 'materialB64'>;
 
 function bytesToBase64(bytes: Uint8Array): string { return Buffer.from(bytes).toString('base64'); }
 function base64ToBytes(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, 'base64')); }
 
-/** FROZEN domain for deterministic encryption of the persistent XMTP installation database. */
-function xmtpDbKey(privateKey: Uint8Array, network: MosaicNetwork): Uint8Array {
-  return sha256(concatBytes(utf8ToBytes('MOSAIC_XMTP_DB_V1'), utf8ToBytes(network), privateKey));
+const AGENT_POLICY_EXTENSION = 'mosaic.agent-policy.v1';
+
+function assertAgentPolicy(policy: AgentPolicyV1, agentId: string): void {
+  if (policy.v !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 1) throw new Error('invalid agent policy revision');
+  if (!/^[0-9a-f]{64}$/.test(policy.artifactDigest)) throw new Error('invalid policy artifact digest');
+  if (!Array.isArray(policy.capabilities) || !Array.isArray(policy.resources) || !Array.isArray(policy.keyIds)) throw new Error('invalid agent policy');
+  if (new Set(policy.capabilities.map(({ operation }) => operation)).size !== policy.capabilities.length) throw new Error('duplicate policy capability');
+  if (new Set(policy.resources.map(({ resourceId }) => resourceId)).size !== policy.resources.length) throw new Error('duplicate policy resource');
+  if (new Set(policy.keyIds).size !== policy.keyIds.length) throw new Error('duplicate policy key reference');
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agentId)) throw new Error('invalid agentId');
 }
 
-function xmtpEnvironment(network: MosaicNetwork): 'dev' | 'production' {
-  return network === 'testnet' ? 'dev' : 'production';
+function generateEvmPrivateKey(): Uint8Array {
+  for (;;) {
+    const key = new Uint8Array(randomBytes(32));
+    try { evmAddressFromPrivateKey(key); return key; } catch { key.fill(0); }
+  }
 }
 
 function signEip191(privateKey: Uint8Array, message: string): Uint8Array {
@@ -196,33 +229,11 @@ function signEip191(privateKey: Uint8Array, message: string): Uint8Array {
   return Uint8Array.from([...recovered.slice(1), recovered[0]! + 27]);
 }
 
-export function assertXmtpSignatureText(message: string): void {
-  const recognizedHeader =
-    message.startsWith('XMTP : Authenticate to inbox\n') ||
-    message.startsWith('XMTP : Create Identity\n');
-  const recognizedFooter = /\n\nFor more info: https:\/\/xmtp\.org\/signatures\/?$/.test(message);
-  if (
-    message.length === 0 || message.length > 16 * 1024 || message.includes('\0') ||
-    !recognizedHeader || !recognizedFooter
-  ) {
-    throw new Error('refusing non-XMTP signature text');
-  }
-}
-
-function signerFor(address: string, signMessage: (message: string) => Promise<Uint8Array>): Signer {
-  return {
-    type: 'EOA',
-    getIdentifier: () => ({ identifier: address.toLowerCase(), identifierKind: 0 }),
-    signMessage,
-  };
-}
-
 export class GuardianService {
   private session?: GuardianSession;
   private readonly vaults = new Map<string, UnlockedVault>();
   private readonly runnerApprovals = new Map<string, number>();
   private guardianIdentity?: UnlockedIdentity;
-  private guardianClient?: Client<unknown>;
   private vaultCore?: VaultCore;
 
   constructor(private readonly api: GuardianApi = new McpGuardianApi()) {}
@@ -280,13 +291,19 @@ export class GuardianService {
 
     let data: VaultDataV1;
     let dataVersion: number;
+    let secretStore: AgentSecretStoreV1;
+    let secretStoreVersion: number;
     try {
       ({ data, version: dataVersion } = await this.fetchVaultData(session, ref, secret));
+      ({ store: secretStore, version: secretStoreVersion } = await this.fetchAgentSecrets(session, ref, secret));
     } catch (error) {
       secret.fill(0);
       throw error;
     }
-    this.vaults.set(vault, { ref, item, secret, data, dataVersion, keys: new Map() });
+    const secretBuffers = new Map(secretStore.secrets.map((record) => [record.keyId, base64ToBytes(record.materialB64)]));
+    const secretRecords = secretStore.secrets.map(({ materialB64: _material, ...metadata }) => metadata);
+    secretStore.secrets = [];
+    this.vaults.set(vault, { ref, item, secret, data, dataVersion, secretRecords, secretBuffers, secretStoreVersion, keys: new Map() });
     await this.api.zoneUnlocked(session.token, vault);
   }
 
@@ -330,6 +347,34 @@ export class GuardianService {
       );
       return { data: { v: 1 }, version: blob.version };
     }
+  }
+
+  private async fetchAgentSecrets(
+    session: GuardianSession,
+    ref: ZoneRef,
+    secret: Uint8Array,
+  ): Promise<{ store: AgentSecretStoreV1; version: number }> {
+    if (this.api.zoneGet) {
+      const metadata = await this.api.zoneGet(session.token, ref.zone);
+      if (!metadata.blobs?.some(({ kind }) => kind === 'agent-secrets')) {
+        return { store: { v: 1, agentId: ref.zone, secrets: [] }, version: 0 };
+      }
+    }
+    let blob: BlobResult;
+    try { blob = await this.api.blobGet(session.token, ref.zone, 'agent-secrets'); }
+    catch (error) {
+      if ((error as { code?: string }).code === 'NOT_FOUND' || String(error).includes('no agent-secrets blob')) {
+        return { store: { v: 1, agentId: ref.zone, secrets: [] }, version: 0 };
+      }
+      throw error;
+    }
+    return {
+      store: openAgentSecretStore(secret, ref, {
+        header: blob.header as unknown as AgentSecretStoreHeaderV1,
+        ciphertext: base64ToBytes(blob.ciphertextB64),
+      }),
+      version: blob.version,
+    };
   }
 
   private requireVault(vault: string): UnlockedVault {
@@ -393,6 +438,197 @@ export class GuardianService {
     }
   }
 
+  private async saveAgentSecrets(unlocked: UnlockedVault, records: AgentSecretMetadata[], materials: Map<string, Uint8Array>): Promise<void> {
+    const session = this.requireSession(unlocked.ref.network);
+    const next: AgentSecretStoreV1 = {
+      v: 1,
+      agentId: unlocked.ref.zone,
+      secrets: records.map((record) => {
+        const material = materials.get(record.keyId);
+        if (!material) throw new Error(`missing material for agent secret: ${record.keyId}`);
+        return { ...record, materialB64: bytesToBase64(material) };
+      }),
+    };
+    const sealed = sealAgentSecretStore(unlocked.secret, unlocked.ref, next, unlocked.secretStoreVersion + 1);
+    const saved = await this.api.blobPut({
+      token: session.token,
+      zone: unlocked.ref.zone,
+      kind: 'agent-secrets',
+      ciphertextB64: bytesToBase64(sealed.ciphertext),
+      header: sealed.header as unknown as Record<string, unknown>,
+      expectedVersion: unlocked.secretStoreVersion,
+    });
+    for (const material of unlocked.secretBuffers.values()) material.fill(0);
+    unlocked.secretRecords = records;
+    unlocked.secretBuffers = materials;
+    unlocked.secretStoreVersion = saved.version;
+    next.secrets = [];
+  }
+
+  private copySecretBuffers(unlocked: UnlockedVault): Map<string, Uint8Array> {
+    return new Map([...unlocked.secretBuffers].map(([keyId, material]) => [keyId, material.slice()]));
+  }
+
+  getAgentPolicy(agentId: string): AgentPolicyV1 | undefined {
+    const raw = this.requireVault(agentId).data.extensions?.[AGENT_POLICY_EXTENSION];
+    if (raw === undefined) return undefined;
+    const policy = structuredClone(raw) as AgentPolicyV1;
+    assertAgentPolicy(policy, agentId);
+    return policy;
+  }
+
+  async putAgentPolicy(
+    agentId: string,
+    policy: Omit<AgentPolicyV1, 'v' | 'revision'>,
+    expectedRevision: number,
+  ): Promise<AgentPolicyV1> {
+    const unlocked = this.requireVault(agentId);
+    const current = this.getAgentPolicy(agentId);
+    if ((current?.revision ?? 0) !== expectedRevision) throw new Error(`agent policy revision conflict: expected ${expectedRevision}, current ${current?.revision ?? 0}`);
+    const next: AgentPolicyV1 = { ...structuredClone(policy), v: 1, revision: expectedRevision + 1 };
+    assertAgentPolicy(next, agentId);
+    await this.saveData(unlocked, (data) => ({
+      ...data,
+      extensions: { ...data.extensions, [AGENT_POLICY_EXTENSION]: next },
+    }));
+    return structuredClone(next);
+  }
+
+  async deleteAgentPolicy(agentId: string, expectedRevision: number): Promise<void> {
+    const unlocked = this.requireVault(agentId);
+    const current = this.getAgentPolicy(agentId);
+    if (!current || current.revision !== expectedRevision) throw new Error(`agent policy revision conflict: expected ${expectedRevision}, current ${current?.revision ?? 0}`);
+    await this.saveData(unlocked, (data) => {
+      const extensions = { ...data.extensions };
+      delete extensions[AGENT_POLICY_EXTENSION];
+      return { ...data, extensions };
+    });
+  }
+
+  listAgentSecretMetadata(agentId: string): Array<Omit<AgentSecretRecordV1, 'materialB64'>> {
+    return this.requireVault(agentId).secretRecords.map((metadata) => ({ ...metadata }));
+  }
+
+  async importAgentSecret(agentId: string, record: Omit<AgentSecretRecordV1, 'createdAt' | 'materialB64'>, material: Uint8Array): Promise<void> {
+    const unlocked = this.requireVault(agentId);
+    if (unlocked.secretRecords.some(({ keyId }) => keyId === record.keyId)) throw new Error(`agent secret already exists: ${record.keyId}`);
+    const nextRecord: AgentSecretMetadata = {
+      ...record,
+      createdAt: new Date().toISOString(),
+    };
+    const materials = this.copySecretBuffers(unlocked);
+    materials.set(record.keyId, material.slice());
+    try { await this.saveAgentSecrets(unlocked, [...unlocked.secretRecords, nextRecord], materials); }
+    catch (error) { for (const value of materials.values()) value.fill(0); throw error; }
+  }
+
+  async rotateAgentSecret(agentId: string, keyId: string, material: Uint8Array): Promise<void> {
+    const unlocked = this.requireVault(agentId);
+    const index = unlocked.secretRecords.findIndex((record) => record.keyId === keyId);
+    if (index < 0) throw new Error(`agent secret not found: ${keyId}`);
+    const records = unlocked.secretRecords.map((record, recordIndex) => recordIndex === index ? {
+      ...record, createdAt: new Date().toISOString(),
+    } : record);
+    const materials = this.copySecretBuffers(unlocked);
+    materials.get(keyId)?.fill(0);
+    materials.set(keyId, material.slice());
+    try { await this.saveAgentSecrets(unlocked, records, materials); }
+    catch (error) { for (const value of materials.values()) value.fill(0); throw error; }
+  }
+
+  async deleteAgentSecret(agentId: string, keyId: string): Promise<void> {
+    const unlocked = this.requireVault(agentId);
+    const records = unlocked.secretRecords.filter((record) => record.keyId !== keyId);
+    if (records.length === unlocked.secretRecords.length) throw new Error(`agent secret not found: ${keyId}`);
+    const materials = new Map(records.map((record) => [record.keyId, unlocked.secretBuffers.get(record.keyId)!.slice()]));
+    try { await this.saveAgentSecrets(unlocked, records, materials); }
+    catch (error) { for (const value of materials.values()) value.fill(0); throw error; }
+  }
+
+  async initializeAgentCommunicationKeys(agentId: string): Promise<Array<Omit<AgentSecretRecordV1, 'materialB64'>>> {
+    const unlocked = this.requireVault(agentId);
+    const additions: AgentSecretMetadata[] = [];
+    const materials = this.copySecretBuffers(unlocked);
+    const now = new Date().toISOString();
+    if (!unlocked.secretRecords.some(({ keyId }) => keyId === 'xmtp-owner')) {
+      const material = generateEvmPrivateKey();
+      try {
+        additions.push({ keyId: 'xmtp-owner', purpose: 'xmtp-owner', algorithm: 'secp256k1', custody: 'supervisor-session', createdAt: now });
+        materials.set('xmtp-owner', material.slice());
+      } finally { material.fill(0); }
+    }
+    if (!unlocked.secretRecords.some(({ keyId }) => keyId === 'xmtp-database')) {
+      const material = new Uint8Array(randomBytes(32));
+      try {
+        additions.push({ keyId: 'xmtp-database', purpose: 'xmtp-database', algorithm: 'bytes32', custody: 'supervisor-session', createdAt: now });
+        materials.set('xmtp-database', material.slice());
+      } finally { material.fill(0); }
+    }
+    if (additions.length) {
+      try { await this.saveAgentSecrets(unlocked, [...unlocked.secretRecords, ...additions], materials); }
+      catch (error) { for (const value of materials.values()) value.fill(0); throw error; }
+    } else {
+      for (const value of materials.values()) value.fill(0);
+    }
+    return this.listAgentSecretMetadata(agentId);
+  }
+
+  async prepareAgent(params: {
+    agentId: string;
+    certificate: RunnerCertificate;
+    supervisorKeyLeasePublicKeyB64: string;
+  }): Promise<AgentExecutionPackage> {
+    const unlocked = this.requireVault(params.agentId);
+    if (unlocked.ref.zone !== params.agentId) throw new Error('agent/vault binding mismatch');
+    const policy = this.getAgentPolicy(params.agentId);
+    if (!policy?.enabled) throw new Error(`agent is disabled or has no policy: ${params.agentId}`);
+    if (policy.capabilities.some(({ operation }) => operation.startsWith('websocket.')) || policy.resources.some(({ kind }) => kind === 'wss-endpoint')) {
+      throw new Error('WSS_ADAPTER_UNAVAILABLE');
+    }
+    const session = this.requireSession(unlocked.ref.network);
+    const artifact = await this.api.agentArtifactGet(session.token, policy.artifactDigest);
+    if (artifact.artifactDigest !== policy.artifactDigest || artifactDigest(artifact.manifest) !== policy.artifactDigest) throw new Error('agent artifact digest mismatch');
+    if (artifact.manifest.agentId !== params.agentId) throw new Error('agent artifact belongs to another vault');
+    if (artifact.manifest.sourceDigest !== sha256Hex(artifact.source)) {
+      throw new Error('agent artifact source digest mismatch');
+    }
+    if (canonicalJson(artifact.manifest.requiredHooks) !== canonicalJson(policy.capabilities.map(({ operation }) => operation))) {
+      throw new Error('agent artifact hooks do not exactly match policy capabilities');
+    }
+    await this.initializeAgentCommunicationKeys(params.agentId);
+    const ownerBytes = unlocked.secretBuffers.get('xmtp-owner')?.slice();
+    if (!ownerBytes) throw new Error('XMTP owner key is unavailable');
+    let xmtpAddress: string;
+    try { xmtpAddress = evmAddressFromPrivateKey(ownerBytes); } finally { ownerBytes.fill(0); }
+    const grant = this.issueGrant({
+      certificate: params.certificate,
+      manifest: artifact.manifest,
+      artifactDigest: policy.artifactDigest,
+      policyRevision: policy.revision,
+      xmtpAddress,
+      resources: policy.resources,
+      configDigest: contractDigest({ agentId: params.agentId, resources: policy.resources, keyIds: policy.keyIds }),
+      policyDigest: contractDigest(policy),
+      capabilities: policy.capabilities,
+    });
+    const secrets = unlocked.secretRecords
+      .filter((record) => record.custody === 'supervisor-session')
+      .filter((record) => policy.keyIds.includes(record.keyId) || record.purpose === 'xmtp-owner' || record.purpose === 'xmtp-database')
+      .map(({ keyId, purpose, algorithm }) => ({ keyId, purpose, algorithm, materialB64: bytesToBase64(unlocked.secretBuffers.get(keyId)!) }));
+    const sealedKeyLease = sealAgentKeyLease({
+      protocol: grant.protocol,
+      agentId: params.agentId,
+      grantId: grant.grantId,
+      runnerId: grant.runnerId,
+      certificateDigest: grant.certificateDigest,
+      network: grant.network,
+      expiresAt: grant.expiresAt,
+      secrets,
+    }, params.supervisorKeyLeasePublicKeyB64);
+    for (const secret of secrets) secret.materialB64 = '';
+    return { agentId: params.agentId, manifest: artifact.manifest, source: artifact.source, grant, sealedKeyLease };
+  }
+
   async startGuardian(vault: string, network: MosaicNetwork, credential?: UnlockCredential): Promise<UnlockedIdentity> {
     await this.unlockVault(vault, network, credential);
     const identity = await this.ensureIdentity(vault, 'guardian');
@@ -404,32 +640,7 @@ export class GuardianService {
       network,
       signEnvelope: (text) => signEip191(privateKey, text),
     });
-    if (process.env.MOSAIC_XMTP_DISABLED !== '1') await this.startGuardianXmtp(identity, network);
     return identity;
-  }
-
-  private async startGuardianXmtp(identity: UnlockedIdentity, network: MosaicNetwork): Promise<void> {
-    if (this.guardianClient) return;
-    const unlocked = this.requireVault(identity.vault);
-    const privateKey = unlocked.keys.get(identity.name)!;
-    const env = xmtpEnvironment(network);
-    const { Client: XmtpClient } = await import('@xmtp/node-sdk');
-    const dbRoot = join(mosaicRuntimeDirectory(), 'xmtp');
-    await mkdir(dbRoot, { recursive: true, mode: 0o700 });
-    const clientOptions: ClientOptions = {
-      env: env as XmtpEnv,
-      appVersion: 'mosaic-guardian/0.0.0',
-      dbPath: (inboxId) => join(dbRoot, `guardian-${env}-${inboxId}.db3`),
-      dbEncryptionKey: xmtpDbKey(privateKey, network),
-    };
-    const client = await XmtpClient.create(
-      signerFor(identity.address, async (message) => {
-        assertXmtpSignatureText(message);
-        return signEip191(privateKey, message);
-      }),
-      clientOptions,
-    );
-    this.guardianClient = client as Client<unknown>;
   }
 
   /**
@@ -458,10 +669,14 @@ export class GuardianService {
 
   issueGrant(params: {
     certificate: RunnerCertificate;
-    manifest: AgentManifest;
+    manifest: AgentArtifactManifest;
     configDigest: string;
     policyDigest: string;
     capabilities: CapabilityAllowance[];
+    artifactDigest: string;
+    policyRevision: number;
+    xmtpAddress: string;
+    resources: import('@mosaic/local-runtime').AgentResourceDescriptor[];
   }): ExecutionGrant {
     if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
     return this.vaultCore.issueGrant(params);
@@ -477,6 +692,55 @@ export class GuardianService {
     return this.vaultCore.recordCapability(request, result);
   }
 
+  renewLease(agentId: string, grantId: string, supervisorKeyLeasePublicKeyB64: string): AgentLeaseRenewalPackage {
+    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    if (!this.vaults.has(agentId)) throw new Error('agent vault is locked');
+    const policy = this.getAgentPolicy(agentId);
+    if (!policy?.enabled) throw new Error('agent is disabled');
+    const grant = this.vaultCore.getGrant(grantId, agentId);
+    if (policy.artifactDigest !== grant.artifactDigest) throw new Error('fresh prepare required: artifact changed');
+    const grantedResources = new Map(grant.resources.map((resource) => [resource.resourceId, canonicalJson(resource)]));
+    if (policy.resources.some((resource) => grantedResources.get(resource.resourceId) !== canonicalJson(resource))) {
+      throw new Error('fresh prepare required: resources expanded or changed');
+    }
+    const expiresAt = new Date(Date.now() + DEFAULT_GRANT_TTL_MS).toISOString();
+    const renewal = this.vaultCore.renew(grantId, policy.capabilities, expiresAt, DEFAULT_OFFLINE_GRACE_MS, agentId, policy.resources);
+    const unlocked = this.requireVault(agentId);
+    const secrets = unlocked.secretRecords
+      .filter((record) => record.custody === 'supervisor-session')
+      .filter((record) => policy.keyIds.includes(record.keyId) || record.purpose === 'xmtp-owner' || record.purpose === 'xmtp-database')
+      .map(({ keyId, purpose, algorithm }) => ({ keyId, purpose, algorithm, materialB64: bytesToBase64(unlocked.secretBuffers.get(keyId)!) }));
+    const sealedKeyLease = sealAgentKeyLease({
+        protocol: grant.protocol, agentId, grantId, runnerId: grant.runnerId, certificateDigest: grant.certificateDigest,
+        network: grant.network, expiresAt, secrets,
+      }, supervisorKeyLeasePublicKeyB64);
+    for (const secret of secrets) secret.materialB64 = '';
+    return { renewal, sealedKeyLease };
+  }
+
+  proposeTransaction(proposal: TransactionProposal): TransactionResult {
+    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    if (!this.vaults.has(proposal.agentId)) throw new Error('transaction agent vault is locked');
+    const policy = this.getAgentPolicy(proposal.agentId);
+    if (!policy?.keyIds.includes(proposal.keyId)) throw new Error('transaction key reference is not permitted');
+    return this.vaultCore.rejectTransaction(proposal);
+  }
+
+  lockAgent(agentId: string, grantId?: string): void {
+    if (this.guardianIdentity?.vault === agentId) throw new Error('Guardian control vault cannot be stopped as an agent');
+    if (grantId) this.vaultCore?.getGrant(grantId, agentId);
+    const vault = this.vaults.get(agentId);
+    if (!vault) return;
+    vault.secret.fill(0);
+    for (const key of vault.keys.values()) key.fill(0);
+    vault.keys.clear();
+    for (const material of vault.secretBuffers.values()) material.fill(0);
+    vault.secretBuffers.clear();
+    vault.secretRecords = [];
+    this.vaults.delete(agentId);
+    this.vaultCore?.dropAgent(agentId);
+  }
+
   status(): { guardian?: UnlockedIdentity; unlockedVaults: string[] } {
     return { guardian: this.guardianIdentity, unlockedVaults: [...this.vaults.keys()] };
   }
@@ -486,11 +750,13 @@ export class GuardianService {
       vault.secret.fill(0);
       for (const key of vault.keys.values()) key.fill(0);
       vault.keys.clear();
+      for (const material of vault.secretBuffers.values()) material.fill(0);
+      vault.secretBuffers.clear();
+      vault.secretRecords = [];
     }
     this.vaults.clear();
     this.runnerApprovals.clear();
     this.guardianIdentity = undefined;
-    this.guardianClient = undefined;
     this.vaultCore = undefined;
   }
 }

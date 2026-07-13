@@ -12,6 +12,7 @@ import {
   type SupportedChain,
 } from '@mosaic/catalog';
 import type { AgentChain, Network, RootChain } from '@mosaic/zone-keys';
+import type { AgentArtifactManifest } from '@mosaic/local-runtime';
 import { MosaicMcpError } from './errors.js';
 import { MIGRATIONS } from './migrations.js';
 
@@ -21,7 +22,7 @@ import { MIGRATIONS } from './migrations.js';
  * Session tokens are stored hashed.
  */
 
-export type BlobKind = 'sig' | 'pass' | 'device' | 'server' | 'data';
+export type BlobKind = 'sig' | 'pass' | 'device' | 'server' | 'data' | 'agent-secrets';
 export type ChallengePurpose = 'session-auth' | 'authorize-zone';
 
 export interface ChallengeRecord {
@@ -86,6 +87,15 @@ export interface CatalogOwner {
   address: string;
 }
 
+export interface AgentArtifactRecord {
+  owner: CatalogOwner;
+  network: Network;
+  artifactDigest: string;
+  manifest: AgentArtifactManifest;
+  source: Uint8Array;
+  createdAt: string;
+}
+
 /** Per-wallet UX settings. `lockReminderMinutes: 0` disables the Mainnet lock reminder. */
 export interface WalletSettings {
   lockReminderMinutes: number;
@@ -140,6 +150,10 @@ export interface MosaicStore {
   /** Latest version of the given kind. */
   getBlob(zoneId: string, kind: BlobKind): Promise<BlobRecord | undefined>;
   listBlobKinds(zoneId: string): Promise<{ kind: BlobKind; version: number }[]>;
+
+  putAgentArtifact(record: Omit<AgentArtifactRecord, 'createdAt'>): Promise<{ created: boolean }>;
+  getAgentArtifact(owner: CatalogOwner, network: Network, artifactDigest: string): Promise<AgentArtifactRecord | undefined>;
+  listAgentArtifacts(owner: CatalogOwner, network: Network, agentId?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]>;
 
   ensureCatalogPreferences(owner: CatalogOwner): Promise<void>;
   listCatalog(owner: CatalogOwner): Promise<CatalogSnapshot>;
@@ -429,6 +443,51 @@ export class PostgresStore implements MosaicStore {
     return rows.map((row) => ({ kind: row.kind as BlobKind, version: Number(row.version) }));
   }
 
+  async putAgentArtifact(record: Omit<AgentArtifactRecord, 'createdAt'>): Promise<{ created: boolean }> {
+    const owner = normalizeCatalogOwner(record.owner);
+    const rows = await this.sql`
+      INSERT INTO agent_artifacts (root_chain, root_address, network, artifact_digest, agent_id, manifest, source)
+      VALUES (${owner.chain}, ${owner.address}, ${record.network}, ${record.artifactDigest}, ${record.manifest.agentId},
+        ${this.sql.json(record.manifest as unknown as postgres.JSONValue)}, ${Buffer.from(record.source)})
+      ON CONFLICT DO NOTHING RETURNING artifact_digest`;
+    return { created: rows.length === 1 };
+  }
+
+  async getAgentArtifact(ownerValue: CatalogOwner, network: Network, artifactDigest: string): Promise<AgentArtifactRecord | undefined> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const [row] = await this.sql`
+      SELECT artifact_digest, manifest, source, created_at FROM agent_artifacts
+      WHERE root_chain = ${owner.chain} AND root_address = ${owner.address}
+        AND network = ${network} AND artifact_digest = ${artifactDigest}`;
+    if (!row) return undefined;
+    return {
+      owner,
+      network,
+      artifactDigest: row.artifact_digest as string,
+      manifest: row.manifest as unknown as AgentArtifactManifest,
+      source: new Uint8Array(row.source as Buffer),
+      createdAt: new Date(row.created_at as string).toISOString(),
+    };
+  }
+
+  async listAgentArtifacts(ownerValue: CatalogOwner, network: Network, agentId?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const rows = agentId
+      ? await this.sql`SELECT artifact_digest, manifest, created_at FROM agent_artifacts
+          WHERE root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network} AND agent_id = ${agentId}
+          ORDER BY created_at, artifact_digest`
+      : await this.sql`SELECT artifact_digest, manifest, created_at FROM agent_artifacts
+          WHERE root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}
+          ORDER BY created_at, artifact_digest`;
+    return rows.map((row) => ({
+      owner,
+      network,
+      artifactDigest: row.artifact_digest as string,
+      manifest: row.manifest as unknown as AgentArtifactManifest,
+      createdAt: new Date(row.created_at as string).toISOString(),
+    }));
+  }
+
   async ensureCatalogPreferences(rawOwner: CatalogOwner): Promise<void> {
     const owner = normalizeCatalogOwner(rawOwner);
     for (const chain of BUILTIN_CHAINS) {
@@ -649,6 +708,7 @@ export class MemoryStore implements MosaicStore {
   private sessions = new Map<string, SessionRecord>();
   private zones = new Map<string, ZoneRecord>();
   private blobs = new Map<string, BlobRecord[]>();
+  private agentArtifacts = new Map<string, AgentArtifactRecord>();
   private zoneAddresses = new Map<string, ZoneAddressRecord[]>();
   private nonces = new Set<string>();
   private customChains = new Map<string, CustomChainRecord>();
@@ -777,11 +837,39 @@ export class MemoryStore implements MosaicStore {
 
   async listBlobKinds(zoneId: string): Promise<{ kind: BlobKind; version: number }[]> {
     const out: { kind: BlobKind; version: number }[] = [];
-    for (const kind of ['sig', 'pass', 'device', 'server'] as const) {
+    for (const kind of ['sig', 'pass', 'device', 'server', 'data', 'agent-secrets'] as const) {
       const blob = await this.getBlob(zoneId, kind);
       if (blob) out.push({ kind, version: blob.version });
     }
     return out;
+  }
+
+  async putAgentArtifact(record: Omit<AgentArtifactRecord, 'createdAt'>): Promise<{ created: boolean }> {
+    const owner = normalizeCatalogOwner(record.owner);
+    const key = `${owner.chain}|${owner.address}|${record.network}|${record.artifactDigest}`;
+    if (this.agentArtifacts.has(key)) return { created: false };
+    this.agentArtifacts.set(key, {
+      ...record,
+      owner,
+      source: record.source.slice(),
+      createdAt: new Date().toISOString(),
+    });
+    return { created: true };
+  }
+
+  async getAgentArtifact(ownerValue: CatalogOwner, network: Network, artifactDigest: string): Promise<AgentArtifactRecord | undefined> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const record = this.agentArtifacts.get(`${owner.chain}|${owner.address}|${network}|${artifactDigest}`);
+    return record ? { ...record, owner: { ...record.owner }, source: record.source.slice() } : undefined;
+  }
+
+  async listAgentArtifacts(ownerValue: CatalogOwner, network: Network, agentId?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    return [...this.agentArtifacts.values()]
+      .filter((record) => record.owner.chain === owner.chain && record.owner.address === owner.address && record.network === network)
+      .filter((record) => agentId === undefined || record.manifest.agentId === agentId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.artifactDigest.localeCompare(b.artifactDigest))
+      .map(({ source: _source, ...record }) => ({ ...record, owner: { ...record.owner }, manifest: structuredClone(record.manifest) }));
   }
 
   async ensureCatalogPreferences(rawOwner: CatalogOwner): Promise<void> {

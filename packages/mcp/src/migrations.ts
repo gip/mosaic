@@ -157,4 +157,22 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
   ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server','data'));
   `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server','data','agent-secrets'));
+
+  CREATE TABLE agent_artifacts (
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    artifact_digest TEXT NOT NULL CHECK (artifact_digest ~ '^[0-9a-f]{64}$'),
+    agent_id TEXT NOT NULL CHECK (agent_id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    manifest JSONB NOT NULL,
+    source BYTEA NOT NULL CHECK (octet_length(source) BETWEEN 1 AND 2097152),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (root_chain, root_address, network, artifact_digest)
+  );
+  CREATE INDEX agent_artifacts_owner_agent_idx
+    ON agent_artifacts (root_chain, root_address, network, agent_id, created_at);
+  `,
 ];

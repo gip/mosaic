@@ -40,9 +40,9 @@ if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
         const identity = await guardian.startGuardian(params.vault, params.network, credential);
         status = {
           ...status, phase: 'running', detail: 'Mosaic Guardian is ready.',
-          evmAddress: identity.address, xmtpAddress: identity.address,
+          evmAddress: identity.address,
         };
-        return { evmAddress: identity.address, xmtpAddress: identity.address };
+        return { guardianAddress: identity.address };
       } catch (error) {
         status = { ...status, phase: 'failed', detail: error instanceof Error ? error.message : String(error) };
         throw error;
@@ -63,16 +63,40 @@ if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
       }
       return guardian.enrollRunner(params);
     },
-    issueGrant: async (params) => guardian.issueGrant(params),
+    unlockAgent: async (params) => {
+      const credential = params.signatureB64
+        ? { type: 'signature' as const, signature: new Uint8Array(Buffer.from(params.signatureB64, 'base64')) }
+        : params.passphrase ? { type: 'passphrase' as const, passphrase: params.passphrase } : undefined;
+      await guardian.unlockVault(params.agentId, params.network, credential);
+    },
+    lockAgent: ({ agentId }) => guardian.lockAgent(agentId),
+    stopAgent: ({ agentId, grantId }) => guardian.lockAgent(agentId, grantId),
+    prepareAgent: (params) => guardian.prepareAgent(params),
+    getAgentPolicy: ({ agentId }) => guardian.getAgentPolicy(agentId),
+    putAgentPolicy: ({ agentId, policy, expectedRevision }) => guardian.putAgentPolicy(agentId, policy, expectedRevision),
+    deleteAgentPolicy: ({ agentId, expectedRevision }) => guardian.deleteAgentPolicy(agentId, expectedRevision),
+    initializeAgentSecrets: ({ agentId }) => guardian.initializeAgentCommunicationKeys(agentId),
+    listAgentSecrets: ({ agentId }) => guardian.listAgentSecretMetadata(agentId),
+    importAgentSecret: async ({ agentId, record, materialB64 }) => {
+      const material = new Uint8Array(Buffer.from(materialB64, 'base64'));
+      try { await guardian.importAgentSecret(agentId, record as never, material); } finally { material.fill(0); }
+    },
+    rotateAgentSecret: async ({ agentId, keyId, materialB64 }) => {
+      const material = new Uint8Array(Buffer.from(materialB64, 'base64'));
+      try { await guardian.rotateAgentSecret(agentId, keyId, material); } finally { material.fill(0); }
+    },
+    deleteAgentSecret: ({ agentId, keyId }) => guardian.deleteAgentSecret(agentId, keyId),
+    renewLease: ({ agentId, grantId, supervisorKeyLeasePublicKeyB64 }) => guardian.renewLease(agentId, grantId, supervisorKeyLeasePublicKeyB64),
     authorizeCapability: (request) => guardian.authorizeCapability(request),
     recordCapability: (request, result) => guardian.recordCapability(request, result),
+    proposeTransaction: (proposal) => guardian.proposeTransaction(proposal),
   });
 }
 if (process.env.MOSAIC_SESSION_JSON) {
   const session = JSON.parse(process.env.MOSAIC_SESSION_JSON) as GuardianSession;
   guardian.attachSession(session);
   const identity = await guardian.startGuardian(options.vault, options.network);
-  status = { ...status, phase: 'running', evmAddress: identity.address, xmtpAddress: identity.address, detail: 'Mosaic Guardian is ready.' };
+  status = { ...status, phase: 'running', evmAddress: identity.address, detail: 'Mosaic Guardian is ready.' };
 } else if (process.stdin.isTTY && !(process as NodeJS.Process & { parentPort?: unknown }).parentPort) {
   status = { ...status, phase: 'authenticating', detail: 'Waiting for root-wallet login…' };
   const login = await loginFromCli(api, options.network);
@@ -92,7 +116,7 @@ if (process.env.MOSAIC_SESSION_JSON) {
   }
   status = { ...status, phase: 'unlocking', detail: `Unlocking ${options.vault}…` };
   const identity = await guardian.startGuardian(options.vault, options.network, credential);
-  status = { ...status, phase: 'running', evmAddress: identity.address, xmtpAddress: identity.address, detail: 'Mosaic Guardian is ready.' };
-  console.log(`Guardian XMTP address: ${identity.address}`);
+  status = { ...status, phase: 'running', evmAddress: identity.address, detail: 'Mosaic Guardian is ready.' };
+  console.log(`Guardian signing address: ${identity.address}`);
 }
 runLocalService('mosaic-guardian', { vault: options.vault, network: options.network });

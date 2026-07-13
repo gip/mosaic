@@ -21,6 +21,7 @@ import { MemoryStore, PostgresStore, hashToken } from '../dist/store.js';
 import { startHttpServer } from '../dist/http.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { AGENT_ARTIFACT_PROTOCOL, AGENT_RUNTIME_VERSION, artifactDigest, sha256Hex } from '@mosaic/local-runtime';
 
 const evmAccount = privateKeyToAccount('0x' + '42'.repeat(32));
 const stellarPriv = new Uint8Array(32).fill(0x55);
@@ -30,6 +31,33 @@ const xrplAddress = deriveAddress(xrplKeypair.publicKey);
 
 const allowAuthority = async () => ({ authoritative: true, reason: 'test' });
 const testnetVaultKey = new Uint8Array(32).fill(0x19);
+
+test('MemoryStore isolates immutable agent artifacts and versions encrypted agent-secret blobs', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: evmAccount.address };
+  const source = 'await mosaic.runtime.waitUntilStopped();';
+  const manifest = {
+    protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'agent-one', version: '1', sourceDigest: sha256Hex(source),
+    requiredHooks: [],
+    limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
+    minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+  };
+  const digest = artifactDigest(manifest);
+  assert.deepEqual(await store.putAgentArtifact({ owner, network: 'testnet', artifactDigest: digest, manifest, source: Buffer.from(source) }), { created: true });
+  assert.deepEqual(await store.putAgentArtifact({ owner, network: 'testnet', artifactDigest: digest, manifest, source: Buffer.from(source) }), { created: false });
+  assert.equal((await store.getAgentArtifact(owner, 'testnet', digest)).manifest.agentId, 'agent-one');
+  assert.equal(await store.getAgentArtifact({ chain: 'evm', address: '0x0000000000000000000000000000000000000001' }, 'testnet', digest), undefined);
+  assert.equal((await store.listAgentArtifacts(owner, 'testnet', 'agent-one')).length, 1);
+
+  const zone = await store.createZone({
+    rootChain: 'evm', rootAddress: evmAccount.address, zone: 'agent-one', network: 'testnet',
+    commitment: 'aa'.repeat(32), policyHash: 'policy', localSignerPublicKey: 'public',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  });
+  await store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: new Uint8Array(48).fill(7), header: { schema: 'mosaic-agent-secrets' }, expectedVersion: 0 });
+  await assert.rejects(() => store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: new Uint8Array(48), header: {}, expectedVersion: 0 }), /version conflict/);
+  assert.deepEqual(await store.listBlobKinds(zone.id), [{ kind: 'agent-secrets', version: 1 }]);
+});
 
 /** Signs any payload the server creates, like a Xaman wallet would. */
 class FakeXaman {
@@ -509,6 +537,28 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
       header: { v: 1, schema: 'mosaic-vault-data', revision: 1 }, expectedVersion: 0,
     }), /version conflict/);
 
+    const agentSecretsCiphertext = Buffer.alloc(64 * 1024 + 16, 4).toString('base64');
+    assert.deepEqual(await call(client, 'blob_put', {
+      token, zone: 'top', kind: 'agent-secrets', ciphertextB64: agentSecretsCiphertext,
+      header: { v: 1, schema: 'mosaic-agent-secrets', revision: 1 }, expectedVersion: 0,
+    }), { version: 1 });
+    assert.equal((await call(client, 'blob_get', { token, zone: 'top', kind: 'agent-secrets' })).ciphertextB64, agentSecretsCiphertext);
+
+    const agentSource = 'await mosaic.runtime.waitUntilStopped();';
+    const agentManifest = {
+      protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'top', version: '1', sourceDigest: sha256Hex(agentSource), requiredHooks: [],
+      limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
+      minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+    };
+    const storedArtifact = await call(client, 'agent_artifact_put', { token, manifest: agentManifest, source: agentSource });
+    assert.equal(storedArtifact.artifactDigest, artifactDigest(agentManifest));
+    assert.equal((await call(client, 'agent_artifact_get', { token, artifactDigest: storedArtifact.artifactDigest })).source, agentSource);
+    assert.equal((await call(client, 'agent_artifact_list', { token, agentId: 'top' })).artifacts.length, 1);
+    await assert.rejects(
+      () => call(client, 'agent_artifact_put', { token, manifest: { ...agentManifest, sourceDigest: '0'.repeat(64) }, source: agentSource }),
+      /source digest mismatch/,
+    );
+
     // oversized blob rejected
     await assert.rejects(
       () =>
@@ -525,7 +575,11 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     // zone_get reflects blob
     const zone = await call(client, 'zone_get', { token, zone: 'top' });
     assert.equal(zone.exists, true);
-    assert.deepEqual(zone.blobs, [{ kind: 'sig', version: 1 }]);
+    assert.deepEqual(zone.blobs, [
+      { kind: 'sig', version: 1 },
+      { kind: 'data', version: 1 },
+      { kind: 'agent-secrets', version: 1 },
+    ]);
     assert.equal(zone.lastUnlockedAt, unlocked.lastUnlockedAt);
 
     // A session for another root wallet cannot list or update this wallet's zones.
@@ -719,9 +773,22 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
       /version conflict/,
     );
     assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'data', ciphertext: data, header: { v: 1 }, expectedVersion: 1 }), { version: 2 });
+    assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: data, header: { v: 1 }, expectedVersion: 0 }), { version: 1 });
     const blob = await store.getBlob(zone.id, 'sig');
     assert.equal(blob?.version, 2);
     assert.deepEqual(blob?.ciphertext, data);
+
+    const artifactSource = 'await mosaic.runtime.waitUntilStopped();';
+    const artifactManifest = {
+      protocol: AGENT_ARTIFACT_PROTOCOL, agentId: zoneName, version: '1', sourceDigest: sha256Hex(artifactSource), requiredHooks: [],
+      limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
+      minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+    };
+    const artifactAddress = artifactDigest(artifactManifest);
+    const artifactOwner = { chain: 'evm', address: ownerAddress };
+    assert.deepEqual(await store.putAgentArtifact({ owner: artifactOwner, network: 'testnet', artifactDigest: artifactAddress, manifest: artifactManifest, source: Buffer.from(artifactSource) }), { created: true });
+    assert.equal((await store.getAgentArtifact(artifactOwner, 'testnet', artifactAddress))?.artifactDigest, artifactAddress);
+    assert.equal((await store.listAgentArtifacts(artifactOwner, 'testnet', zoneName)).length, 1);
   } finally {
     await store.close();
   }

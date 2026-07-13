@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import test from 'node:test';
-import { AGENT_CONTROL_PROTOCOL, AGENT_RUNTIME_VERSION, contractDigest, manifestSignatureText, sha256Hex } from '@mosaic/local-runtime';
-import { openVaultData, sealVaultData, zoneRootCommitmentHex } from '@mosaic/zone-keys';
-import { GuardianService, McpGuardianApi, assertXmtpSignatureText } from '../dist/index.js';
+import {
+  AGENT_ARTIFACT_PROTOCOL, AGENT_CONTROL_PROTOCOL, AGENT_RUNTIME_VERSION, artifactDigest, contractDigest,
+  generateKeyLeaseRecipient, openAgentKeyLease, sha256Hex,
+} from '@mosaic/local-runtime';
+import { openAgentSecretStore, openVaultData, sealVaultData, zoneRootCommitmentHex } from '@mosaic/zone-keys';
+import { GuardianService, McpGuardianApi } from '../dist/index.js';
 
 const rootAddress = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
 const secret = new Uint8Array(32).fill(7);
@@ -25,6 +28,7 @@ class FakeApi {
   blobs = new Map();
   creates = [];
   blobGets = 0;
+  artifacts = new Map();
 
   async zoneList() { return this.zones; }
   async zoneGet(_token, zoneName) {
@@ -56,6 +60,11 @@ class FakeApi {
     const value = { kind: args.kind, version: current + 1, header: args.header, ciphertextB64: args.ciphertextB64, commitment };
     this.blobs.set(`${args.zone}:${args.kind}`, value);
     return { version: value.version };
+  }
+  async agentArtifactGet(_token, digest) {
+    const artifact = this.artifacts.get(digest);
+    if (!artifact) throw new Error('artifact not found');
+    return artifact;
   }
 }
 
@@ -105,24 +114,26 @@ test('Guardian binds a signed manifest to a Runner certificate and execution gra
   assert.equal('dbEncryptionKeyB64' in certificate, false);
 
   const source = `await mosaic.log.emit({message: 'hello'});`;
-  const unsignedManifest = {
-    protocol: AGENT_CONTROL_PROTOCOL, kind: 'agent-manifest', agentId: 'test', version: '1',
+  const manifest = {
+    protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'test', version: '1',
     sourceDigest: sha256Hex(source), requiredHooks: ['log.emit'],
     limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 1000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
-    minimumRuntimeVersion: AGENT_RUNTIME_VERSION, publisher: 'local:test', publisherSignatureB64: '',
+    minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
   };
-  const manifest = { ...unsignedManifest, publisherSignatureB64: sign(null, Buffer.from(manifestSignatureText(unsignedManifest)), pair.privateKey).toString('base64') };
   const capabilities = [{ operation: 'log.emit', maxCalls: 2, maxResponseBytes: 1024 }];
-  const grant = guardian.issueGrant({ certificate, manifest, configDigest: contractDigest({}), policyDigest: contractDigest(capabilities), capabilities });
+  const grant = guardian.issueGrant({
+    certificate, manifest, configDigest: contractDigest({}), policyDigest: contractDigest(capabilities), capabilities,
+    artifactDigest: 'a'.repeat(64), policyRevision: 1, xmtpAddress: '0x0000000000000000000000000000000000000002', resources: [],
+  });
   assert.equal(grant.runnerPublicKey, publicKey);
   assert.equal(grant.sourceDigest, manifest.sourceDigest);
   assert.equal('dbEncryptionKeyB64' in grant, false);
 
-  const forbidden = { ...manifest, requiredHooks: ['xmtp.send'], publisherSignatureB64: '' };
-  forbidden.publisherSignatureB64 = sign(null, Buffer.from(manifestSignatureText(forbidden)), pair.privateKey).toString('base64');
+  const forbidden = { ...manifest, requiredHooks: ['websocket.connect'] };
   assert.throws(() => guardian.issueGrant({
     certificate, manifest: forbidden, configDigest: contractDigest({}), policyDigest: contractDigest({}),
-    capabilities: [{ operation: 'xmtp.send', maxCalls: 1, maxResponseBytes: 1024, constraints: { recipients: ['0x1'] } }],
+    capabilities: [{ operation: 'websocket.connect', maxCalls: 1, maxResponseBytes: 1024 }],
+    artifactDigest: 'b'.repeat(64), policyRevision: 1, xmtpAddress: grant.xmtpAddress, resources: [],
   }), /policy broker is not implemented/);
 });
 
@@ -171,16 +182,63 @@ test('a data version conflict rebases the update onto the latest server data', a
   assert.equal(data.identities.second.address, second.address);
 });
 
-test('remote signer accepts only XMTP identity challenge text', () => {
-  assert.doesNotThrow(() => assertXmtpSignatureText('XMTP : Create Identity\nabc\n\nFor more info: https://xmtp.org/signatures/'));
-  assert.doesNotThrow(() => assertXmtpSignatureText(
-    'XMTP : Authenticate to inbox\n\nInbox ID: abc\nCurrent time: 2026-07-13T01:32:36Z\n\n- Create inbox\n  (Owner: 0xabc)\n\nFor more info: https://xmtp.org/signatures',
-  ));
-  assert.throws(() => assertXmtpSignatureText('send 1 ETH to attacker'), /non-XMTP/);
-  assert.throws(
-    () => assertXmtpSignatureText('XMTP : Authenticate to inbox\nmalicious text'),
-    /non-XMTP/,
-  );
+test('agent prepare persists encrypted communication keys, filters custody, and defaults transactions to denial', async () => {
+  process.env.MOSAIC_XMTP_DISABLED = '1';
+  const api = new FakeApi();
+  const guardian = new GuardianService(api);
+  guardian.attachSession(session());
+  await guardian.startGuardian('mosaic-agent-guardian', 'testnet');
+  await guardian.unlockVault('mosaic-agent-runner', 'testnet');
+  await guardian.initializeAgentCommunicationKeys('mosaic-agent-runner');
+  const transactionKey = new Uint8Array(32).fill(9);
+  await guardian.importAgentSecret('mosaic-agent-runner', {
+    keyId: 'transaction-primary', purpose: 'transaction-signing', algorithm: 'secp256k1', custody: 'guardian-only',
+  }, transactionKey);
+
+  const source = `await mosaic.runtime.waitUntilStopped();`;
+  const manifest = {
+    protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'mosaic-agent-runner', version: '1', sourceDigest: sha256Hex(source),
+    requiredHooks: ['transaction.propose'],
+    limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
+    minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+  };
+  const digest = artifactDigest(manifest);
+  api.artifacts.set(digest, { artifactDigest: digest, manifest, source });
+  await guardian.putAgentPolicy('mosaic-agent-runner', {
+    enabled: true, artifactDigest: digest,
+    capabilities: [{ operation: 'transaction.propose', maxCalls: 1, maxResponseBytes: 4096 }],
+    resources: [], keyIds: ['transaction-primary'],
+  }, 0);
+
+  const pair = generateKeyPairSync('ed25519');
+  guardian.approveRunner('local-supervisor');
+  const certificate = guardian.enrollRunner({
+    runnerId: 'local-supervisor', runnerPublicKey: pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+    network: 'testnet', environment: 'local',
+  });
+  const recipient = generateKeyLeaseRecipient();
+  const prepared = await guardian.prepareAgent({
+    agentId: 'mosaic-agent-runner', certificate, supervisorKeyLeasePublicKeyB64: recipient.publicKeyB64,
+  });
+  const lease = openAgentKeyLease(prepared.sealedKeyLease, recipient.privateKey);
+  assert.deepEqual(lease.secrets.map(({ keyId }) => keyId).sort(), ['xmtp-database', 'xmtp-owner']);
+  assert.equal(JSON.stringify(prepared).includes(Buffer.from(transactionKey).toString('base64')), false);
+  const storedSecrets = api.blobs.get('mosaic-agent-runner:agent-secrets');
+  assert.equal(storedSecrets.ciphertextB64.includes(Buffer.from(transactionKey).toString('base64')), false);
+  const decrypted = openAgentSecretStore(secret, {
+    rootChain: 'evm', rootAddress, zone: 'mosaic-agent-runner', network: 'testnet',
+  }, { header: storedSecrets.header, ciphertext: new Uint8Array(Buffer.from(storedSecrets.ciphertextB64, 'base64')) });
+  assert.equal(decrypted.secrets.find(({ keyId }) => keyId === 'transaction-primary').custody, 'guardian-only');
+
+  const denied = guardian.proposeTransaction({
+    protocol: AGENT_CONTROL_PROTOCOL, kind: 'transaction-proposal', agentId: 'mosaic-agent-runner',
+    grantId: prepared.grant.grantId, runnerId: certificate.runnerId, sequence: 1, requestId: 'tx-1',
+    keyId: 'transaction-primary', chain: 'evm', network: 'testnet', intentType: 'transfer', intent: { to: '0x1', amount: '1' },
+    deadline: new Date(Date.now() + 10_000).toISOString(), idempotencyKey: 'tx-1',
+  });
+  assert.equal(denied.error.code, 'TRANSACTION_BROKER_UNAVAILABLE');
+  guardian.lockAgent('mosaic-agent-runner');
+  assert.deepEqual(guardian.status().unlockedVaults, ['mosaic-agent-guardian']);
 });
 
 test('MCP API reconnects once when the server has forgotten its transport session', async () => {

@@ -9,6 +9,7 @@ import {
   AGENT_CONTROL_PROTOCOL,
   parseLocalCli,
   callGuardianControl,
+  GuardianControlClient,
   startGuardianControlServer,
 } from '../dist/index.js';
 
@@ -29,21 +30,26 @@ test('authenticated Guardian control socket serves Runner enrollment and grants'
   const approved = [];
   const authorized = [];
   let server;
+  let supervisorClient;
   try {
     try {
       server = await startGuardianControlServer({
         status: () => status,
         shutdown: () => {},
         attachSession: () => {},
-        startGuardian: async () => ({ evmAddress: '0x1', xmtpAddress: '0x1' }),
+        startGuardian: async () => ({ guardianAddress: '0x1' }),
         approveRunner: ({ runnerId }) => { approved.push(runnerId); },
         enrollRunner: async ({ runnerId, runnerPublicKey, network, environment }) => ({
           protocol: AGENT_CONTROL_PROTOCOL, kind: 'runner-certificate', runnerId, runnerPublicKey,
           guardianId: 'guardian', guardianAddress: '0x1', network, environment,
+          trustTier: 'software-local',
           issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
           revocationId: 'revoke-1', signatureB64: 'AQID',
         }),
-        issueGrant: async () => ({ grantId: 'grant-1' }),
+        unlockAgent: async () => {}, lockAgent: async () => {}, stopAgent: async () => {}, prepareAgent: async () => ({}),
+        getAgentPolicy: () => undefined, putAgentPolicy: async () => ({}), deleteAgentPolicy: async () => {},
+        initializeAgentSecrets: async () => [], listAgentSecrets: () => [], importAgentSecret: async () => {}, rotateAgentSecret: async () => {}, deleteAgentSecret: async () => {},
+        renewLease: async () => ({}), proposeTransaction: async () => ({}),
         authorizeCapability: (request) => { authorized.push(request.requestId); return undefined; },
         recordCapability: (request, result) => ({ ...result, auditEventDigest: 'a'.repeat(64) }),
       });
@@ -52,21 +58,33 @@ test('authenticated Guardian control socket serves Runner enrollment and grants'
       throw error;
     }
     assert.deepEqual(await callGuardianControl('status'), status);
-    await callGuardianControl('runner.approve', { runnerId: 'runner' });
+    const pairing = await callGuardianControl('runner.approve', { runnerId: 'runner' });
     assert.deepEqual(approved, ['runner']);
-    const certificate = await callGuardianControl('runner.enroll', {
+    supervisorClient = new GuardianControlClient(pairing.pairingCredential);
+    const enrollment = await supervisorClient.call('runner.enroll', {
       runnerId: 'runner', runnerPublicKey: 'public-key', network: 'testnet', environment: 'local',
     });
+    const certificate = enrollment.certificate;
+    supervisorClient.setToken(enrollment.sessionCredential);
     assert.equal(certificate.runnerId, 'runner');
     assert.equal('dbEncryptionKeyB64' in certificate, false);
-    assert.equal(await callGuardianControl('capability.authorize', { request: { requestId: 'req-1' } }), undefined);
-    assert.deepEqual(authorized, ['req-1']);
-    const recorded = await callGuardianControl('capability.record', {
-      request: { requestId: 'req-1' },
-      result: { ok: true, usage: { calls: 1, responseBytes: 2 } },
+    await assert.rejects(() => callGuardianControl('capability.authorize', { request: { requestId: 'admin-denied', agentId: 'agent-one', grantId: 'grant-one' } }), /unauthorized/);
+    const results = await Promise.all(['req-1', 'req-2'].map((requestId) => supervisorClient.call('capability.authorize', {
+      request: { requestId, agentId: 'agent-one', grantId: 'grant-one' },
+    })));
+    assert.deepEqual(results, [undefined, undefined]);
+    assert.deepEqual(authorized.sort(), ['req-1', 'req-2']);
+    const recorded = await supervisorClient.call('capability.record', {
+      request: { requestId: 'req-2', agentId: 'agent-one', grantId: 'grant-one' },
+      result: { agentId: 'agent-one', grantId: 'grant-one', ok: true, usage: { calls: 1, responseBytes: 2 } },
     });
     assert.equal(recorded.auditEventDigest, 'a'.repeat(64));
+    await assert.rejects(() => supervisorClient.call('capability.authorize', {
+      agentId: 'agent-one', grantId: 'grant-one',
+      request: { requestId: 'cross-agent', agentId: 'agent-two', grantId: 'grant-two' },
+    }), /cross-agent/);
   } finally {
+    supervisorClient?.close();
     if (server) await new Promise((resolve) => server.close(resolve));
     if (previous === undefined) delete process.env.MOSAIC_RUNTIME_DIR;
     else process.env.MOSAIC_RUNTIME_DIR = previous;
@@ -100,14 +118,19 @@ test('Guardian control server replaces a stale Unix socket left by a crashed pro
         status: () => ({ name: 'mosaic-guardian', phase: 'running', pid: process.pid }),
         shutdown: () => {},
         attachSession: () => {},
-        startGuardian: async () => ({ evmAddress: '0x1', xmtpAddress: '0x1' }),
+        startGuardian: async () => ({ guardianAddress: '0x1' }),
+        approveRunner: () => {},
         enrollRunner: async ({ runnerId, runnerPublicKey, network, environment }) => ({
           protocol: AGENT_CONTROL_PROTOCOL, kind: 'runner-certificate', runnerId, runnerPublicKey,
           guardianId: 'guardian', guardianAddress: '0x1', network, environment,
+          trustTier: 'software-local',
           issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
           revocationId: 'revoke-1', signatureB64: 'AQID',
         }),
-        issueGrant: async () => ({ grantId: 'grant-1' }),
+        unlockAgent: async () => {}, lockAgent: async () => {}, stopAgent: async () => {}, prepareAgent: async () => ({}),
+        getAgentPolicy: () => undefined, putAgentPolicy: async () => ({}), deleteAgentPolicy: async () => {},
+        initializeAgentSecrets: async () => [], listAgentSecrets: () => [], importAgentSecret: async () => {}, rotateAgentSecret: async () => {}, deleteAgentSecret: async () => {},
+        renewLease: async () => ({}), authorizeCapability: async () => {}, recordCapability: async () => ({}), proposeTransaction: async () => ({}),
       });
     } catch (error) {
       if (error?.code === 'EPERM') { t.skip('sandbox does not permit Unix-domain listeners'); return; }

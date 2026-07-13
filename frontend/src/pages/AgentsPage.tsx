@@ -53,6 +53,7 @@ export default function AgentsPage() {
   const [guardianVault, setGuardianVault] = useState(DEFAULT_GUARDIAN_VAULT);
   const [runnerVault, setRunnerVault] = useState(DEFAULT_RUNNER_VAULT);
   const [passphrase, setPassphrase] = useState('');
+  const [agentPassphrase, setAgentPassphrase] = useState('');
   const [busy, setBusy] = useState<'guardian' | 'runner' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
@@ -159,10 +160,31 @@ export default function AgentsPage() {
 
   async function startRunner() {
     if (!bridge) return;
+    if (!session) { setError('Log in with the root wallet that owns the agent vault first.'); return; }
     setBusy('runner');
     setError(null);
     try {
-      await bridge.startAgent({ vault: runnerVault, network });
+      const agentId = runnerVault.trim();
+      const vault = (await api.zoneList(session.token)).find(({ zone }) => zone === agentId);
+      if (!vault) throw new Error(`Agent vault not found: ${agentId}`);
+      const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: agentId, network: session.network };
+      let signatureB64: string | undefined;
+      if (vault.mode !== 'testnet-server' && !agentPassphrase) {
+        const signer = session.chain === 'xrpl'
+          ? xamanCeremonySigner({
+              token: session.token, ref,
+              onPayload: (refs, label) => setXamanPrompt({ refs, label }),
+              onPayloadDone: () => setXamanPrompt(null),
+            })
+          : directCeremonySigner(ref, signZoneMessage);
+        signatureB64 = bytesToBase64(await signer.signBackupWrap());
+      }
+      await bridge.agentStart({
+        agentId, network,
+        ...(signatureB64 ? { signatureB64 } : {}),
+        ...(agentPassphrase ? { passphrase: agentPassphrase } : {}),
+      });
+      setAgentPassphrase('');
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(message);
@@ -177,8 +199,8 @@ export default function AgentsPage() {
   }
 
   async function copyGuardian() {
-    if (!guardian?.xmtpAddress) return;
-    await navigator.clipboard.writeText(guardian.xmtpAddress);
+    if (!guardian?.evmAddress) return;
+    await navigator.clipboard.writeText(guardian.evmAddress);
     setCopied(true);
     setTimeout(() => setCopied(false), 1_200);
   }
@@ -209,9 +231,9 @@ export default function AgentsPage() {
           </Field>
           {progress && <p className="tile-note">{progress}</p>}
           {guardian?.detail && <p className="tile-note">{guardian.detail}</p>}
-          {guardian?.xmtpAddress && (
+          {guardian?.evmAddress && (
             <div className="local-service-row">
-              <code className="mono address-value">{guardian.xmtpAddress}</code>
+              <code className="mono address-value">{guardian.evmAddress}</code>
               <button type="button" className="btn-sm" onClick={() => void copyGuardian()}><Copy size={14} /> {copied ? 'Copied' : 'Copy'}</button>
             </div>
           )}
@@ -234,16 +256,18 @@ export default function AgentsPage() {
           <Field id="runner-vault" label="Agent ID">
             <input id="runner-vault" value={runnerVault} maxLength={64} onChange={(event) => setRunnerVault(event.target.value)} />
           </Field>
-          <p>The Runner creates its own device key. The unlocked Guardian issues a short-lived grant bound to this agent ID, device key, policy, and source digest.</p>
+          <Field id="agent-passphrase" label="Agent-vault passphrase (unlock fallback)">
+            <input id="agent-passphrase" type="password" value={agentPassphrase} autoComplete="off" onChange={(event) => setAgentPassphrase(event.target.value)} />
+          </Field>
+          <p>One persistent Supervisor launches this agent after Guardian unlocks its matching vault and verifies its pinned policy and artifact.</p>
           {runner?.detail && <p className="tile-note">{runner.detail}</p>}
           <div className="vault-page-actions">
-            {runner?.phase === 'running' ? (
-              <button type="button" className="btn-ghost" onClick={() => void stop('agent-runner')}><Square size={14} /> Stop runner</button>
-            ) : (
-              <button type="button" className="btn-primary" disabled={guardian?.phase !== 'running' || busy !== null || !runnerVault.trim()} onClick={() => void startRunner()}>
-                <Play size={15} /> {busy === 'runner' ? 'Connecting…' : 'Start runner'}
-              </button>
-            )}
+            <button type="button" className="btn-primary" disabled={guardian?.phase !== 'running' || busy !== null || !runnerVault.trim()} onClick={() => void startRunner()}>
+              <Play size={15} /> {busy === 'runner' ? 'Connecting…' : 'Start agent'}
+            </button>
+            <button type="button" className="btn-ghost" disabled={runner?.phase !== 'running' || !runnerVault.trim()} onClick={() => void bridge.agentStop(runnerVault.trim())}>
+              <Square size={14} /> Stop agent
+            </button>
           </div>
         </article>
       </div>

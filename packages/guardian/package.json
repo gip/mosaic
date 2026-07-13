@@ -21,9 +21,6 @@
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.0.1",
     "@scure/base": "^2.0.0",
-    "@xmtp/content-type-primitives": "3.0.1",
-    "@xmtp/node-bindings": "1.11.0-dev.57a7203",
-    "@xmtp/node-sdk": "6.0.0",
     "@walletconnect/sign-client": "^2.23.1",
     "hash-wasm": "^4.12.0",
     "uqr": "^0.1.2"
