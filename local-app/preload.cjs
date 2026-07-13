@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('mosaicLocal', {
   agentStop: (agentId) => ipcRenderer.invoke('agent:stop', agentId),
   agentList: () => ipcRenderer.invoke('agent:list'),
   agentStatus: (agentId) => ipcRenderer.invoke('agent:status', agentId),
+  agentPackageOpen: () => ipcRenderer.invoke('agent:package-open'),
+  agentInstall: (params) => ipcRenderer.invoke('agent:install', params),
+  agentInstallationGet: (agentIdOrParams) => ipcRenderer.invoke('agent:installation-get', agentIdOrParams),
+  agentInstallationDelete: (agentId, expectedRevision, auth) => ipcRenderer.invoke('agent:installation-delete', agentId, expectedRevision, auth),
   stopService: (name) => ipcRenderer.invoke('services:stop', name),
   onStatus: (listener) => {
     const handler = (_event, statuses) => listener(statuses);

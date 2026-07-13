@@ -1,3 +1,5 @@
+import { MAX_AGENT_MANIFEST_BYTES, MAX_AGENT_SOURCE_BYTES } from '@mosaic/local-runtime';
+
 /**
  * Ordered SQL migrations. Append-only: never edit an entry that has shipped —
  * add a new one. Applied inside per-migration transactions by PostgresStore.init().
@@ -166,13 +168,13 @@ export const MIGRATIONS: string[] = [
     root_address TEXT NOT NULL,
     network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
     artifact_digest TEXT NOT NULL CHECK (artifact_digest ~ '^[0-9a-f]{64}$'),
-    agent_id TEXT NOT NULL CHECK (agent_id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
-    manifest JSONB NOT NULL,
-    source BYTEA NOT NULL CHECK (octet_length(source) BETWEEN 1 AND 2097152),
+    package_name TEXT NOT NULL CHECK (length(package_name) <= 64 AND package_name ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    manifest JSONB NOT NULL CHECK (octet_length(manifest::text) <= ${MAX_AGENT_MANIFEST_BYTES}),
+    source BYTEA NOT NULL CHECK (octet_length(source) BETWEEN 1 AND ${MAX_AGENT_SOURCE_BYTES}),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (root_chain, root_address, network, artifact_digest)
   );
-  CREATE INDEX agent_artifacts_owner_agent_idx
-    ON agent_artifacts (root_chain, root_address, network, agent_id, created_at);
+  CREATE INDEX agent_artifacts_owner_package_idx
+    ON agent_artifacts (root_chain, root_address, network, package_name, created_at);
   `,
 ];

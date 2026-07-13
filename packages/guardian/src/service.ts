@@ -29,6 +29,11 @@ import {
 } from '@mosaic/zone-keys';
 import {
   artifactDigest,
+  assertArtifactManifest,
+  assertCapabilityAllowance,
+  assertCanonicalAgentSource,
+  assertInstallationPolicy,
+  assertResourceLimits,
   canonicalJson,
   contractDigest,
   DEFAULT_GRANT_TTL_MS,
@@ -38,7 +43,8 @@ import {
   type AgentArtifactManifest,
   type AgentExecutionPackage,
   type AgentLeaseRenewalPackage,
-  type AgentPolicyV1,
+  type AgentInstallationPolicy,
+  type AgentResourceLimits,
   type CapabilityAllowance,
   type CapabilityRequest,
   type CapabilityResult,
@@ -47,6 +53,7 @@ import {
   type RunnerCertificate,
   type TransactionProposal,
   type TransactionResult,
+  type XmtpResourceDescriptor,
 } from '@mosaic/local-runtime';
 import { VaultCore } from './vault.js';
 
@@ -200,15 +207,21 @@ type AgentSecretMetadata = Omit<AgentSecretRecordV1, 'materialB64'>;
 function bytesToBase64(bytes: Uint8Array): string { return Buffer.from(bytes).toString('base64'); }
 function base64ToBytes(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, 'base64')); }
 
-const AGENT_POLICY_EXTENSION = 'mosaic.agent-policy.v1';
+const AGENT_INSTALLATION_EXTENSION = 'mosaic.agent-installation.v2';
 
-function assertAgentPolicy(policy: AgentPolicyV1, agentId: string): void {
-  if (policy.v !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 1) throw new Error('invalid agent policy revision');
-  if (!/^[0-9a-f]{64}$/.test(policy.artifactDigest)) throw new Error('invalid policy artifact digest');
-  if (!Array.isArray(policy.capabilities) || !Array.isArray(policy.resources) || !Array.isArray(policy.keyIds)) throw new Error('invalid agent policy');
-  if (new Set(policy.capabilities.map(({ operation }) => operation)).size !== policy.capabilities.length) throw new Error('duplicate policy capability');
-  if (new Set(policy.resources.map(({ resourceId }) => resourceId)).size !== policy.resources.length) throw new Error('duplicate policy resource');
-  if (new Set(policy.keyIds).size !== policy.keyIds.length) throw new Error('duplicate policy key reference');
+function assertStoredInstallation(policy: AgentInstallationPolicy, agentId: string, network: MosaicNetwork): void {
+  const keys = Object.keys(policy as unknown as Record<string, unknown>);
+  if (keys.some((key) => !['v', 'revision', 'enabled', 'packageName', 'artifactDigest', 'capabilities', 'resources', 'limits'].includes(key))) throw new Error('installation contains unknown fields');
+  if (policy.v !== 2 || !Number.isSafeInteger(policy.revision) || policy.revision < 1) throw new Error('invalid installation revision');
+  if (typeof policy.enabled !== 'boolean') throw new Error('invalid installation enabled state');
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(policy.packageName) || !/^[0-9a-f]{64}$/.test(policy.artifactDigest)) throw new Error('invalid installation identity');
+  if (!Array.isArray(policy.capabilities) || !Array.isArray(policy.resources) || !policy.limits) throw new Error('invalid installation');
+  for (const allowance of policy.capabilities) assertCapabilityAllowance(allowance, true);
+  for (const resource of policy.resources) {
+    if (Object.keys(resource).some((key) => !['kind', 'resourceId', 'label', 'peerAddress', 'environment'].includes(key))) throw new Error('installation resource contains unknown fields');
+    if (resource.kind !== 'xmtp-contact' || resource.environment !== (network === 'testnet' ? 'dev' : 'production')) throw new Error('invalid installation resource');
+  }
+  assertResourceLimits(policy.limits);
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agentId)) throw new Error('invalid agentId');
 }
 
@@ -478,40 +491,68 @@ export class GuardianService {
     return new Map([...unlocked.secretBuffers].map(([keyId, material]) => [keyId, material.slice()]));
   }
 
-  getAgentPolicy(agentId: string): AgentPolicyV1 | undefined {
-    const raw = this.requireVault(agentId).data.extensions?.[AGENT_POLICY_EXTENSION];
+  getAgentInstallation(agentId: string): AgentInstallationPolicy | undefined {
+    const unlocked = this.requireVault(agentId);
+    const raw = unlocked.data.extensions?.[AGENT_INSTALLATION_EXTENSION];
     if (raw === undefined) return undefined;
-    const policy = structuredClone(raw) as AgentPolicyV1;
-    assertAgentPolicy(policy, agentId);
+    const policy = structuredClone(raw) as AgentInstallationPolicy;
+    assertStoredInstallation(policy, agentId, unlocked.ref.network);
     return policy;
   }
 
-  async putAgentPolicy(
-    agentId: string,
-    policy: Omit<AgentPolicyV1, 'v' | 'revision'>,
-    expectedRevision: number,
-  ): Promise<AgentPolicyV1> {
-    const unlocked = this.requireVault(agentId);
-    const current = this.getAgentPolicy(agentId);
-    if ((current?.revision ?? 0) !== expectedRevision) throw new Error(`agent policy revision conflict: expected ${expectedRevision}, current ${current?.revision ?? 0}`);
-    const next: AgentPolicyV1 = { ...structuredClone(policy), v: 1, revision: expectedRevision + 1 };
-    assertAgentPolicy(next, agentId);
+  async installAgent(params: {
+    agentId: string;
+    artifactDigest: string;
+    capabilities: CapabilityAllowance[];
+    resources: XmtpResourceDescriptor[];
+    limits: AgentResourceLimits;
+    enabled: boolean;
+    expectedRevision: number;
+  }): Promise<AgentInstallationPolicy> {
+    const unlocked = this.requireVault(params.agentId);
+    if (this.vaultCore?.hasActiveGrant(params.agentId)) throw new Error('agent must be stopped before changing its installation');
+    const session = this.requireSession(unlocked.ref.network);
+    if (session.chain !== unlocked.ref.rootChain || session.address.toLowerCase() !== unlocked.ref.rootAddress.toLowerCase()) throw new Error('MCP session does not own the agent vault');
+    const current = this.getAgentInstallation(params.agentId);
+    if ((current?.revision ?? 0) !== params.expectedRevision) throw new Error(`agent installation revision conflict: expected ${params.expectedRevision}, current ${current?.revision ?? 0}`);
+    const artifact = await this.fetchVerifiedArtifact(session.token, params.artifactDigest);
+    const next: AgentInstallationPolicy = {
+      v: 2,
+      revision: params.expectedRevision + 1,
+      enabled: params.enabled,
+      packageName: artifact.manifest.packageName,
+      artifactDigest: params.artifactDigest,
+      capabilities: structuredClone(params.capabilities),
+      resources: structuredClone(params.resources),
+      limits: structuredClone(params.limits),
+    };
+    assertInstallationPolicy(artifact.manifest, next, unlocked.ref.network);
     await this.saveData(unlocked, (data) => ({
       ...data,
-      extensions: { ...data.extensions, [AGENT_POLICY_EXTENSION]: next },
+      extensions: { ...data.extensions, [AGENT_INSTALLATION_EXTENSION]: next },
     }));
     return structuredClone(next);
   }
 
-  async deleteAgentPolicy(agentId: string, expectedRevision: number): Promise<void> {
+  async deleteAgentInstallation(agentId: string, expectedRevision: number): Promise<void> {
     const unlocked = this.requireVault(agentId);
-    const current = this.getAgentPolicy(agentId);
-    if (!current || current.revision !== expectedRevision) throw new Error(`agent policy revision conflict: expected ${expectedRevision}, current ${current?.revision ?? 0}`);
+    if (this.vaultCore?.hasActiveGrant(agentId)) throw new Error('agent must be stopped before deleting its installation');
+    const current = this.getAgentInstallation(agentId);
+    if (!current || current.revision !== expectedRevision) throw new Error(`agent installation revision conflict: expected ${expectedRevision}, current ${current?.revision ?? 0}`);
     await this.saveData(unlocked, (data) => {
       const extensions = { ...data.extensions };
-      delete extensions[AGENT_POLICY_EXTENSION];
+      delete extensions[AGENT_INSTALLATION_EXTENSION];
       return { ...data, extensions };
     });
+  }
+
+  private async fetchVerifiedArtifact(token: string, digest: string): Promise<{ artifactDigest: string; manifest: AgentArtifactManifest; source: string }> {
+    const artifact = await this.api.agentArtifactGet(token, digest);
+    assertArtifactManifest(artifact.manifest);
+    assertCanonicalAgentSource(artifact.source);
+    if (artifact.artifactDigest !== digest || artifactDigest(artifact.manifest) !== digest) throw new Error('agent artifact digest mismatch');
+    if (artifact.manifest.sourceDigest !== sha256Hex(artifact.source)) throw new Error('agent artifact source digest mismatch');
+    return artifact;
   }
 
   listAgentSecretMetadata(agentId: string): Array<Omit<AgentSecretRecordV1, 'materialB64'>> {
@@ -589,40 +630,32 @@ export class GuardianService {
   }): Promise<AgentExecutionPackage> {
     const unlocked = this.requireVault(params.agentId);
     if (unlocked.ref.zone !== params.agentId) throw new Error('agent/vault binding mismatch');
-    const policy = this.getAgentPolicy(params.agentId);
-    if (!policy?.enabled) throw new Error(`agent is disabled or has no policy: ${params.agentId}`);
-    if (policy.capabilities.some(({ operation }) => operation.startsWith('websocket.')) || policy.resources.some(({ kind }) => kind === 'wss-endpoint')) {
-      throw new Error('WSS_ADAPTER_UNAVAILABLE');
-    }
+    const policy = this.getAgentInstallation(params.agentId);
+    if (!policy?.enabled) throw new Error(`agent is disabled or has no installation: ${params.agentId}`);
     const session = this.requireSession(unlocked.ref.network);
-    const artifact = await this.api.agentArtifactGet(session.token, policy.artifactDigest);
-    if (artifact.artifactDigest !== policy.artifactDigest || artifactDigest(artifact.manifest) !== policy.artifactDigest) throw new Error('agent artifact digest mismatch');
-    if (artifact.manifest.agentId !== params.agentId) throw new Error('agent artifact belongs to another vault');
-    if (artifact.manifest.sourceDigest !== sha256Hex(artifact.source)) {
-      throw new Error('agent artifact source digest mismatch');
-    }
-    if (canonicalJson(artifact.manifest.requiredHooks) !== canonicalJson(policy.capabilities.map(({ operation }) => operation))) {
-      throw new Error('agent artifact hooks do not exactly match policy capabilities');
-    }
+    const artifact = await this.fetchVerifiedArtifact(session.token, policy.artifactDigest);
+    assertInstallationPolicy(artifact.manifest, policy, unlocked.ref.network);
     await this.initializeAgentCommunicationKeys(params.agentId);
     const ownerBytes = unlocked.secretBuffers.get('xmtp-owner')?.slice();
     if (!ownerBytes) throw new Error('XMTP owner key is unavailable');
     let xmtpAddress: string;
     try { xmtpAddress = evmAddressFromPrivateKey(ownerBytes); } finally { ownerBytes.fill(0); }
     const grant = this.issueGrant({
+      agentId: params.agentId,
       certificate: params.certificate,
       manifest: artifact.manifest,
       artifactDigest: policy.artifactDigest,
       policyRevision: policy.revision,
       xmtpAddress,
       resources: policy.resources,
-      configDigest: contractDigest({ agentId: params.agentId, resources: policy.resources, keyIds: policy.keyIds }),
+      limits: policy.limits,
+      configDigest: contractDigest({ agentId: params.agentId, resources: policy.resources }),
       policyDigest: contractDigest(policy),
       capabilities: policy.capabilities,
     });
     const secrets = unlocked.secretRecords
       .filter((record) => record.custody === 'supervisor-session')
-      .filter((record) => policy.keyIds.includes(record.keyId) || record.purpose === 'xmtp-owner' || record.purpose === 'xmtp-database')
+      .filter((record) => record.purpose === 'xmtp-owner' || record.purpose === 'xmtp-database')
       .map(({ keyId, purpose, algorithm }) => ({ keyId, purpose, algorithm, materialB64: bytesToBase64(unlocked.secretBuffers.get(keyId)!) }));
     const sealedKeyLease = sealAgentKeyLease({
       protocol: grant.protocol,
@@ -677,6 +710,7 @@ export class GuardianService {
   }
 
   issueGrant(params: {
+    agentId: string;
     certificate: RunnerCertificate;
     manifest: AgentArtifactManifest;
     configDigest: string;
@@ -686,6 +720,7 @@ export class GuardianService {
     policyRevision: number;
     xmtpAddress: string;
     resources: import('@mosaic/local-runtime').AgentResourceDescriptor[];
+    limits: AgentResourceLimits;
   }): ExecutionGrant {
     if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
     return this.vaultCore.issueGrant(params);
@@ -704,7 +739,7 @@ export class GuardianService {
   renewLease(agentId: string, grantId: string, supervisorKeyLeasePublicKeyB64: string): AgentLeaseRenewalPackage {
     if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
     if (!this.vaults.has(agentId)) throw new Error('agent vault is locked');
-    const policy = this.getAgentPolicy(agentId);
+    const policy = this.getAgentInstallation(agentId);
     if (!policy?.enabled) throw new Error('agent is disabled');
     const grant = this.vaultCore.getGrant(grantId, agentId);
     if (policy.artifactDigest !== grant.artifactDigest) throw new Error('fresh prepare required: artifact changed');
@@ -717,7 +752,7 @@ export class GuardianService {
     const unlocked = this.requireVault(agentId);
     const secrets = unlocked.secretRecords
       .filter((record) => record.custody === 'supervisor-session')
-      .filter((record) => policy.keyIds.includes(record.keyId) || record.purpose === 'xmtp-owner' || record.purpose === 'xmtp-database')
+      .filter((record) => record.purpose === 'xmtp-owner' || record.purpose === 'xmtp-database')
       .map(({ keyId, purpose, algorithm }) => ({ keyId, purpose, algorithm, materialB64: bytesToBase64(unlocked.secretBuffers.get(keyId)!) }));
     const sealedKeyLease = sealAgentKeyLease({
         protocol: grant.protocol, agentId, grantId, runnerId: grant.runnerId, certificateDigest: grant.certificateDigest,
@@ -730,8 +765,6 @@ export class GuardianService {
   proposeTransaction(proposal: TransactionProposal): TransactionResult {
     if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
     if (!this.vaults.has(proposal.agentId)) throw new Error('transaction agent vault is locked');
-    const policy = this.getAgentPolicy(proposal.agentId);
-    if (!policy?.keyIds.includes(proposal.keyId)) throw new Error('transaction key reference is not permitted');
     return this.vaultCore.rejectTransaction(proposal);
   }
 

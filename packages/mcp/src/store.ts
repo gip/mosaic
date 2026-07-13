@@ -153,7 +153,7 @@ export interface MosaicStore {
 
   putAgentArtifact(record: Omit<AgentArtifactRecord, 'createdAt'>): Promise<{ created: boolean }>;
   getAgentArtifact(owner: CatalogOwner, network: Network, artifactDigest: string): Promise<AgentArtifactRecord | undefined>;
-  listAgentArtifacts(owner: CatalogOwner, network: Network, agentId?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]>;
+  listAgentArtifacts(owner: CatalogOwner, network: Network, packageName?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]>;
 
   ensureCatalogPreferences(owner: CatalogOwner): Promise<void>;
   listCatalog(owner: CatalogOwner): Promise<CatalogSnapshot>;
@@ -446,8 +446,8 @@ export class PostgresStore implements MosaicStore {
   async putAgentArtifact(record: Omit<AgentArtifactRecord, 'createdAt'>): Promise<{ created: boolean }> {
     const owner = normalizeCatalogOwner(record.owner);
     const rows = await this.sql`
-      INSERT INTO agent_artifacts (root_chain, root_address, network, artifact_digest, agent_id, manifest, source)
-      VALUES (${owner.chain}, ${owner.address}, ${record.network}, ${record.artifactDigest}, ${record.manifest.agentId},
+      INSERT INTO agent_artifacts (root_chain, root_address, network, artifact_digest, package_name, manifest, source)
+      VALUES (${owner.chain}, ${owner.address}, ${record.network}, ${record.artifactDigest}, ${record.manifest.packageName},
         ${this.sql.json(record.manifest as unknown as postgres.JSONValue)}, ${Buffer.from(record.source)})
       ON CONFLICT DO NOTHING RETURNING artifact_digest`;
     return { created: rows.length === 1 };
@@ -470,11 +470,11 @@ export class PostgresStore implements MosaicStore {
     };
   }
 
-  async listAgentArtifacts(ownerValue: CatalogOwner, network: Network, agentId?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]> {
+  async listAgentArtifacts(ownerValue: CatalogOwner, network: Network, packageName?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]> {
     const owner = normalizeCatalogOwner(ownerValue);
-    const rows = agentId
+    const rows = packageName
       ? await this.sql`SELECT artifact_digest, manifest, created_at FROM agent_artifacts
-          WHERE root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network} AND agent_id = ${agentId}
+          WHERE root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network} AND package_name = ${packageName}
           ORDER BY created_at, artifact_digest`
       : await this.sql`SELECT artifact_digest, manifest, created_at FROM agent_artifacts
           WHERE root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}
@@ -863,11 +863,11 @@ export class MemoryStore implements MosaicStore {
     return record ? { ...record, owner: { ...record.owner }, source: record.source.slice() } : undefined;
   }
 
-  async listAgentArtifacts(ownerValue: CatalogOwner, network: Network, agentId?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]> {
+  async listAgentArtifacts(ownerValue: CatalogOwner, network: Network, packageName?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]> {
     const owner = normalizeCatalogOwner(ownerValue);
     return [...this.agentArtifacts.values()]
       .filter((record) => record.owner.chain === owner.chain && record.owner.address === owner.address && record.network === network)
-      .filter((record) => agentId === undefined || record.manifest.agentId === agentId)
+      .filter((record) => packageName === undefined || record.manifest.packageName === packageName)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.artifactDigest.localeCompare(b.artifactDigest))
       .map(({ source: _source, ...record }) => ({ ...record, owner: { ...record.owner }, manifest: structuredClone(record.manifest) }));
   }

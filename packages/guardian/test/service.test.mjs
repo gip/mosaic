@@ -24,7 +24,7 @@ function zone(name) {
 }
 
 class FakeApi {
-  zones = [zone('mosaic-agent-guardian'), zone('mosaic-agent-runner')];
+  zones = [zone('mosaic-agent-guardian'), zone('mosaic-agent-runner'), zone('second-agent')];
   blobs = new Map();
   creates = [];
   blobGets = 0;
@@ -115,25 +115,29 @@ test('Guardian binds a signed manifest to a Runner certificate and execution gra
 
   const source = `await mosaic.log.emit({message: 'hello'});`;
   const manifest = {
-    protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'test', version: '1',
-    sourceDigest: sha256Hex(source), requiredHooks: ['log.emit'],
+    protocol: AGENT_ARTIFACT_PROTOCOL, packageName: 'test-agent', version: '1.0.0',
+    sourceDigest: sha256Hex(source),
+    capabilities: { required: [{ operation: 'log.emit', maxCalls: 2, maxResponseBytes: 1024, constraints: { maxEntryBytes: 1024 } }], optional: [] },
+    resourceSlots: [],
     limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 1000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
     minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
   };
-  const capabilities = [{ operation: 'log.emit', maxCalls: 2, maxResponseBytes: 1024 }];
+  const capabilities = structuredClone(manifest.capabilities.required);
   const grant = guardian.issueGrant({
-    certificate, manifest, configDigest: contractDigest({}), policyDigest: contractDigest(capabilities), capabilities,
+    agentId: 'test', certificate, manifest, configDigest: contractDigest({}), policyDigest: contractDigest(capabilities), capabilities,
     artifactDigest: 'a'.repeat(64), policyRevision: 1, xmtpAddress: '0x0000000000000000000000000000000000000002', resources: [],
+    limits: manifest.limits,
   });
   assert.equal(grant.runnerPublicKey, publicKey);
   assert.equal(grant.sourceDigest, manifest.sourceDigest);
   assert.equal('dbEncryptionKeyB64' in grant, false);
 
-  const forbidden = { ...manifest, requiredHooks: ['websocket.connect'] };
+  const forbidden = { ...manifest, capabilities: { required: [{ operation: 'websocket.connect', maxCalls: 1, maxResponseBytes: 1024 }], optional: [] } };
   assert.throws(() => guardian.issueGrant({
-    certificate, manifest: forbidden, configDigest: contractDigest({}), policyDigest: contractDigest({}),
+    agentId: 'test', certificate, manifest: forbidden, configDigest: contractDigest({}), policyDigest: contractDigest({}),
     capabilities: [{ operation: 'websocket.connect', maxCalls: 1, maxResponseBytes: 1024 }],
     artifactDigest: 'b'.repeat(64), policyRevision: 1, xmtpAddress: grant.xmtpAddress, resources: [],
+    limits: manifest.limits,
   }), /policy broker is not implemented/);
 });
 
@@ -197,18 +201,18 @@ test('agent prepare persists encrypted communication keys, filters custody, and 
 
   const source = `await mosaic.runtime.waitUntilStopped();`;
   const manifest = {
-    protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'mosaic-agent-runner', version: '1', sourceDigest: sha256Hex(source),
-    requiredHooks: ['transaction.propose'],
+    protocol: AGENT_ARTIFACT_PROTOCOL, packageName: 'wait-agent', version: '1.0.0', sourceDigest: sha256Hex(source),
+    capabilities: { required: [{ operation: 'log.emit', maxCalls: 1, maxResponseBytes: 4096, constraints: { maxEntryBytes: 1024 } }], optional: [] },
+    resourceSlots: [],
     limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
     minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
   };
   const digest = artifactDigest(manifest);
   api.artifacts.set(digest, { artifactDigest: digest, manifest, source });
-  await guardian.putAgentPolicy('mosaic-agent-runner', {
-    enabled: true, artifactDigest: digest,
-    capabilities: [{ operation: 'transaction.propose', maxCalls: 1, maxResponseBytes: 4096 }],
-    resources: [], keyIds: ['transaction-primary'],
-  }, 0);
+  await guardian.installAgent({
+    agentId: 'mosaic-agent-runner', enabled: true, artifactDigest: digest,
+    capabilities: structuredClone(manifest.capabilities.required), resources: [], limits: manifest.limits, expectedRevision: 0,
+  });
 
   const pair = generateKeyPairSync('ed25519');
   guardian.approveRunner('local-supervisor');
@@ -229,6 +233,10 @@ test('agent prepare persists encrypted communication keys, filters custody, and 
     rootChain: 'evm', rootAddress, zone: 'mosaic-agent-runner', network: 'testnet',
   }, { header: storedSecrets.header, ciphertext: new Uint8Array(Buffer.from(storedSecrets.ciphertextB64, 'base64')) });
   assert.equal(decrypted.secrets.find(({ keyId }) => keyId === 'transaction-primary').custody, 'guardian-only');
+  await assert.rejects(() => guardian.installAgent({
+    agentId: 'mosaic-agent-runner', enabled: false, artifactDigest: digest,
+    capabilities: structuredClone(manifest.capabilities.required), resources: [], limits: manifest.limits, expectedRevision: 1,
+  }), /must be stopped/);
 
   const denied = guardian.proposeTransaction({
     protocol: AGENT_CONTROL_PROTOCOL, kind: 'transaction-proposal', agentId: 'mosaic-agent-runner',
@@ -239,6 +247,42 @@ test('agent prepare persists encrypted communication keys, filters custody, and 
   assert.equal(denied.error.code, 'TRANSACTION_BROKER_UNAVAILABLE');
   guardian.lockAgent('mosaic-agent-runner');
   assert.deepEqual(guardian.status().unlockedVaults, ['mosaic-agent-guardian']);
+});
+
+test('one immutable package installs into two vaults with independently reduced resources and limits', async () => {
+  process.env.MOSAIC_XMTP_DISABLED = '1';
+  const api = new FakeApi();
+  const guardian = new GuardianService(api);
+  guardian.attachSession(session());
+  await guardian.startGuardian('mosaic-agent-guardian', 'testnet');
+  await guardian.unlockVault('mosaic-agent-runner', 'testnet');
+  await guardian.unlockVault('second-agent', 'testnet');
+  const source = `await mosaic.runtime.waitUntilStopped();`;
+  const manifest = {
+    protocol: AGENT_ARTIFACT_PROTOCOL, packageName: 'reusable-messenger', version: '1.0.0', sourceDigest: sha256Hex(source),
+    capabilities: { required: [{ operation: 'xmtp.send', maxCalls: 10, maxResponseBytes: 1024, constraints: { resourceSlots: ['peer'], maxMessageBytes: 4096 } }], optional: [] },
+    resourceSlots: [{ slotId: 'peer', kind: 'xmtp-contact', label: 'Peer', required: true }],
+    limits: { memoryBytes: 8 * 1024 * 1024, stackBytes: 256 * 1024, wallTimeMs: 60_000, maxPendingJobs: 16, maxHookConcurrency: 2, maxHookResponseBytes: 4096, maxEventBytes: 4096 },
+    minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+  };
+  const digest = artifactDigest(manifest);
+  api.artifacts.set(digest, { artifactDigest: digest, manifest, source });
+  const first = await guardian.installAgent({
+    agentId: 'mosaic-agent-runner', artifactDigest: digest,
+    capabilities: [{ ...structuredClone(manifest.capabilities.required[0]), maxCalls: 5 }],
+    resources: [{ kind: 'xmtp-contact', resourceId: 'peer', label: 'Peer', peerAddress: '0x111', environment: 'dev' }],
+    limits: { ...manifest.limits, wallTimeMs: 30_000 }, enabled: true, expectedRevision: 0,
+  });
+  const second = await guardian.installAgent({
+    agentId: 'second-agent', artifactDigest: digest,
+    capabilities: [{ ...structuredClone(manifest.capabilities.required[0]), maxCalls: 2 }],
+    resources: [{ kind: 'xmtp-contact', resourceId: 'peer', label: 'Peer', peerAddress: '0x222', environment: 'dev' }],
+    limits: { ...manifest.limits, wallTimeMs: 10_000 }, enabled: true, expectedRevision: 0,
+  });
+  assert.equal(first.artifactDigest, second.artifactDigest);
+  assert.notEqual(first.resources[0].peerAddress, second.resources[0].peerAddress);
+  assert.notEqual(first.capabilities[0].maxCalls, second.capabilities[0].maxCalls);
+  assert.notEqual(first.limits.wallTimeMs, second.limits.wallTimeMs);
 });
 
 test('MCP API reconnects once when the server has forgotten its transport session', async () => {

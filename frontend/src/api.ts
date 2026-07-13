@@ -1,6 +1,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainFamily, ChainWithEnabled, NetworkTag } from '@mosaic/catalog';
 import type { AgentChain, Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
+import type { AgentArtifactManifest } from '@mosaic/local-runtime/contracts';
 import { MCP_URL } from './config';
 
 export type SignatureEnvelope =
@@ -86,6 +87,13 @@ export interface BlobGetResult {
 export interface WalletSettingsResult {
   /** 0 disables the Mainnet lock reminder. */
   lockReminderMinutes: number;
+}
+
+export interface AgentArtifactRecord {
+  artifactDigest: string;
+  manifest: AgentArtifactManifest;
+  source?: string;
+  createdAt: string;
 }
 
 export class ApiError extends Error {
@@ -226,6 +234,19 @@ class MosaicApi {
 
   blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device' | 'server' | 'data'): Promise<BlobGetResult> {
     return this.call('blob_get', { token, zone, kind });
+  }
+
+  agentArtifactPut(token: string, manifest: AgentArtifactManifest, source: string): Promise<{ artifactDigest: string; created: boolean }> {
+    return this.call('agent_artifact_put', { token, manifest, source });
+  }
+
+  agentArtifactGet(token: string, artifactDigest: string): Promise<AgentArtifactRecord & { source: string }> {
+    return this.call('agent_artifact_get', { token, artifactDigest });
+  }
+
+  async agentArtifactList(token: string, packageName?: string): Promise<AgentArtifactRecord[]> {
+    const result = await this.call<{ artifacts: AgentArtifactRecord[] }>('agent_artifact_list', { token, ...(packageName ? { packageName } : {}) });
+    return result.artifacts;
   }
 
   xamanSignCreate(args: {

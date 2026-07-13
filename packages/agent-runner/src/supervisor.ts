@@ -14,6 +14,7 @@ import {
   contractDigest,
   controlSignatureText,
   sha256Hex,
+  validateOperationArguments,
   type CapabilityAllowance,
   type CapabilityOperation,
   type CapabilityRequest,
@@ -29,6 +30,7 @@ interface SandboxStart {
   source: string;
   limits: ExecutionGrant['limits'];
   allowedOperations: string[];
+  resourceIds: string[];
   agentId: string;
   grantId: string;
   xmtpAddress: string;
@@ -176,6 +178,7 @@ export class AgentSupervisor {
         source,
         limits: grant.limits,
         allowedOperations: grant.capabilities.map(({ operation }) => operation),
+        resourceIds: grant.resources.map(({ resourceId }) => resourceId),
         agentId: grant.agentId,
         grantId: grant.grantId,
         xmtpAddress: grant.xmtpAddress,
@@ -385,6 +388,13 @@ export class AgentSupervisor {
   ): Promise<unknown> {
     const allowance = allowances.get(request.operation);
     if (!allowance) throw new Error(`hook ${request.operation} is not granted`);
+    validateOperationArguments(
+      request.operation as CapabilityOperation,
+      request.arguments,
+      allowance,
+      grant.limits,
+      grant.resources,
+    );
     allowance.calls += 1;
     if (allowance.calls > allowance.maxCalls) throw new Error(`hook ${request.operation} quota exceeded`);
     let capabilityRequest: CapabilityRequest | undefined;
@@ -395,7 +405,7 @@ export class AgentSupervisor {
     try {
       value = await this.executeHook(request, grant);
       bytes = Buffer.byteLength(JSON.stringify(value));
-      if (bytes > allowance.maxResponseBytes) throw new Error(`hook ${request.operation} response too large`);
+      if (bytes > Math.min(allowance.maxResponseBytes, grant.limits.maxHookResponseBytes)) throw new Error(`hook ${request.operation} response too large`);
     } catch (error) {
       if (capabilityRequest) await this.recordSafe(capabilityRequest, false, 0);
       throw error;

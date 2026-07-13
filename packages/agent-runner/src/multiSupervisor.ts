@@ -73,7 +73,7 @@ export class MultiAgentSupervisor {
       runnerPublicKey: this.certificate.runnerPublicKey,
       expectedGuardianAddress: this.certificate.guardianAddress,
     });
-    if (execution.agentId !== agentId || execution.grant.agentId !== agentId || execution.manifest.agentId !== agentId) {
+    if (execution.agentId !== agentId || execution.grant.agentId !== agentId) {
       throw new Error('Guardian execution package agent binding mismatch');
     }
     const secretBuffers = this.openLease(execution);

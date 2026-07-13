@@ -28,11 +28,11 @@ function grant(source, overrides = {}) {
     policyDigest: '3'.repeat(64),
     certificateDigest: '4'.repeat(64),
     capabilities: [
-      { operation: 'log.emit', maxCalls: 10, maxResponseBytes: 4096 },
+      { operation: 'log.emit', maxCalls: 10, maxResponseBytes: 4096, constraints: { maxEntryBytes: 4096 } },
       { operation: 'clock.now', maxCalls: 10, maxResponseBytes: 4096 },
-      { operation: 'state.get', maxCalls: 10, maxResponseBytes: 4096 },
-      { operation: 'state.put', maxCalls: 10, maxResponseBytes: 4096 },
-      { operation: 'state.compareAndSet', maxCalls: 10, maxResponseBytes: 4096 },
+      { operation: 'state.get', maxCalls: 10, maxResponseBytes: 4096, constraints: { keyPrefixes: ['counter'] } },
+      { operation: 'state.put', maxCalls: 10, maxResponseBytes: 4096, constraints: { keyPrefixes: ['counter'], maxValueBytes: 4096 } },
+      { operation: 'state.compareAndSet', maxCalls: 10, maxResponseBytes: 4096, constraints: { keyPrefixes: ['counter'], maxValueBytes: 4096 } },
     ],
     limits: {
       memoryBytes: 8 * 1024 * 1024,
@@ -63,6 +63,8 @@ test('sandbox enables Node mode only when hosted by Electron', () => {
 test('QuickJS agent sees only typed hooks and namespaced state', async () => {
   const source = `
 if (typeof process !== 'undefined' || typeof require !== 'undefined' || typeof fetch !== 'undefined') throw new Error('host authority leaked');
+if (!mosaic.capabilities.has('state.put') || mosaic.capabilities.has('xmtp.send')) throw new Error('capability discovery mismatch');
+if (mosaic.resources.has('missing')) throw new Error('resource discovery mismatch');
 const first = await mosaic.state.put('counter', 1);
 const updated = await mosaic.state.compareAndSet('counter', first.revision, 2);
 const current = await mosaic.state.get('counter');
@@ -96,8 +98,8 @@ await mosaic.runtime.waitUntilStopped();
   const authorization = grant(source, {
     limits: { ...grant(source).limits, wallTimeMs: 10_000 },
     capabilities: [
-      { operation: 'xmtp.receive', maxCalls: 2, maxResponseBytes: 4096 },
-      { operation: 'log.emit', maxCalls: 10, maxResponseBytes: 4096 },
+      { operation: 'xmtp.receive', maxCalls: 2, maxResponseBytes: 4096, constraints: { resourceSlots: [] } },
+      { operation: 'log.emit', maxCalls: 10, maxResponseBytes: 4096, constraints: { maxEntryBytes: 4096 } },
     ],
   });
   const completion = supervisor.run(source, authorization);

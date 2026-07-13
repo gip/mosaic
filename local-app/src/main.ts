@@ -1,18 +1,27 @@
 import { createRequire } from 'node:module';
 import { createReadStream, existsSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, ipcMain, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, utilityProcess, type OpenDialogOptions, type UtilityProcess } from 'electron';
 import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_GUARDIAN_VAULT,
   DEFAULT_RUNNER_VAULT,
+  MAX_AGENT_PACKAGE_BYTES,
+  assertArtifactPackage,
+  canonicalJson,
   callGuardianControl,
+  type AgentArtifactPackage,
+  type AgentInstallationPolicy,
+  type AgentResourceLimits,
+  type CapabilityAllowance,
   type LocalMcpSession,
   type MosaicNetwork,
   type ServiceName,
   type ServiceStatus,
+  type XmtpResourceDescriptor,
 } from '@mosaic/local-runtime';
 
 const require = createRequire(import.meta.url);
@@ -196,6 +205,86 @@ async function startAgent(args: { agentId?: string; vault?: string; network?: Mo
 
 async function stopAgent(agentId: string): Promise<void> { await supervisorRequest('agent.stop', { agentId }); }
 
+async function openAgentPackage(): Promise<AgentArtifactPackage | undefined> {
+  const options: OpenDialogOptions = {
+    title: 'Open Mosaic agent package',
+    properties: ['openFile'],
+    filters: [{ name: 'Mosaic agent packages', extensions: ['mosaic-agent'] }],
+  };
+  const selected = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+  if (selected.canceled || selected.filePaths.length !== 1) return undefined;
+  const path = selected.filePaths[0]!;
+  const size = statSync(path).size;
+  if (size > MAX_AGENT_PACKAGE_BYTES) throw new Error('Agent package exceeds the maximum size');
+  const bytes = await readFile(path);
+  if (bytes.byteLength > MAX_AGENT_PACKAGE_BYTES) throw new Error('Agent package exceeds the maximum size');
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  const artifact = JSON.parse(text) as AgentArtifactPackage;
+  assertArtifactPackage(artifact);
+  if (text !== canonicalJson(artifact)) throw new Error('Agent package envelope must be canonical JSON');
+  return artifact;
+}
+
+async function installAgent(args: {
+  agentId: string;
+  artifactDigest: string;
+  capabilities: CapabilityAllowance[];
+  resources: XmtpResourceDescriptor[];
+  limits: AgentResourceLimits;
+  enabled: boolean;
+  expectedRevision: number;
+  network?: MosaicNetwork;
+  signatureB64?: string;
+  passphrase?: string;
+}): Promise<AgentInstallationPolicy> {
+  const agentId = args.agentId.trim();
+  const network = args.network ?? 'testnet';
+  await callGuardianControl('agent.unlock', {
+    agentId,
+    network,
+    ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
+    ...(args.passphrase ? { passphrase: args.passphrase } : {}),
+  }, 180_000);
+  try {
+    return await callGuardianControl<AgentInstallationPolicy>('agent.install', {
+      agentId,
+      artifactDigest: args.artifactDigest,
+      capabilities: args.capabilities,
+      resources: args.resources,
+      limits: args.limits,
+      enabled: args.enabled,
+      expectedRevision: args.expectedRevision,
+    }, 180_000);
+  } finally {
+    await callGuardianControl('agent.lock', { agentId }).catch(() => {});
+  }
+}
+
+async function getAgentInstallation(args: string | { agentId: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<AgentInstallationPolicy | undefined> {
+  if (typeof args === 'string') return callGuardianControl('agent.installation.get', { agentId: args });
+  const agentId = args.agentId.trim();
+  await callGuardianControl('agent.unlock', {
+    agentId,
+    network: args.network ?? 'testnet',
+    ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
+    ...(args.passphrase ? { passphrase: args.passphrase } : {}),
+  }, 180_000);
+  try { return await callGuardianControl('agent.installation.get', { agentId }); }
+  finally { await callGuardianControl('agent.lock', { agentId }).catch(() => {}); }
+}
+
+async function deleteAgentInstallation(agentId: string, expectedRevision: number, auth?: { network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<void> {
+  if (!auth) return callGuardianControl('agent.installation.delete', { agentId, expectedRevision });
+  await callGuardianControl('agent.unlock', {
+    agentId,
+    network: auth.network ?? 'testnet',
+    ...(auth.signatureB64 ? { signatureB64: auth.signatureB64 } : {}),
+    ...(auth.passphrase ? { passphrase: auth.passphrase } : {}),
+  }, 180_000);
+  try { await callGuardianControl('agent.installation.delete', { agentId, expectedRevision }); }
+  finally { await callGuardianControl('agent.lock', { agentId }).catch(() => {}); }
+}
+
 async function stopService(name: ServiceName): Promise<void> {
   if (name === 'mosaic-guardian') {
     supervisorEnrolled = false;
@@ -294,6 +383,10 @@ ipcMain.handle('agent:start', (_event, args) => startAgent(args));
 ipcMain.handle('agent:stop', (_event, agentId: string) => stopAgent(agentId));
 ipcMain.handle('agent:list', () => supervisorRequest('agent.list'));
 ipcMain.handle('agent:status', (_event, agentId: string) => supervisorRequest('agent.status', { agentId }));
+ipcMain.handle('agent:package-open', () => openAgentPackage());
+ipcMain.handle('agent:install', (_event, args) => installAgent(args));
+ipcMain.handle('agent:installation-get', (_event, args) => getAgentInstallation(args));
+ipcMain.handle('agent:installation-delete', (_event, agentId: string, expectedRevision: number, auth) => deleteAgentInstallation(agentId, expectedRevision, auth));
 ipcMain.handle('services:stop', (_event, name: ServiceName) => stopService(name));
 
 app.whenReady().then(() => {

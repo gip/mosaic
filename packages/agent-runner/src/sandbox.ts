@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { getQuickJS, shouldInterruptAfterDeadline, type QuickJSDeferredPromise, type QuickJSContext } from 'quickjs-emscripten';
-import type { AgentResourceLimits } from '@mosaic/local-runtime';
+import { MAX_AGENT_SOURCE_BYTES, MAX_HOOK_ARGUMENT_BYTES, type AgentResourceLimits } from '@mosaic/local-runtime';
 
 interface StartMessage {
   type: 'start';
   source: string;
   limits: AgentResourceLimits;
   allowedOperations: string[];
+  resourceIds: string[];
   agentId: string;
   grantId: string;
   xmtpAddress: string;
@@ -48,7 +49,7 @@ process.on('message', (message: unknown) => {
 async function run(message: StartMessage): Promise<void> {
   try {
     activeBinding = { agentId: message.agentId, grantId: message.grantId };
-    if (typeof message.source !== 'string' || message.source.length > 2 * 1024 * 1024) throw new Error('agent source is invalid or too large');
+    if (typeof message.source !== 'string' || Buffer.byteLength(message.source, 'utf8') > MAX_AGENT_SOURCE_BYTES) throw new Error('agent source is invalid or too large');
     const QuickJS = await getQuickJS();
     const runtime = QuickJS.newRuntime();
     runtime.setMemoryLimit(message.limits.memoryBytes);
@@ -57,7 +58,7 @@ async function run(message: StartMessage): Promise<void> {
     const vm = runtime.newContext();
     try {
       installHookBridge(vm, new Set(message.allowedOperations), message.limits.maxPendingJobs);
-      const bootstrap = vm.evalCode(BOOTSTRAP(message.xmtpAddress), 'mosaic-bootstrap.js');
+      const bootstrap = vm.evalCode(BOOTSTRAP(message.xmtpAddress, message.allowedOperations, message.resourceIds), 'mosaic-bootstrap.js');
       vm.unwrapResult(bootstrap).dispose();
       stopRuntime = () => {
         const result = vm.evalCode('__mosaicStop()', 'mosaic-stop.js');
@@ -108,7 +109,7 @@ function installHookBridge(vm: QuickJSContext, allowed: Set<string>, maxPendingJ
     if (!allowed.has(operation)) throw new Error(`hook ${operation} is not granted`);
     if (pending.size >= maxPendingJobs) throw new Error('agent pending-hook limit exceeded');
     const raw = vm.getString(argumentsHandle);
-    if (Buffer.byteLength(raw) > 128 * 1024) throw new Error('hook arguments are too large');
+    if (Buffer.byteLength(raw) > MAX_HOOK_ARGUMENT_BYTES) throw new Error('hook arguments are too large');
     const args = JSON.parse(raw) as unknown;
     if (!isRecord(args)) throw new Error('hook arguments must be an object');
     const id = randomUUID();
@@ -152,13 +153,14 @@ function sendTerminal(message: Record<string, unknown>, exitCode: number): void 
   if (process.send) process.send(message, () => process.disconnect());
 }
 
-const BOOTSTRAP = (xmtpAddress: string) => `
+const BOOTSTRAP = (xmtpAddress: string, allowedOperations: string[], resourceIds: string[]) => `
 (() => {
   'use strict';
+  const grantedCapabilities = new Set(${JSON.stringify(allowedOperations)});
+  const boundResources = new Set(${JSON.stringify(resourceIds)});
   const call = async (operation, args = {}) => JSON.parse(await __mosaicHook(operation, JSON.stringify(args)));
   const eventReady = __mosaicEventReady;
   let xmtpHandler = null;
-  let websocketHandler = null;
   let stopResolve;
   const stopped = new Promise((resolve) => { stopResolve = resolve; });
   const api = {
@@ -181,21 +183,8 @@ const BOOTSTRAP = (xmtpAddress: string) => `
         return registration;
       },
     }),
-    websocket: Object.freeze({
-      open: (resourceId) => call('websocket.connect', { resourceId }),
-      send: (resourceId, data) => call('websocket.send', { resourceId, data }),
-      onMessage: async (handler) => {
-        if (typeof handler !== 'function') throw new TypeError('WebSocket message handler must be a function');
-        websocketHandler = handler;
-        const registration = await call('websocket.receive');
-        eventReady('websocket.message');
-        return registration;
-      },
-      close: (resourceId) => call('websocket.close', { resourceId }),
-    }),
-    transaction: Object.freeze({
-      propose: (keyId, chain, intentType, intent) => call('transaction.propose', { keyId, chain, intentType, intent }),
-    }),
+    capabilities: Object.freeze({ has: (operation) => grantedCapabilities.has(operation) }),
+    resources: Object.freeze({ has: (slotId) => boundResources.has(slotId) }),
     runtime: Object.freeze({ waitUntilStopped: () => stopped }),
   };
   Object.defineProperty(globalThis, 'mosaic', { value: Object.freeze(api), writable: false, configurable: false });
@@ -204,7 +193,6 @@ const BOOTSTRAP = (xmtpAddress: string) => `
   Object.defineProperty(globalThis, '__mosaicRuntimeEvent', { value: async (raw) => {
     const event = JSON.parse(raw);
     if (event.eventType === 'xmtp.message' && xmtpHandler) await xmtpHandler(event.payload);
-    if (event.eventType === 'websocket.message' && websocketHandler) await websocketHandler(event.payload);
   }, writable: false, configurable: false });
   Object.defineProperty(globalThis, '__mosaicStop', { value: () => stopResolve(), writable: false, configurable: false });
 })();

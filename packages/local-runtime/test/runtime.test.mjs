@@ -47,7 +47,7 @@ test('authenticated Guardian control socket serves Runner enrollment and grants'
           revocationId: 'revoke-1', signatureB64: 'AQID',
         }),
         unlockAgent: async () => {}, lockAgent: async () => {}, stopAgent: async () => {}, prepareAgent: async () => ({}),
-        getAgentPolicy: () => undefined, putAgentPolicy: async () => ({}), deleteAgentPolicy: async () => {},
+        getAgentInstallation: () => undefined, installAgent: async () => ({}), deleteAgentInstallation: async () => {},
         initializeAgentSecrets: async () => [], listAgentSecrets: () => [], importAgentSecret: async () => {}, rotateAgentSecret: async () => {}, deleteAgentSecret: async () => {},
         renewLease: async () => ({}), proposeTransaction: async () => ({}),
         authorizeCapability: (request) => { authorized.push(request.requestId); return undefined; },
@@ -128,7 +128,7 @@ test('Guardian control server replaces a stale Unix socket left by a crashed pro
           revocationId: 'revoke-1', signatureB64: 'AQID',
         }),
         unlockAgent: async () => {}, lockAgent: async () => {}, stopAgent: async () => {}, prepareAgent: async () => ({}),
-        getAgentPolicy: () => undefined, putAgentPolicy: async () => ({}), deleteAgentPolicy: async () => {},
+        getAgentInstallation: () => undefined, installAgent: async () => ({}), deleteAgentInstallation: async () => {},
         initializeAgentSecrets: async () => [], listAgentSecrets: () => [], importAgentSecret: async () => {}, rotateAgentSecret: async () => {}, deleteAgentSecret: async () => {},
         renewLease: async () => ({}), authorizeCapability: async () => {}, recordCapability: async () => ({}), proposeTransaction: async () => ({}),
       });

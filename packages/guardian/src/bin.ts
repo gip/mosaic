@@ -72,9 +72,9 @@ if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
     lockAgent: ({ agentId }) => guardian.lockAgent(agentId),
     stopAgent: ({ agentId, grantId }) => guardian.lockAgent(agentId, grantId),
     prepareAgent: (params) => guardian.prepareAgent(params),
-    getAgentPolicy: ({ agentId }) => guardian.getAgentPolicy(agentId),
-    putAgentPolicy: ({ agentId, policy, expectedRevision }) => guardian.putAgentPolicy(agentId, policy, expectedRevision),
-    deleteAgentPolicy: ({ agentId, expectedRevision }) => guardian.deleteAgentPolicy(agentId, expectedRevision),
+    installAgent: (params) => guardian.installAgent(params),
+    getAgentInstallation: ({ agentId }) => guardian.getAgentInstallation(agentId),
+    deleteAgentInstallation: ({ agentId, expectedRevision }) => guardian.deleteAgentInstallation(agentId, expectedRevision),
     initializeAgentSecrets: ({ agentId }) => guardian.initializeAgentCommunicationKeys(agentId),
     listAgentSecrets: ({ agentId }) => guardian.listAgentSecretMetadata(agentId),
     importAgentSecret: async ({ agentId, record, materialB64 }) => {

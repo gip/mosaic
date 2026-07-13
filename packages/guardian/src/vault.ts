@@ -5,11 +5,14 @@ import {
   DEFAULT_OFFLINE_GRACE_MS,
   assertActiveWindow,
   assertCapabilitySubset,
+  assertCapabilityAllowance,
   assertDigestHex,
   assertArtifactManifest,
+  assertResourceLimitsSubset,
   canonicalJson,
   contractDigest,
   controlSignatureText,
+  validateOperationArguments,
   type AgentArtifactManifest,
   type CapabilityAllowance,
   type CapabilityRequest,
@@ -18,6 +21,7 @@ import {
   type LeaseRenewal,
   type MosaicNetwork,
   type AgentResourceDescriptor,
+  type AgentResourceLimits,
   type Revocation,
   type RunnerCertificate,
   type SignedAgentControlMessage,
@@ -45,12 +49,6 @@ interface GrantState {
   nextTransactionSequence: number;
   transactions: Map<string, TransactionResult>;
 }
-
-const SAFE_LOCAL_OPERATIONS = new Set([
-  'state.get', 'state.put', 'state.compareAndSet',
-  'log.emit', 'clock.now', 'random.bytes', 'schedule.once',
-  'xmtp.receive', 'xmtp.send', 'transaction.propose',
-]);
 
 /**
  * Networkless lease and policy authority. It cannot start processes or perform
@@ -96,6 +94,7 @@ export class VaultCore {
   }
 
   issueGrant(params: {
+    agentId: string;
     certificate: RunnerCertificate;
     manifest: AgentArtifactManifest;
     configDigest: string;
@@ -105,6 +104,7 @@ export class VaultCore {
     policyRevision: number;
     xmtpAddress: string;
     resources: AgentResourceDescriptor[];
+    limits: AgentResourceLimits;
     ttlMs?: number;
   }): ExecutionGrant {
     this.assertCertificate(params.certificate);
@@ -113,7 +113,7 @@ export class VaultCore {
     assertDigestHex(params.policyDigest, 'policyDigest');
     assertDigestHex(params.artifactDigest, 'artifactDigest');
     if (!Number.isSafeInteger(params.policyRevision) || params.policyRevision < 1) throw new Error('invalid policy revision');
-    this.assertCapabilities(params.manifest, params.capabilities);
+    this.assertCapabilities(params.manifest, params.capabilities, params.limits);
     const issued = this.now();
     const certificateExpiry = Date.parse(params.certificate.expiresAt);
     const expires = Math.min(issued + Math.min(params.ttlMs ?? DEFAULT_GRANT_TTL_MS, DEFAULT_GRANT_TTL_MS), certificateExpiry);
@@ -126,7 +126,7 @@ export class VaultCore {
       guardianId: this.signer.guardianId,
       guardianAddress: this.signer.guardianAddress,
       network: this.signer.network,
-      agentId: params.manifest.agentId,
+      agentId: params.agentId,
       trustTier: 'software-local',
       artifactDigest: params.artifactDigest,
       policyRevision: params.policyRevision,
@@ -138,7 +138,7 @@ export class VaultCore {
       policyDigest: params.policyDigest,
       certificateDigest: contractDigest(params.certificate),
       capabilities: structuredClone(params.capabilities),
-      limits: structuredClone(params.manifest.limits),
+      limits: structuredClone(params.limits),
       issuedAt: new Date(issued).toISOString(),
       expiresAt: new Date(expires).toISOString(),
       maxOfflineMs: DEFAULT_OFFLINE_GRACE_MS,
@@ -166,12 +166,10 @@ export class VaultCore {
     if (Date.parse(request.deadline) <= this.now()) throw new Error('capability request expired');
     const allowance = state.capabilities.find(({ operation }) => operation === request.operation);
     if (!allowance) throw new Error(`capability ${request.operation} is not granted`);
+    validateOperationArguments(request.operation, request.arguments, allowance, state.grant.limits, state.resources);
     const calls = state.calls.get(request.operation) ?? 0;
     if (calls >= allowance.maxCalls) throw new Error(`capability ${request.operation} quota exhausted`);
-    // transaction.propose is consumed by the proposal itself (rejectTransaction,
-    // which is reachable without a prior authorize); counting it here as well
-    // would burn two quota units per proposal.
-    if (request.operation !== 'transaction.propose') state.calls.set(request.operation, calls + 1);
+    state.calls.set(request.operation, calls + 1);
     state.nextSequence += 1;
     return undefined;
   }
@@ -180,6 +178,10 @@ export class VaultCore {
     const state = this.requireGrant(request.grantId);
     if (request.agentId !== state.grant.agentId || result.agentId !== state.grant.agentId) throw new Error('capability result agent binding mismatch');
     if (result.grantId !== request.grantId || result.requestId !== request.requestId) throw new Error('capability result request binding mismatch');
+    if (result.sequence !== request.sequence) throw new Error('capability result sequence mismatch');
+    if (result.usage.calls !== 1 || !Number.isSafeInteger(result.usage.responseBytes) || result.usage.responseBytes < 0) throw new Error('capability usage is invalid');
+    const allowance = state.capabilities.find(({ operation }) => operation === request.operation);
+    if (!allowance || result.usage.responseBytes > Math.min(allowance.maxResponseBytes, state.grant.limits.maxHookResponseBytes)) throw new Error('capability response exceeds its allowance');
     const auditEventDigest = this.appendAudit('capability.result', {
       grantId: request.grantId,
       requestId: request.requestId,
@@ -253,6 +255,16 @@ export class VaultCore {
 
   auditDigest(): string { return this.auditHead; }
 
+  hasActiveGrant(agentId: string): boolean {
+    let active = false;
+    for (const [grantId, state] of this.grants) {
+      if (state.grant.agentId !== agentId) continue;
+      if (this.now() <= Date.parse(state.expiresAt) + state.maxOfflineMs) active = true;
+      else this.grants.delete(grantId);
+    }
+    return active;
+  }
+
   dropAgent(agentId: string): void {
     for (const [grantId, state] of this.grants) {
       if (state.grant.agentId === agentId) this.grants.delete(grantId);
@@ -287,16 +299,9 @@ export class VaultCore {
     const replay = state.transactions.get(proposal.idempotencyKey);
     if (replay) return structuredClone(replay);
     if (proposal.sequence !== state.nextTransactionSequence) throw new Error('transaction proposal sequence mismatch');
-    if (!state.grant.capabilities.some(({ operation }) => operation === 'transaction.propose')) {
-      throw new Error('transaction proposals are not granted');
-    }
     if (!state.grant.agentId || !proposal.keyId || !proposal.intentType || Buffer.byteLength(canonicalJson(proposal.intent)) > 64 * 1024) {
       throw new Error('invalid transaction proposal');
     }
-    const calls = state.calls.get('transaction.propose') ?? 0;
-    const allowance = state.capabilities.find(({ operation }) => operation === 'transaction.propose')!;
-    if (calls >= allowance.maxCalls) throw new Error('transaction proposal quota exhausted');
-    state.calls.set('transaction.propose', calls + 1);
     state.nextTransactionSequence += 1;
     const result: TransactionResult = {
       protocol: AGENT_CONTROL_PROTOCOL,
@@ -326,19 +331,22 @@ export class VaultCore {
     if (!issued || canonicalJson(issued) !== canonicalJson(certificate)) throw new Error('Runner certificate was not issued by this Vault');
   }
 
-  private assertCapabilities(manifest: AgentArtifactManifest, capabilities: CapabilityAllowance[]): void {
-    if (capabilities.length !== manifest.requiredHooks.length) throw new Error('grant capabilities must exactly match required hooks');
+  private assertCapabilities(manifest: AgentArtifactManifest, capabilities: CapabilityAllowance[], limits: AgentResourceLimits): void {
+    assertResourceLimitsSubset(limits, manifest.limits);
+    const requested = new Map([...manifest.capabilities.required, ...manifest.capabilities.optional].map((item) => [item.operation, item]));
     const unique = new Set<string>();
     for (const allowance of capabilities) {
+      assertCapabilityAllowance(allowance, true);
       if (unique.has(allowance.operation)) throw new Error('duplicate capability allowance');
       unique.add(allowance.operation);
-      if (!manifest.requiredHooks.includes(allowance.operation)) throw new Error(`manifest does not request ${allowance.operation}`);
-      if (!SAFE_LOCAL_OPERATIONS.has(allowance.operation)) throw new Error(`${allowance.operation} policy broker is not implemented`);
-      if (!Number.isSafeInteger(allowance.maxCalls) || allowance.maxCalls <= 0) throw new Error('capability maxCalls must be positive');
-      if (!Number.isSafeInteger(allowance.maxResponseBytes) || allowance.maxResponseBytes <= 0 || allowance.maxResponseBytes > manifest.limits.maxHookResponseBytes) {
+      const request = requested.get(allowance.operation);
+      if (!request || allowance.maxCalls > request.maxCalls || allowance.maxResponseBytes > request.maxResponseBytes) throw new Error(`manifest does not permit ${allowance.operation}`);
+      if (canonicalJson(allowance.constraints ?? {}) !== canonicalJson(request.constraints ?? {})) throw new Error(`grant changes ${allowance.operation} constraints`);
+      if (allowance.maxResponseBytes > limits.maxHookResponseBytes) {
         throw new Error('capability response limit is invalid');
       }
     }
+    for (const required of manifest.capabilities.required) if (!unique.has(required.operation)) throw new Error(`missing required capability: ${required.operation}`);
   }
 
   private requireGrant(grantId: string): GrantState {

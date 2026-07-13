@@ -37,15 +37,15 @@ test('MemoryStore isolates immutable agent artifacts and versions encrypted agen
   const owner = { chain: 'evm', address: evmAccount.address };
   const source = 'await mosaic.runtime.waitUntilStopped();';
   const manifest = {
-    protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'agent-one', version: '1', sourceDigest: sha256Hex(source),
-    requiredHooks: [],
+    protocol: AGENT_ARTIFACT_PROTOCOL, packageName: 'agent-one', version: '1.0.0', sourceDigest: sha256Hex(source),
+    capabilities: { required: [], optional: [] }, resourceSlots: [],
     limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
     minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
   };
   const digest = artifactDigest(manifest);
   assert.deepEqual(await store.putAgentArtifact({ owner, network: 'testnet', artifactDigest: digest, manifest, source: Buffer.from(source) }), { created: true });
   assert.deepEqual(await store.putAgentArtifact({ owner, network: 'testnet', artifactDigest: digest, manifest, source: Buffer.from(source) }), { created: false });
-  assert.equal((await store.getAgentArtifact(owner, 'testnet', digest)).manifest.agentId, 'agent-one');
+  assert.equal((await store.getAgentArtifact(owner, 'testnet', digest)).manifest.packageName, 'agent-one');
   assert.equal(await store.getAgentArtifact({ chain: 'evm', address: '0x0000000000000000000000000000000000000001' }, 'testnet', digest), undefined);
   assert.equal((await store.listAgentArtifacts(owner, 'testnet', 'agent-one')).length, 1);
 
@@ -546,14 +546,15 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
 
     const agentSource = 'await mosaic.runtime.waitUntilStopped();';
     const agentManifest = {
-      protocol: AGENT_ARTIFACT_PROTOCOL, agentId: 'top', version: '1', sourceDigest: sha256Hex(agentSource), requiredHooks: [],
+      protocol: AGENT_ARTIFACT_PROTOCOL, packageName: 'top', version: '1.0.0', sourceDigest: sha256Hex(agentSource),
+      capabilities: { required: [], optional: [] }, resourceSlots: [],
       limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
       minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
     };
     const storedArtifact = await call(client, 'agent_artifact_put', { token, manifest: agentManifest, source: agentSource });
     assert.equal(storedArtifact.artifactDigest, artifactDigest(agentManifest));
     assert.equal((await call(client, 'agent_artifact_get', { token, artifactDigest: storedArtifact.artifactDigest })).source, agentSource);
-    assert.equal((await call(client, 'agent_artifact_list', { token, agentId: 'top' })).artifacts.length, 1);
+    assert.equal((await call(client, 'agent_artifact_list', { token, packageName: 'top' })).artifacts.length, 1);
     await assert.rejects(
       () => call(client, 'agent_artifact_put', { token, manifest: { ...agentManifest, sourceDigest: '0'.repeat(64) }, source: agentSource }),
       /source digest mismatch/,
@@ -780,7 +781,8 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
 
     const artifactSource = 'await mosaic.runtime.waitUntilStopped();';
     const artifactManifest = {
-      protocol: AGENT_ARTIFACT_PROTOCOL, agentId: zoneName, version: '1', sourceDigest: sha256Hex(artifactSource), requiredHooks: [],
+      protocol: AGENT_ARTIFACT_PROTOCOL, packageName: zoneName, version: '1.0.0', sourceDigest: sha256Hex(artifactSource),
+      capabilities: { required: [], optional: [] }, resourceSlots: [],
       limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
       minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
     };

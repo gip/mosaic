@@ -1,0 +1,24 @@
+{
+  "name": "@mosaic/agent-compiler",
+  "version": "0.0.0",
+  "description": "Deterministic TypeScript compiler for Mosaic agent packages.",
+  "type": "module",
+  "license": "MIT",
+  "files": ["dist"],
+  "bin": { "mosaic-agent": "./dist/cli.js" },
+  "exports": { ".": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mosaic/agent-sdk": "workspace:*",
+    "@mosaic/local-runtime": "workspace:*",
+    "esbuild": "0.27.0",
+    "typescript": "~6.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3"
+  }
+}

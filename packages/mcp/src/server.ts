@@ -4,8 +4,10 @@ import type { AssetTrustState } from '@mosaic/catalog';
 import {
   AGENT_ARTIFACT_PROTOCOL,
   AGENT_RUNTIME_VERSION,
+  MAX_AGENT_SOURCE_BYTES,
   artifactDigest,
   assertArtifactManifest,
+  assertCanonicalAgentSource,
   sha256Hex,
   type AgentArtifactManifest,
 } from '@mosaic/local-runtime';
@@ -41,7 +43,6 @@ const fail = (error: unknown): ToolResult => ({
 const MAX_BLOB_BYTES = 4 * 1024;
 const MAX_DATA_BLOB_BYTES = 64 * 1024 + 16; // v1 plaintext limit plus XChaCha20-Poly1305 tag
 const MAX_AGENT_SECRET_BLOB_BYTES = 64 * 1024 + 16;
-const MAX_AGENT_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const zoneNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 const signatureSchema = z.union([
@@ -544,9 +545,12 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         throw new MosaicMcpError('VALIDATION_FAILED', error instanceof Error ? error.message : String(error));
       }
       const source = String(args.source);
+      try { assertCanonicalAgentSource(source); } catch (error) {
+        throw new MosaicMcpError('VALIDATION_FAILED', error instanceof Error ? error.message : String(error));
+      }
       const sourceBytes = Buffer.from(source, 'utf8');
-      if (sourceBytes.byteLength === 0 || sourceBytes.byteLength > MAX_AGENT_ARTIFACT_BYTES) {
-        throw new MosaicMcpError('VALIDATION_FAILED', `agent source must be 1..${MAX_AGENT_ARTIFACT_BYTES} UTF-8 bytes`);
+      if (sourceBytes.byteLength === 0 || sourceBytes.byteLength > MAX_AGENT_SOURCE_BYTES) {
+        throw new MosaicMcpError('VALIDATION_FAILED', `agent source must be 1..${MAX_AGENT_SOURCE_BYTES} UTF-8 bytes`);
       }
       if (sourceBytes.toString('utf8') !== source) throw new MosaicMcpError('VALIDATION_FAILED', 'agent source is not canonical UTF-8');
       const actualSourceDigest = sha256Hex(sourceBytes);
@@ -574,10 +578,14 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       const digest = String(args.artifactDigest);
       const record = await store.getAgentArtifact({ chain: session.chain, address: session.address }, session.network, digest);
       if (!record) throw new MosaicMcpError('NOT_FOUND', `agent artifact not found: ${digest}`);
-      if (artifactDigest(record.manifest) !== digest || sha256Hex(record.source) !== record.manifest.sourceDigest) {
+      const source = Buffer.from(record.source).toString('utf8');
+      try { assertArtifactManifest(record.manifest); assertCanonicalAgentSource(source); } catch {
+        throw new MosaicMcpError('INTERNAL', 'stored agent artifact failed structural verification');
+      }
+      if (Buffer.from(source, 'utf8').compare(Buffer.from(record.source)) !== 0 || artifactDigest(record.manifest) !== digest || sha256Hex(record.source) !== record.manifest.sourceDigest) {
         throw new MosaicMcpError('INTERNAL', 'stored agent artifact failed integrity verification');
       }
-      return ok({ artifactDigest: digest, manifest: record.manifest, source: Buffer.from(record.source).toString('utf8'), createdAt: record.createdAt });
+      return ok({ artifactDigest: digest, manifest: record.manifest, source, createdAt: record.createdAt });
     },
   );
 
@@ -585,15 +593,21 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     'agent_artifact_list',
     {
       description: 'List immutable agent artifact manifests owned by the authenticated root wallet.',
-      inputSchema: { token: z.string(), agentId: zoneNameSchema.optional() },
+      inputSchema: { token: z.string(), packageName: zoneNameSchema.optional() },
     },
     async (args) => {
       const session = await requireSession(args);
       const records = await store.listAgentArtifacts(
         { chain: session.chain, address: session.address },
         session.network,
-        args.agentId === undefined ? undefined : String(args.agentId),
+        args.packageName === undefined ? undefined : String(args.packageName),
       );
+      for (const record of records) {
+        try { assertArtifactManifest(record.manifest); } catch {
+          throw new MosaicMcpError('INTERNAL', 'stored agent artifact manifest failed structural verification');
+        }
+        if (artifactDigest(record.manifest) !== record.artifactDigest) throw new MosaicMcpError('INTERNAL', 'stored agent artifact manifest failed integrity verification');
+      }
       return ok({ artifacts: records.map(({ owner: _owner, network: _network, ...record }) => record) });
     },
   );

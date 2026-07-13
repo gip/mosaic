@@ -5,8 +5,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type {
   AgentExecutionPackage,
+  AgentInstallationPolicy,
   AgentLeaseRenewalPackage,
-  AgentPolicyV1,
+  AgentResourceLimits,
+  CapabilityAllowance,
   CapabilityRequest,
   CapabilityResult,
   MosaicNetwork,
@@ -14,17 +16,18 @@ import type {
   ServiceStatus,
   TransactionProposal,
   TransactionResult,
+  XmtpResourceDescriptor,
 } from './contracts.js';
-import { AGENT_CONTROL_PROTOCOL } from './contracts.js';
+import { AGENT_CONTROL_PROTOCOL, MAX_AGENT_PACKAGE_BYTES } from './contracts.js';
 
-const MAX_FRAME_BYTES = 3 * 1024 * 1024;
+const MAX_FRAME_BYTES = MAX_AGENT_PACKAGE_BYTES + 512 * 1024;
 const PAIRING_TTL_MS = 2 * 60_000;
 
 export type GuardianControlMethod =
   | 'ping' | 'status' | 'shutdown' | 'session.attach' | 'guardian.start'
   | 'runner.approve' | 'runner.enroll'
   | 'agent.unlock' | 'agent.lock' | 'agent.stop' | 'agent.prepare'
-  | 'agent.policy.get' | 'agent.policy.put' | 'agent.policy.delete'
+  | 'agent.install' | 'agent.installation.get' | 'agent.installation.delete'
   | 'agent.secrets.init' | 'agent.secrets.list' | 'agent.secrets.import' | 'agent.secrets.rotate' | 'agent.secrets.delete'
   | 'lease.renew' | 'capability.authorize' | 'capability.record' | 'transaction.propose';
 
@@ -62,9 +65,17 @@ export interface GuardianControlHandlers {
   lockAgent(params: { agentId: string }): Promise<void> | void;
   stopAgent(params: { agentId: string; grantId: string }): Promise<void> | void;
   prepareAgent(params: { agentId: string; certificate: RunnerCertificate; supervisorKeyLeasePublicKeyB64: string }): Promise<AgentExecutionPackage>;
-  getAgentPolicy(params: { agentId: string }): Promise<AgentPolicyV1 | undefined> | AgentPolicyV1 | undefined;
-  putAgentPolicy(params: { agentId: string; policy: Omit<AgentPolicyV1, 'v' | 'revision'>; expectedRevision: number }): Promise<AgentPolicyV1>;
-  deleteAgentPolicy(params: { agentId: string; expectedRevision: number }): Promise<void>;
+  installAgent(params: {
+    agentId: string;
+    artifactDigest: string;
+    capabilities: CapabilityAllowance[];
+    resources: XmtpResourceDescriptor[];
+    limits: AgentResourceLimits;
+    enabled: boolean;
+    expectedRevision: number;
+  }): Promise<AgentInstallationPolicy>;
+  getAgentInstallation(params: { agentId: string }): Promise<AgentInstallationPolicy | undefined> | AgentInstallationPolicy | undefined;
+  deleteAgentInstallation(params: { agentId: string; expectedRevision: number }): Promise<void>;
   initializeAgentSecrets(params: { agentId: string }): Promise<unknown>;
   listAgentSecrets(params: { agentId: string }): Promise<unknown> | unknown;
   importAgentSecret(params: { agentId: string; record: Record<string, unknown>; materialB64: string }): Promise<void>;
@@ -206,7 +217,7 @@ export async function startGuardianControlServer(handlers: GuardianControlHandle
       const isSupervisor = supervisor !== undefined && supervisor.expiresAt > now;
       const adminMethods: GuardianControlMethod[] = [
         'status', 'shutdown', 'session.attach', 'guardian.start', 'runner.approve',
-        'agent.unlock', 'agent.lock', 'agent.policy.get', 'agent.policy.put', 'agent.policy.delete',
+        'agent.unlock', 'agent.lock', 'agent.install', 'agent.installation.get', 'agent.installation.delete',
         'agent.secrets.init', 'agent.secrets.list', 'agent.secrets.import', 'agent.secrets.rotate', 'agent.secrets.delete',
       ];
       const supervisorMethods: GuardianControlMethod[] = [
@@ -274,9 +285,9 @@ export async function startGuardianControlServer(handlers: GuardianControlHandle
           if (supervisor?.runnerId !== (params.certificate as RunnerCertificate | undefined)?.runnerId) throw new Error('Supervisor certificate binding mismatch');
           return respond(request.id, true, await handlers.prepareAgent(params as never));
         }
-        case 'agent.policy.get': return respond(request.id, true, await handlers.getAgentPolicy(params as never));
-        case 'agent.policy.put': return respond(request.id, true, await handlers.putAgentPolicy(params as never));
-        case 'agent.policy.delete': return respond(request.id, true, await handlers.deleteAgentPolicy(params as never));
+        case 'agent.install': return respond(request.id, true, await handlers.installAgent(params as never));
+        case 'agent.installation.get': return respond(request.id, true, await handlers.getAgentInstallation(params as never));
+        case 'agent.installation.delete': return respond(request.id, true, await handlers.deleteAgentInstallation(params as never));
         case 'agent.secrets.init': return respond(request.id, true, await handlers.initializeAgentSecrets(params as never));
         case 'agent.secrets.list': return respond(request.id, true, await handlers.listAgentSecrets(params as never));
         case 'agent.secrets.import': return respond(request.id, true, await handlers.importAgentSecret(params as never));

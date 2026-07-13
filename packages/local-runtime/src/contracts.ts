@@ -55,9 +55,15 @@ export function parseLocalCli(argv: string[], defaultVault: string): LocalCliOpt
 /** Versioned application protocol. XMTP is transport, never lease authority. */
 export const AGENT_CONTROL_PROTOCOL = 'MOSAIC_AGENT_CONTROL_V2' as const;
 export const AGENT_RUNTIME_VERSION = '2.0.0' as const;
-export const AGENT_ARTIFACT_PROTOCOL = 'MOSAIC_AGENT_ARTIFACT_V1' as const;
+export const AGENT_ARTIFACT_PROTOCOL = 'MOSAIC_AGENT_ARTIFACT_V2' as const;
+export const AGENT_PACKAGE_PROTOCOL = 'MOSAIC_AGENT_PACKAGE_V1' as const;
 export const DEFAULT_GRANT_TTL_MS = 60_000;
 export const DEFAULT_OFFLINE_GRACE_MS = 15_000;
+export const MAX_AGENT_SOURCE_BYTES = 2 * 1024 * 1024;
+export const MAX_AGENT_MANIFEST_BYTES = 256 * 1024;
+export const MAX_HOOK_ARGUMENT_BYTES = 128 * 1024;
+export const MAX_AGENT_PACKAGE_BYTES = 2 * MAX_AGENT_SOURCE_BYTES + MAX_AGENT_MANIFEST_BYTES + 64 * 1024;
+export const MAX_AGENT_RESOURCE_SLOTS = 128;
 
 export type DigestHex = string;
 export type CapabilityOperation =
@@ -66,14 +72,31 @@ export type CapabilityOperation =
   | 'xmtp.receive' | 'xmtp.send'
   | 'websocket.connect' | 'websocket.send' | 'websocket.receive' | 'websocket.close'
   | 'transaction.propose'
-  | 'log.emit' | 'clock.now' | 'random.bytes' | 'schedule.once';
+  | 'log.emit' | 'clock.now' | 'random.bytes';
 
-export interface CapabilityAllowance {
-  operation: CapabilityOperation;
+export type GrantableCapabilityOperation =
+  | 'state.get' | 'state.put' | 'state.compareAndSet'
+  | 'xmtp.receive' | 'xmtp.send'
+  | 'log.emit' | 'clock.now' | 'random.bytes';
+
+interface CapabilityAllowanceBase {
   maxCalls: number;
   maxResponseBytes: number;
-  constraints?: Record<string, unknown>;
 }
+
+export type CapabilityAllowance =
+  | (CapabilityAllowanceBase & { operation: 'state.get'; constraints: { keyPrefixes: string[] } })
+  | (CapabilityAllowanceBase & { operation: 'state.put'; constraints: { keyPrefixes: string[]; maxValueBytes: number } })
+  | (CapabilityAllowanceBase & { operation: 'state.compareAndSet'; constraints: { keyPrefixes: string[]; maxValueBytes: number } })
+  | (CapabilityAllowanceBase & { operation: 'log.emit'; constraints: { maxEntryBytes: number } })
+  | (CapabilityAllowanceBase & { operation: 'clock.now'; constraints?: never })
+  | (CapabilityAllowanceBase & { operation: 'random.bytes'; constraints: { maxBytes: number } })
+  | (CapabilityAllowanceBase & { operation: 'xmtp.send'; constraints: { resourceSlots: string[]; maxMessageBytes: number } })
+  | (CapabilityAllowanceBase & { operation: 'xmtp.receive'; constraints: { resourceSlots: string[] } })
+  | (CapabilityAllowanceBase & {
+      operation: Exclude<CapabilityOperation, GrantableCapabilityOperation>;
+      constraints?: Record<string, unknown>;
+    });
 
 export interface AgentResourceLimits {
   memoryBytes: number;
@@ -105,24 +128,43 @@ export interface WssResourceDescriptor {
 
 export type AgentResourceDescriptor = XmtpResourceDescriptor | WssResourceDescriptor;
 
+export interface ResourceSlot {
+  slotId: string;
+  kind: 'xmtp-contact';
+  label: string;
+  required: boolean;
+}
+
 export interface AgentArtifactManifest {
   protocol: typeof AGENT_ARTIFACT_PROTOCOL;
-  agentId: string;
+  packageName: string;
   version: string;
   sourceDigest: DigestHex;
-  requiredHooks: CapabilityOperation[];
+  capabilities: {
+    required: CapabilityAllowance[];
+    optional: CapabilityAllowance[];
+  };
+  resourceSlots: ResourceSlot[];
   limits: AgentResourceLimits;
   minimumRuntimeVersion: string;
 }
 
-export interface AgentPolicyV1 {
-  v: 1;
+export interface AgentInstallationPolicy {
+  v: 2;
   revision: number;
   enabled: boolean;
+  packageName: string;
   artifactDigest: DigestHex;
   capabilities: CapabilityAllowance[];
-  resources: AgentResourceDescriptor[];
-  keyIds: string[];
+  resources: XmtpResourceDescriptor[];
+  limits: AgentResourceLimits;
+}
+
+export interface AgentArtifactPackage {
+  protocol: typeof AGENT_PACKAGE_PROTOCOL;
+  manifest: AgentArtifactManifest;
+  source: string;
+  artifactDigest: DigestHex;
 }
 
 export interface RunnerCertificate {
@@ -353,22 +395,134 @@ export function assertActiveWindow(issuedAt: string, expiresAt: string, now = Da
 }
 
 export function assertArtifactManifest(manifest: AgentArtifactManifest): void {
+  assertExactKeys(manifest as unknown as Record<string, unknown>, ['protocol', 'packageName', 'version', 'sourceDigest', 'capabilities', 'resourceSlots', 'limits', 'minimumRuntimeVersion'], 'agent manifest');
   if (manifest.protocol !== AGENT_ARTIFACT_PROTOCOL) throw new Error('unsupported agent artifact');
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.agentId) || !manifest.version) throw new Error('agent artifact identity is invalid');
+  if (!isKebabIdentifier(manifest.packageName) || manifest.packageName.length > 64) throw new Error('agent package identity is invalid');
+  if (!isSemver(manifest.version) || !isSemver(manifest.minimumRuntimeVersion)) throw new Error('agent package version is invalid');
   assertDigestHex(manifest.sourceDigest, 'sourceDigest');
-  if (manifest.minimumRuntimeVersion !== AGENT_RUNTIME_VERSION) throw new Error('agent runtime version is incompatible');
-  if (new Set(manifest.requiredHooks).size !== manifest.requiredHooks.length) throw new Error('agent artifact has duplicate hooks');
+  if (!isRuntimeCompatible(manifest.minimumRuntimeVersion, AGENT_RUNTIME_VERSION)) throw new Error('agent runtime version is incompatible');
   assertResourceLimits(manifest.limits);
+  if (!Array.isArray(manifest.capabilities?.required) || !Array.isArray(manifest.capabilities?.optional)) throw new Error('agent capabilities are invalid');
+  const capabilities = [...manifest.capabilities.required, ...manifest.capabilities.optional];
+  assertExactKeys(manifest.capabilities as unknown as Record<string, unknown>, ['required', 'optional'], 'agent capabilities');
+  const operations = capabilities.map(({ operation }) => operation);
+  if (new Set(operations).size !== operations.length) throw new Error('agent artifact has duplicate capabilities');
+  for (const allowance of capabilities) {
+    assertCapabilityAllowance(allowance, true);
+    if (allowance.maxResponseBytes > manifest.limits.maxHookResponseBytes) throw new Error(`${allowance.operation} maxResponseBytes exceeds the runtime limit`);
+  }
+  if (!Array.isArray(manifest.resourceSlots) || manifest.resourceSlots.length > MAX_AGENT_RESOURCE_SLOTS) throw new Error('agent resource slots are invalid');
+  const slotIds = new Set<string>();
+  for (const slot of manifest.resourceSlots) {
+    assertExactKeys(slot as unknown as Record<string, unknown>, ['slotId', 'kind', 'label', 'required'], 'agent resource slot');
+    if (!isKebabIdentifier(slot.slotId) || slot.slotId.length > 64 || slot.kind !== 'xmtp-contact' || typeof slot.required !== 'boolean') throw new Error('agent resource slot is invalid');
+    if (!slot.label || utf8ByteLength(slot.label) > 128) throw new Error('agent resource slot label is invalid');
+    if (slotIds.has(slot.slotId)) throw new Error(`duplicate agent resource slot: ${slot.slotId}`);
+    slotIds.add(slot.slotId);
+  }
+  for (const allowance of capabilities) {
+    if (allowance.operation !== 'xmtp.send' && allowance.operation !== 'xmtp.receive') continue;
+    for (const slotId of allowance.constraints.resourceSlots) {
+      if (!slotIds.has(slotId)) throw new Error(`${allowance.operation} references unknown resource slot: ${slotId}`);
+    }
+  }
+  if (utf8ByteLength(canonicalJson(manifest)) > MAX_AGENT_MANIFEST_BYTES) throw new Error('agent manifest exceeds maximum size');
 }
 
 export function assertResourceLimits(limits: AgentResourceLimits): void {
+  assertExactKeys(limits as unknown as Record<string, unknown>, ['memoryBytes', 'stackBytes', 'wallTimeMs', 'maxPendingJobs', 'maxHookConcurrency', 'maxHookResponseBytes', 'maxEventQueue', 'maxEventConcurrency', 'maxEventBytes'], 'agent resource limits');
   const integers = Object.values(limits).filter((value): value is number => value !== undefined);
   if (integers.some((value) => !Number.isSafeInteger(value) || value <= 0)) throw new Error('resource limits must be positive integers');
   if (limits.memoryBytes > 256 * 1024 * 1024) throw new Error('agent memory limit exceeds maximum');
+  if (limits.stackBytes > 16 * 1024 * 1024) throw new Error('agent stack limit exceeds maximum');
   if (limits.wallTimeMs > 60 * 60_000) throw new Error('agent wall-time limit exceeds maximum');
+  if (limits.maxPendingJobs > 4096) throw new Error('pending-job limit exceeds maximum');
   if (limits.maxHookConcurrency > 32) throw new Error('hook concurrency exceeds maximum');
+  if (limits.maxHookResponseBytes > MAX_HOOK_ARGUMENT_BYTES) throw new Error('hook response limit exceeds maximum');
   if ((limits.maxEventConcurrency ?? 1) > 32) throw new Error('event concurrency exceeds maximum');
   if ((limits.maxEventQueue ?? 1) > 4096) throw new Error('event queue exceeds maximum');
+  if ((limits.maxEventBytes ?? 1) > 64 * 1024) throw new Error('event byte limit exceeds maximum');
+}
+
+export function assertResourceLimitsSubset(next: AgentResourceLimits, requested: AgentResourceLimits): void {
+  assertResourceLimits(next);
+  for (const key of Object.keys(requested) as Array<keyof AgentResourceLimits>) {
+    const nextValue = next[key];
+    const requestedValue = requested[key];
+    if ((requestedValue === undefined && nextValue !== undefined) || (requestedValue !== undefined && (nextValue === undefined || nextValue > requestedValue))) {
+      throw new Error(`installation expands resource limit ${key}`);
+    }
+  }
+}
+
+export function assertCapabilityAllowance(allowance: CapabilityAllowance, requireGrantable = false): void {
+  if (!allowance || typeof allowance !== 'object') throw new Error('capability allowance is invalid');
+  if (typeof allowance.operation !== 'string') throw new Error('capability operation is invalid');
+  if (!Number.isSafeInteger(allowance.maxCalls) || allowance.maxCalls <= 0) throw new Error(`${allowance.operation} maxCalls must be positive`);
+  if (!Number.isSafeInteger(allowance.maxResponseBytes) || allowance.maxResponseBytes <= 0) throw new Error(`${allowance.operation} maxResponseBytes must be positive`);
+  if (requireGrantable && !isGrantableCapability(allowance.operation)) throw new Error(`${allowance.operation} policy broker is not implemented`);
+  assertExactKeys(allowance as unknown as Record<string, unknown>, allowance.operation === 'clock.now' ? ['operation', 'maxCalls', 'maxResponseBytes'] : ['operation', 'maxCalls', 'maxResponseBytes', 'constraints'], `${allowance.operation} allowance`);
+  const prefixes = allowance.operation.startsWith('state.') ? (allowance.constraints as { keyPrefixes?: unknown } | undefined)?.keyPrefixes : undefined;
+  if (allowance.operation.startsWith('state.')) assertStringSet(prefixes, `${allowance.operation} keyPrefixes`, 128);
+  if (allowance.operation === 'state.put' || allowance.operation === 'state.compareAndSet') {
+    assertBoundedPositive(allowance.constraints.maxValueBytes, 64 * 1024, `${allowance.operation} maxValueBytes`);
+  }
+  if (allowance.operation === 'log.emit') assertBoundedPositive(allowance.constraints.maxEntryBytes, 16 * 1024, 'log.emit maxEntryBytes');
+  if (allowance.operation === 'clock.now' && allowance.constraints !== undefined) throw new Error('clock.now does not accept constraints');
+  if (allowance.operation === 'random.bytes') assertBoundedPositive(allowance.constraints.maxBytes, 256, 'random.bytes maxBytes');
+  if (allowance.operation === 'xmtp.send' || allowance.operation === 'xmtp.receive') {
+    assertStringSet(allowance.constraints.resourceSlots, `${allowance.operation} resourceSlots`, 64);
+    if (allowance.operation === 'xmtp.send') assertBoundedPositive(allowance.constraints.maxMessageBytes, 64 * 1024, 'xmtp.send maxMessageBytes');
+  }
+  const constraintKeys: Partial<Record<GrantableCapabilityOperation, string[]>> = {
+    'state.get': ['keyPrefixes'],
+    'state.put': ['keyPrefixes', 'maxValueBytes'],
+    'state.compareAndSet': ['keyPrefixes', 'maxValueBytes'],
+    'log.emit': ['maxEntryBytes'],
+    'random.bytes': ['maxBytes'],
+    'xmtp.send': ['resourceSlots', 'maxMessageBytes'],
+    'xmtp.receive': ['resourceSlots'],
+  };
+  const allowedConstraints = constraintKeys[allowance.operation as GrantableCapabilityOperation];
+  if (allowedConstraints) assertExactKeys(allowance.constraints as Record<string, unknown>, allowedConstraints, `${allowance.operation} constraints`);
+}
+
+export function assertInstallationPolicy(
+  manifest: AgentArtifactManifest,
+  installation: AgentInstallationPolicy,
+  network: MosaicNetwork,
+): void {
+  assertArtifactManifest(manifest);
+  assertExactKeys(installation as unknown as Record<string, unknown>, ['v', 'revision', 'enabled', 'packageName', 'artifactDigest', 'capabilities', 'resources', 'limits'], 'agent installation');
+  if (installation.v !== 2 || !Number.isSafeInteger(installation.revision) || installation.revision < 1) throw new Error('invalid installation revision');
+  if (typeof installation.enabled !== 'boolean') throw new Error('invalid installation enabled state');
+  if (installation.packageName !== manifest.packageName) throw new Error('installation package name mismatch');
+  assertDigestHex(installation.artifactDigest, 'artifactDigest');
+  if (!Array.isArray(installation.capabilities) || !Array.isArray(installation.resources)) throw new Error('invalid installation');
+  const requested = new Map([...manifest.capabilities.required, ...manifest.capabilities.optional].map((item) => [item.operation, item]));
+  const granted = new Map<CapabilityOperation, CapabilityAllowance>();
+  for (const allowance of installation.capabilities) {
+    assertCapabilityAllowance(allowance, true);
+    if (granted.has(allowance.operation)) throw new Error(`duplicate installation capability: ${allowance.operation}`);
+    const request = requested.get(allowance.operation);
+    if (!request || allowance.maxCalls > request.maxCalls || allowance.maxResponseBytes > request.maxResponseBytes) throw new Error(`installation expands ${allowance.operation}`);
+    if (canonicalJson(allowance.constraints ?? {}) !== canonicalJson(request.constraints ?? {})) throw new Error(`installation changes ${allowance.operation} constraints`);
+    granted.set(allowance.operation, allowance);
+  }
+  for (const required of manifest.capabilities.required) if (!granted.has(required.operation)) throw new Error(`missing required capability: ${required.operation}`);
+  const slots = new Map(manifest.resourceSlots.map((slot) => [slot.slotId, slot]));
+  const resources = new Set<string>();
+  for (const resource of installation.resources) {
+    assertExactKeys(resource as unknown as Record<string, unknown>, ['kind', 'resourceId', 'label', 'peerAddress', 'environment'], 'XMTP resource');
+    const slot = slots.get(resource.resourceId);
+    if (!slot || resource.kind !== slot.kind) throw new Error(`resource does not match a declared slot: ${resource.resourceId}`);
+    if (resources.has(resource.resourceId)) throw new Error(`duplicate installation resource: ${resource.resourceId}`);
+    if (!resource.label || utf8ByteLength(resource.label) > 128 || !resource.peerAddress || utf8ByteLength(resource.peerAddress) > 512) throw new Error(`invalid XMTP resource: ${resource.resourceId}`);
+    if (resource.environment !== (network === 'testnet' ? 'dev' : 'production')) throw new Error(`XMTP resource environment mismatch: ${resource.resourceId}`);
+    resources.add(resource.resourceId);
+  }
+  for (const slot of manifest.resourceSlots) if (slot.required && !resources.has(slot.slotId)) throw new Error(`missing required resource: ${slot.slotId}`);
+  assertResourceLimitsSubset(installation.limits, manifest.limits);
 }
 
 export function assertCapabilitySubset(next: CapabilityAllowance[], previous: CapabilityAllowance[]): void {
@@ -382,4 +536,52 @@ export function assertCapabilitySubset(next: CapabilityAllowance[], previous: Ca
       throw new Error(`lease renewal changes ${item.operation} constraints`);
     }
   }
+}
+
+export function isGrantableCapability(operation: CapabilityOperation): operation is GrantableCapabilityOperation {
+  return [
+    'state.get', 'state.put', 'state.compareAndSet', 'log.emit', 'clock.now', 'random.bytes', 'xmtp.send', 'xmtp.receive',
+  ].includes(operation);
+}
+
+export function isKebabIdentifier(value: string): boolean {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
+}
+
+export function isSemver(value: string): boolean {
+  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+}
+
+export function isRuntimeCompatible(minimum: string, runtime: string): boolean {
+  if (!isSemver(minimum) || !isSemver(runtime)) return false;
+  const parse = (value: string) => value.split(/[+-]/, 1)[0]!.split('.').map(Number);
+  const [minimumMajor, minimumMinor, minimumPatch] = parse(minimum);
+  const [runtimeMajor, runtimeMinor, runtimePatch] = parse(runtime);
+  return runtimeMajor === minimumMajor && (
+    runtimeMinor! > minimumMinor! || (runtimeMinor === minimumMinor && runtimePatch! >= minimumPatch!)
+  );
+}
+
+export function assertCanonicalAgentSource(source: string): void {
+  if (!source || utf8ByteLength(source) > MAX_AGENT_SOURCE_BYTES) throw new Error('agent source exceeds maximum size');
+  if (source.includes('\r') || /[\u0000-\u0009\u000b-\u001f]/.test(source)) throw new Error('agent source contains noncanonical control characters');
+}
+
+function assertExactKeys(record: Record<string, unknown>, allowed: string[], label: string): void {
+  const permitted = new Set(allowed);
+  const unknown = Object.keys(record).find((key) => !permitted.has(key));
+  if (unknown) throw new Error(`${label} contains unknown field: ${unknown}`);
+}
+
+function assertBoundedPositive(value: unknown, maximum: number, label: string): void {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0 || Number(value) > maximum) throw new Error(`${label} is invalid`);
+}
+
+function assertStringSet(value: unknown, label: string, maximum: number): asserts value is string[] {
+  if (!Array.isArray(value) || value.length > maximum || value.some((item) => typeof item !== 'string' || item.length < 1 || item.length > 128)) throw new Error(`${label} is invalid`);
+  if (new Set(value).size !== value.length) throw new Error(`${label} contains duplicates`);
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
