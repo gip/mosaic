@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import AgentAddressCards from '../components/AgentAddresses';
 import ChainSettingsModal from '../components/ChainSettingsModal';
+import VaultDataModal from '../components/VaultDataModal';
 import Banner from '../components/ui/Banner';
 import StatusDot from '../components/ui/StatusDot';
 import { useSession } from '../contexts/SessionContext';
@@ -22,6 +23,7 @@ export default function VaultsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [chainModalZone, setChainModalZone] = useState<string | null>(null);
+  const [dataModalZone, setDataModalZone] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
   const isOpen = (vault: VaultState) => expanded[vault.zone] ?? (activeVault?.zone === vault.zone);
@@ -29,6 +31,7 @@ export default function VaultsPage() {
 
   // Resolved from the list so the modal reflects toggles as soon as state updates.
   const chainModalVault = vaults.find(({ zone }) => zone === chainModalZone) ?? null;
+  const dataModalVault = vaults.find(({ zone }) => zone === dataModalZone) ?? null;
 
   async function exportBackup(vault: VaultState) {
     if (!session) return;
@@ -90,6 +93,15 @@ export default function VaultsPage() {
                         </button>
                       </div>
                       <div className="vault-actions">
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          disabled={vault.status === 'locked'}
+                          title={vault.status === 'locked' ? 'Unlock this vault to view its stored data.' : undefined}
+                          onClick={() => setDataModalZone(vault.zone)}
+                        >
+                          View stored data
+                        </button>
                         <button type="button" className="btn-sm" onClick={() => void exportBackup(vault)}>Export latest encrypted backup</button>
                       </div>
                       {vault.status === 'locked' && <p className="tile-note">This vault is locked on this device. Unlock it from the vault switcher in the top bar.</p>}
@@ -126,6 +138,20 @@ export default function VaultsPage() {
           }))}
           onToggle={(key, enabled) => setVaultChainEnabled(chainModalVault.zone, key, enabled)}
           onClose={() => setChainModalZone(null)}
+        />
+      )}
+      {session && dataModalVault && (
+        <VaultDataModal
+          token={session.token}
+          vaultRef={{
+            rootChain: session.chain,
+            rootAddress: session.address,
+            zone: dataModalVault.zone,
+            network: session.network,
+          }}
+          commitment={dataModalVault.commitment}
+          registeredAddresses={dataModalVault.derivedAddresses ?? dataModalVault.addresses}
+          onClose={() => setDataModalZone(null)}
         />
       )}
     </section>

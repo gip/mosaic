@@ -201,8 +201,34 @@
 .vault-badges { justify-content: flex-end; flex: none; }
 .vault-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-3);
+}
+.vault-data-meta { margin: 0 0 var(--sp-2); }
+.vault-data-section + .vault-data-section {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+.vault-data-section h4 {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-base);
+}
+.vault-data-section > .tile-note { margin: 0 0 var(--sp-3); }
+.vault-data-json {
+  max-height: 32vh;
+  margin: 0;
+  padding: var(--sp-3);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-inset);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  tab-size: 2;
 }
 .active-vault-badge {
   padding: 2px 7px;
