@@ -127,12 +127,15 @@ export class MultiAgentSupervisor {
     };
     instance.renewalTimer.unref();
     this.agents.set(agentId, instance);
-    try { await xmtp.start((message) => this.enqueue(instance, message)); }
-    catch (error) { await this.stop(agentId); throw error; }
     void sandbox.run(execution.source, execution.grant)
       .catch(() => {})
       .finally(() => { if (this.agents.get(agentId) === instance) void this.stop(agentId); });
-    return this.status(agentId)!;
+    try {
+      await xmtp.start((message) => this.enqueue(instance, message));
+      const status = this.status(agentId);
+      if (!status) throw new Error(`agent stopped during startup: ${agentId}`);
+      return status;
+    } catch (error) { await this.stop(agentId); throw error; }
   }
 
   async stop(agentId: string): Promise<void> {

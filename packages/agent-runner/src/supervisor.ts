@@ -46,6 +46,12 @@ interface SandboxExit {
   error?: string;
 }
 
+interface EventReadyWaiter {
+  resolve(): void;
+  reject(error: Error): void;
+  timeout: NodeJS.Timeout;
+}
+
 export interface SupervisorResult {
   exitCode: number;
   logs: Array<Record<string, unknown>>;
@@ -129,31 +135,41 @@ export class AgentSupervisor {
   private killTimer?: NodeJS.Timeout;
   private killChildRef?: () => void;
   private wallDeadline = 0;
+  private runActive = false;
+  private stopRequested = false;
+  private readonly readyEventTypes = new Set<AgentRuntimeEvent['eventType']>();
+  private readonly eventReadyWaiters = new Map<AgentRuntimeEvent['eventType'], Set<EventReadyWaiter>>();
   private readonly eventAcks = new Map<string, { resolve(): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
 
   constructor(private readonly authorizer?: CapabilityAuthorizer, private readonly external?: SupervisorExternalHooks) {}
 
   async run(source: string, grant: ExecutionGrant): Promise<SupervisorResult> {
     if (sha256Hex(source) !== grant.sourceDigest) throw new Error('refusing source that does not match grant');
-    const workdir = await mkdtemp(join(tmpdir(), 'mosaic-agent-'));
-    const sandboxPath = fileURLToPath(new URL('./sandbox.js', import.meta.url));
-    const child = spawn(process.execPath, [sandboxPath], {
-      cwd: workdir,
-      env: sandboxEnvironment(),
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      detached: false,
-    });
-    this.child = child;
-    const killChild = () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    };
-    // The runner may be stopped (shutdown IPC → process.exit) mid-run; the
-    // sandbox must never outlive its supervisor.
-    process.once('exit', killChild);
-    this.killChildRef = killChild;
-    this.wallDeadline = Date.now() + grant.limits.wallTimeMs;
-    this.scheduleKill(Date.parse(grant.expiresAt) + grant.maxOfflineMs);
+    if (this.runActive) throw new Error('agent supervisor is already running');
+    this.runActive = true;
+    this.stopRequested = false;
+    this.readyEventTypes.clear();
+    let workdir: string | undefined;
+    let killChild: (() => void) | undefined;
     try {
+      workdir = await mkdtemp(join(tmpdir(), 'mosaic-agent-'));
+      const sandboxPath = fileURLToPath(new URL('./sandbox.js', import.meta.url));
+      const child = spawn(process.execPath, [sandboxPath], {
+        cwd: workdir,
+        env: sandboxEnvironment(),
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        detached: false,
+      });
+      this.child = child;
+      killChild = () => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      };
+      // The runner may be stopped (shutdown IPC → process.exit) mid-run; the
+      // sandbox must never outlive its supervisor.
+      process.once('exit', killChild);
+      this.killChildRef = killChild;
+      this.wallDeadline = Date.now() + grant.limits.wallTimeMs;
+      this.scheduleKill(Date.parse(grant.expiresAt) + grant.maxOfflineMs);
       const completion = this.monitor(child, grant);
       child.send({
         type: 'start',
@@ -164,18 +180,25 @@ export class AgentSupervisor {
         grantId: grant.grantId,
         xmtpAddress: grant.xmtpAddress,
       } satisfies SandboxStart);
+      if (this.stopRequested) child.send({ type: 'stop' });
       const exitCode = await completion;
       return { exitCode, logs: structuredClone(this.logs), auditDigest: this.auditHead };
     } finally {
       clearTimeout(this.killTimer);
       this.killTimer = undefined;
       this.killChildRef = undefined;
-      process.off('exit', killChild);
-      killChild();
+      if (killChild) {
+        process.off('exit', killChild);
+        killChild();
+      }
       this.child = undefined;
+      this.rejectEventReadyWaiters(new Error('agent stopped'));
+      this.readyEventTypes.clear();
       for (const pending of this.eventAcks.values()) { clearTimeout(pending.timeout); pending.reject(new Error('agent stopped')); }
       this.eventAcks.clear();
-      await rm(workdir, { recursive: true, force: true });
+      this.stopRequested = false;
+      this.runActive = false;
+      if (workdir) await rm(workdir, { recursive: true, force: true });
     }
   }
 
@@ -196,16 +219,22 @@ export class AgentSupervisor {
   }
 
   async deliverEvent(event: AgentRuntimeEvent, timeoutMs = 10_000): Promise<void> {
+    if (!this.runActive) throw new Error('agent sandbox is not running');
+    const startedAt = Date.now();
+    await this.waitForEventReady(event.eventType, timeoutMs);
     const child = this.child;
     if (!child?.connected) throw new Error('agent sandbox is not running');
+    const acknowledgementTimeoutMs = Math.max(1, timeoutMs - (Date.now() - startedAt));
     return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => { this.eventAcks.delete(event.eventId); reject(new Error('agent event acknowledgement timed out')); }, timeoutMs);
+      const timeout = setTimeout(() => { this.eventAcks.delete(event.eventId); reject(new Error('agent event acknowledgement timed out')); }, acknowledgementTimeoutMs);
       this.eventAcks.set(event.eventId, { resolve, reject, timeout });
       child.send(event);
     });
   }
 
   stop(): void {
+    if (!this.runActive) return;
+    this.stopRequested = true;
     const child = this.child;
     if (!child?.connected) return;
     child.send({ type: 'stop' });
@@ -228,6 +257,10 @@ export class AgentSupervisor {
         if (!isRecord(message) || typeof message.type !== 'string') return;
         if (message.type === 'complete' || message.type === 'failed') {
           terminal = message as unknown as SandboxExit;
+          return;
+        }
+        if (message.type === 'event-ready' && isRuntimeEventType(message.eventType)) {
+          this.markEventReady(message.eventType);
           return;
         }
         if (message.type === 'event-ack' && typeof message.eventId === 'string') {
@@ -257,6 +290,46 @@ export class AgentSupervisor {
         else reject(new Error(terminal?.error ?? `agent sandbox exited with ${signal ?? code ?? 'unknown status'}`));
       });
     });
+  }
+
+  private waitForEventReady(eventType: AgentRuntimeEvent['eventType'], timeoutMs: number): Promise<void> {
+    if (this.readyEventTypes.has(eventType)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const waiter: EventReadyWaiter = {
+        resolve,
+        reject,
+        timeout: setTimeout(() => {
+          const waiters = this.eventReadyWaiters.get(eventType);
+          waiters?.delete(waiter);
+          if (waiters?.size === 0) this.eventReadyWaiters.delete(eventType);
+          reject(new Error(`agent is not ready for ${eventType} events`));
+        }, timeoutMs),
+      };
+      const waiters = this.eventReadyWaiters.get(eventType) ?? new Set();
+      waiters.add(waiter);
+      this.eventReadyWaiters.set(eventType, waiters);
+    });
+  }
+
+  private markEventReady(eventType: AgentRuntimeEvent['eventType']): void {
+    this.readyEventTypes.add(eventType);
+    const waiters = this.eventReadyWaiters.get(eventType);
+    if (!waiters) return;
+    this.eventReadyWaiters.delete(eventType);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.resolve();
+    }
+  }
+
+  private rejectEventReadyWaiters(error: Error): void {
+    for (const waiters of this.eventReadyWaiters.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timeout);
+        waiter.reject(error);
+      }
+    }
+    this.eventReadyWaiters.clear();
   }
 
   /**
@@ -409,6 +482,10 @@ function stateKey(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isRuntimeEventType(value: unknown): value is AgentRuntimeEvent['eventType'] {
+  return value === 'xmtp.message' || value === 'websocket.message' || value === 'runtime.stopping';
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {

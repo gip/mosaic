@@ -94,20 +94,28 @@ await mosaic.runtime.waitUntilStopped();
 `;
   const supervisor = new AgentSupervisor();
   const authorization = grant(source, {
+    limits: { ...grant(source).limits, wallTimeMs: 10_000 },
     capabilities: [
       { operation: 'xmtp.receive', maxCalls: 2, maxResponseBytes: 4096 },
       { operation: 'log.emit', maxCalls: 10, maxResponseBytes: 4096 },
     ],
   });
   const completion = supervisor.run(source, authorization);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  await supervisor.deliverEvent({
-    protocol: AGENT_CONTROL_PROTOCOL, type: 'runtime-event', agentId: 'test', grantId: 'grant-test',
-    eventId: 'event-1', eventType: 'xmtp.message', resourceId: 'frank', messageId: 'message-1',
-    sentAt: new Date().toISOString(), payload: { resourceId: 'frank', text: 'hello' },
-  });
-  supervisor.stop();
-  const result = await completion;
+  void completion.catch(() => {});
+  let result;
+  try {
+    await supervisor.deliverEvent({
+      protocol: AGENT_CONTROL_PROTOCOL, type: 'runtime-event', agentId: 'test', grantId: 'grant-test',
+      eventId: 'event-1', eventType: 'xmtp.message', resourceId: 'frank', messageId: 'message-1',
+      sentAt: new Date().toISOString(), payload: { resourceId: 'frank', text: 'hello' },
+    });
+    supervisor.stop();
+    result = await completion;
+  } catch (error) {
+    supervisor.stop();
+    await completion.catch(() => {});
+    throw error;
+  }
   assert.deepEqual(result.logs, [{ message: 'received', resourceId: 'frank', text: 'hello' }]);
 });
 

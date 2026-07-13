@@ -28,6 +28,7 @@ interface PendingHook {
 const pending = new Map<string, PendingHook>();
 let dispatchRuntimeEvent: ((message: Record<string, unknown>) => Promise<void>) | undefined;
 let stopRuntime: (() => void) | undefined;
+let stopRequested = false;
 let activeBinding: { agentId: string; grantId: string } | undefined;
 
 process.on('message', (message: unknown) => {
@@ -38,7 +39,10 @@ process.on('message', (message: unknown) => {
     message.type === 'runtime-event' && activeBinding &&
     message.agentId === activeBinding.agentId && message.grantId === activeBinding.grantId
   ) void dispatchRuntimeEvent?.(message);
-  if (message.type === 'stop') stopRuntime?.();
+  if (message.type === 'stop') {
+    stopRequested = true;
+    stopRuntime?.();
+  }
 });
 
 async function run(message: StartMessage): Promise<void> {
@@ -60,6 +64,7 @@ async function run(message: StartMessage): Promise<void> {
         vm.unwrapResult(result).dispose();
         void vm.runtime.executePendingJobs(message.limits.maxPendingJobs);
       };
+      if (stopRequested) stopRuntime();
       dispatchRuntimeEvent = async (event) => {
         const eventId = typeof event.eventId === 'string' ? event.eventId : '';
         try {
@@ -75,6 +80,7 @@ async function run(message: StartMessage): Promise<void> {
           process.send?.({ type: 'event-ack', agentId: message.agentId, grantId: message.grantId, eventId, ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       };
+      process.send?.({ type: 'event-ready', eventType: 'runtime.stopping' });
       const evaluation = vm.evalCode(`(async () => {\n${message.source}\n})()`, 'agent.mjs');
       const promiseHandle = vm.unwrapResult(evaluation);
       const settled = await vm.resolvePromise(promiseHandle);
@@ -86,6 +92,7 @@ async function run(message: StartMessage): Promise<void> {
       pending.clear();
       dispatchRuntimeEvent = undefined;
       stopRuntime = undefined;
+      stopRequested = false;
       activeBinding = undefined;
       vm.dispose();
       runtime.dispose();
@@ -113,6 +120,11 @@ function installHookBridge(vm: QuickJSContext, allowed: Set<string>, maxPendingJ
   });
   vm.setProp(vm.global, '__mosaicHook', hook);
   hook.dispose();
+  const eventReady = vm.newFunction('__mosaicEventReady', (eventTypeHandle) => {
+    process.send?.({ type: 'event-ready', eventType: vm.getString(eventTypeHandle) });
+  });
+  vm.setProp(vm.global, '__mosaicEventReady', eventReady);
+  eventReady.dispose();
 }
 
 function settleHook(message: HookResultMessage): void {
@@ -144,6 +156,7 @@ const BOOTSTRAP = (xmtpAddress: string) => `
 (() => {
   'use strict';
   const call = async (operation, args = {}) => JSON.parse(await __mosaicHook(operation, JSON.stringify(args)));
+  const eventReady = __mosaicEventReady;
   let xmtpHandler = null;
   let websocketHandler = null;
   let stopResolve;
@@ -163,7 +176,9 @@ const BOOTSTRAP = (xmtpAddress: string) => `
       onMessage: async (handler) => {
         if (typeof handler !== 'function') throw new TypeError('XMTP message handler must be a function');
         xmtpHandler = handler;
-        return call('xmtp.receive');
+        const registration = await call('xmtp.receive');
+        eventReady('xmtp.message');
+        return registration;
       },
     }),
     websocket: Object.freeze({
@@ -172,7 +187,9 @@ const BOOTSTRAP = (xmtpAddress: string) => `
       onMessage: async (handler) => {
         if (typeof handler !== 'function') throw new TypeError('WebSocket message handler must be a function');
         websocketHandler = handler;
-        return call('websocket.receive');
+        const registration = await call('websocket.receive');
+        eventReady('websocket.message');
+        return registration;
       },
       close: (resourceId) => call('websocket.close', { resourceId }),
     }),
@@ -183,6 +200,7 @@ const BOOTSTRAP = (xmtpAddress: string) => `
   };
   Object.defineProperty(globalThis, 'mosaic', { value: Object.freeze(api), writable: false, configurable: false });
   Object.defineProperty(globalThis, '__mosaicHook', { value: __mosaicHook, writable: false, configurable: false });
+  delete globalThis.__mosaicEventReady;
   Object.defineProperty(globalThis, '__mosaicRuntimeEvent', { value: async (raw) => {
     const event = JSON.parse(raw);
     if (event.eventType === 'xmtp.message' && xmtpHandler) await xmtpHandler(event.payload);
