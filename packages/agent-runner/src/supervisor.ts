@@ -59,6 +59,18 @@ export interface CapabilityAuthorizer {
   record(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): Promise<void>;
 }
 
+/**
+ * Electron utility processes report Electron Helper as process.execPath. The
+ * nested sandbox still needs a Node process, so opt only that child into
+ * Electron's Node mode without exposing the Runner's ambient environment.
+ */
+export function sandboxEnvironment(electronVersion: string | undefined = process.versions.electron): NodeJS.ProcessEnv {
+  return {
+    NODE_NO_WARNINGS: '1',
+    ...(electronVersion ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+  };
+}
+
 export function verifyGuardianEnvelope(message: SignedAgentControlMessage, expectedAddress: string): void {
   if (message.protocol !== AGENT_CONTROL_PROTOCOL) throw new Error('unsupported Guardian envelope');
   const signature = new Uint8Array(Buffer.from(message.signatureB64, 'base64'));
@@ -113,7 +125,7 @@ export class AgentSupervisor {
     const sandboxPath = fileURLToPath(new URL('./sandbox.js', import.meta.url));
     const child = spawn(process.execPath, [sandboxPath], {
       cwd: workdir,
-      env: { NODE_NO_WARNINGS: '1' },
+      env: sandboxEnvironment(),
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       detached: false,
     });

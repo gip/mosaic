@@ -73,6 +73,7 @@ export type UnlockCredential =
 
 export interface GuardianApi {
   zoneList(token: string): Promise<ZoneItem[]>;
+  zoneGet?(token: string, zone: string): Promise<{ blobs?: { kind: string; version: number }[] }>;
   zoneAddressCreate(token: string, zone: string, chain: 'evm', name: string): Promise<ZoneAddress>;
   zoneTestnetUnlock(token: string, zone: string): Promise<{ commitment: string; zoneRootSecretB64: string }>;
   zoneUnlocked(token: string, zone: string): Promise<void>;
@@ -131,6 +132,9 @@ export class McpGuardianApi implements GuardianApi {
   }
 
   zoneList(token: string): Promise<ZoneItem[]> { return this.call('zone_list', { token }); }
+  zoneGet(token: string, zone: string): Promise<{ blobs?: { kind: string; version: number }[] }> {
+    return this.call('zone_get', { token, zone });
+  }
   zoneAddressCreate(token: string, zone: string, chain: 'evm', name: string): Promise<ZoneAddress> {
     return this.call('zone_address_create', { token, zone, chain, name });
   }
@@ -193,9 +197,13 @@ function signEip191(privateKey: Uint8Array, message: string): Uint8Array {
 }
 
 export function assertXmtpSignatureText(message: string): void {
+  const recognizedHeader =
+    message.startsWith('XMTP : Authenticate to inbox\n') ||
+    message.startsWith('XMTP : Create Identity\n');
+  const recognizedFooter = /\n\nFor more info: https:\/\/xmtp\.org\/signatures\/?$/.test(message);
   if (
     message.length === 0 || message.length > 16 * 1024 || message.includes('\0') ||
-    !message.startsWith('XMTP : ') || !message.includes('For more info: https://xmtp.org/signatures/')
+    !recognizedHeader || !recognizedFooter
   ) {
     throw new Error('refusing non-XMTP signature text');
   }
@@ -293,6 +301,12 @@ export class GuardianService {
     ref: ZoneRef,
     secret: Uint8Array,
   ): Promise<{ data: VaultDataV1; version: number }> {
+    if (this.api.zoneGet) {
+      const metadata = await this.api.zoneGet(session.token, ref.zone);
+      if (!metadata.blobs?.some(({ kind }) => kind === 'data')) {
+        return { data: { v: 1 }, version: 0 };
+      }
+    }
     let blob: BlobResult;
     try {
       blob = await this.api.blobGet(session.token, ref.zone, 'data');

@@ -4,7 +4,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { AGENT_CONTROL_PROTOCOL, contractDigest, controlSignatureText, sha256Hex } from '@mosaic/local-runtime';
-import { AgentSupervisor, verifyExecutionAuthorization } from '../dist/supervisor.js';
+import { AgentSupervisor, sandboxEnvironment, verifyExecutionAuthorization } from '../dist/supervisor.js';
 
 function grant(source, overrides = {}) {
   return {
@@ -45,6 +45,15 @@ function grant(source, overrides = {}) {
     ...overrides,
   };
 }
+
+test('sandbox enables Node mode only when hosted by Electron', () => {
+  assert.deepEqual(sandboxEnvironment(undefined), { NODE_NO_WARNINGS: '1' });
+  assert.deepEqual(sandboxEnvironment('43.1.0'), {
+    NODE_NO_WARNINGS: '1',
+    ELECTRON_RUN_AS_NODE: '1',
+  });
+  assert.equal('PATH' in sandboxEnvironment('43.1.0'), false);
+});
 
 test('QuickJS agent sees only typed hooks and namespaced state', async () => {
   const source = `

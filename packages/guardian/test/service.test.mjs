@@ -24,8 +24,16 @@ class FakeApi {
   zones = [zone('mosaic-agent-guardian'), zone('mosaic-agent-runner')];
   blobs = new Map();
   creates = [];
+  blobGets = 0;
 
   async zoneList() { return this.zones; }
+  async zoneGet(_token, zoneName) {
+    const prefix = `${zoneName}:`;
+    const blobs = [...this.blobs.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, value]) => ({ kind: value.kind, version: value.version }));
+    return { exists: true, blobs };
+  }
   async zoneAddressCreate(_token, zoneName, chain, name) {
     const item = this.zones.find(({ zone }) => zone === zoneName);
     const index = Math.max(...item.addresses.filter((entry) => entry.chain === chain).map(({ index }) => index)) + 1;
@@ -37,6 +45,7 @@ class FakeApi {
   async zoneTestnetUnlock() { return { commitment, zoneRootSecretB64: Buffer.from(secret).toString('base64') }; }
   async zoneUnlocked() {}
   async blobGet(_token, zoneName, kind) {
+    this.blobGets += 1;
     const value = this.blobs.get(`${zoneName}:${kind}`);
     if (!value) { const error = new Error(`no ${kind} blob`); error.code = 'NOT_FOUND'; throw error; }
     return value;
@@ -64,6 +73,7 @@ test('Guardian unlocks default vaults, allocates named addresses, and encrypts l
   assert.equal(guardianIdentity.index, 1);
 
   assert.equal(api.creates.filter(({ name }) => name === 'guardian').length, 1);
+  assert.equal(api.blobGets, 0, 'a missing optional data blob should be detected from vault metadata');
 
   const stored = api.blobs.get('mosaic-agent-guardian:data');
   const data = openVaultData(secret, {
@@ -163,7 +173,14 @@ test('a data version conflict rebases the update onto the latest server data', a
 
 test('remote signer accepts only XMTP identity challenge text', () => {
   assert.doesNotThrow(() => assertXmtpSignatureText('XMTP : Create Identity\nabc\n\nFor more info: https://xmtp.org/signatures/'));
+  assert.doesNotThrow(() => assertXmtpSignatureText(
+    'XMTP : Authenticate to inbox\n\nInbox ID: abc\nCurrent time: 2026-07-13T01:32:36Z\n\n- Create inbox\n  (Owner: 0xabc)\n\nFor more info: https://xmtp.org/signatures',
+  ));
   assert.throws(() => assertXmtpSignatureText('send 1 ETH to attacker'), /non-XMTP/);
+  assert.throws(
+    () => assertXmtpSignatureText('XMTP : Authenticate to inbox\nmalicious text'),
+    /non-XMTP/,
+  );
 });
 
 test('MCP API reconnects once when the server has forgotten its transport session', async () => {

@@ -10,7 +10,13 @@ import StatusDot, { type StatusTone } from '../components/ui/StatusDot';
 import Banner from '../components/ui/Banner';
 import Field from '../components/ui/Field';
 import XamanPromptModal, { type XamanPrompt } from '../components/XamanPromptModal';
+import { api, type ZoneListItem } from '../api';
+import {
+  CEREMONY_STEP_LABELS,
+  runZoneCeremony,
+} from '../zone/ceremony';
 import { directCeremonySigner, xamanCeremonySigner } from '../zone/signers';
+import { createTestnetVault } from '../zone/testnet';
 import { useSettings } from '../contexts/SettingsContext';
 import { useSession } from '../contexts/SessionContext';
 import { useVaults } from '../contexts/VaultContext';
@@ -34,17 +40,22 @@ function bytesToBase64(value: Uint8Array): string {
   return btoa(binary);
 }
 
+function hasGuardianAddress(vault: ZoneListItem): boolean {
+  return vault.addresses.some(({ chain, name }) => chain === 'evm' && name === 'guardian');
+}
+
 export default function AgentsPage() {
   const bridge = localBridge();
   const { session, signZoneMessage } = useSession();
   const { network } = useSettings();
-  const { vaults } = useVaults();
+  const { registerCreated, refreshVaults } = useVaults();
   const [services, setServices] = useState<ServiceStatus[]>([]);
   const [guardianVault, setGuardianVault] = useState(DEFAULT_GUARDIAN_VAULT);
   const [runnerVault, setRunnerVault] = useState(DEFAULT_RUNNER_VAULT);
   const [passphrase, setPassphrase] = useState('');
   const [busy, setBusy] = useState<'guardian' | 'runner' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [xamanPrompt, setXamanPrompt] = useState<XamanPrompt | null>(null);
 
@@ -75,30 +86,63 @@ export default function AgentsPage() {
     if (session.network !== network) { setError('Wait for the wallet session to switch to the selected network.'); return; }
     setBusy('guardian');
     setError(null);
+    setProgress(null);
     try {
-      const vault = vaults.find(({ zone }) => zone === guardianVault);
+      const vaultName = guardianVault.trim();
+      const ref: ZoneRef = {
+        rootChain: session.chain,
+        rootAddress: session.address,
+        zone: vaultName,
+        network: session.network,
+      };
+      const signer = () => session.chain === 'xrpl'
+        ? xamanCeremonySigner({
+            token: session.token,
+            ref,
+            onPayload: (refs, label) => setXamanPrompt({ refs, label }),
+            onPayloadDone: () => setXamanPrompt(null),
+          })
+        : directCeremonySigner(ref, signZoneMessage);
+
+      // Read from the server here rather than relying on the context snapshot:
+      // the Agents page may be opened while the initial vault list is loading.
+      let vault = (await api.zoneList(session.token)).find(({ zone }) => zone === vaultName);
+      if (!vault) {
+        if (session.network === 'testnet') {
+          setProgress('Creating default Testnet Guardian vault…');
+          await createTestnetVault(session.token, ref);
+        } else {
+          if (passphrase.length < 10) {
+            throw new Error('Enter a backup passphrase of at least 10 characters to create the Guardian vault.');
+          }
+          await runZoneCeremony({
+            token: session.token,
+            ref,
+            passphrase,
+            signer: signer(),
+            onStep: (step) => setProgress(CEREMONY_STEP_LABELS[step]),
+          });
+        }
+        setProgress('Creating the guardian EVM address…');
+        await api.zoneAddressCreate(session.token, vaultName, 'evm', 'guardian');
+        await registerCreated(vaultName);
+        vault = (await api.zoneList(session.token)).find(({ zone }) => zone === vaultName);
+        if (!vault) throw new Error(`Guardian vault was created but could not be loaded: ${vaultName}`);
+      } else if (!hasGuardianAddress(vault)) {
+        setProgress('Creating the guardian EVM address…');
+        await api.zoneAddressCreate(session.token, vaultName, 'evm', 'guardian');
+        await refreshVaults();
+      }
+
+      setProgress('Unlocking Mosaic Guardian…');
       let signatureB64: string | undefined;
       if (vault && vault.mode !== 'testnet-server' && !passphrase) {
-        const ref: ZoneRef = {
-          rootChain: session.chain,
-          rootAddress: session.address,
-          zone: guardianVault,
-          network: session.network,
-        };
         // XRPL backup-wrap goes through a server-created Xaman payload;
         // EVM/Stellar sign the canonical message directly.
-        const signer = session.chain === 'xrpl'
-          ? xamanCeremonySigner({
-              token: session.token,
-              ref,
-              onPayload: (refs, label) => setXamanPrompt({ refs, label }),
-              onPayloadDone: () => setXamanPrompt(null),
-            })
-          : directCeremonySigner(ref, signZoneMessage);
-        signatureB64 = bytesToBase64(await signer.signBackupWrap());
+        signatureB64 = bytesToBase64(await signer().signBackupWrap());
       }
       await bridge.startGuardian({
-        vault: guardianVault,
+        vault: vaultName,
         network: session.network,
         session,
         ...(signatureB64 ? { signatureB64 } : {}),
@@ -107,7 +151,10 @@ export default function AgentsPage() {
       setPassphrase('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setBusy(null); }
+    } finally {
+      setBusy(null);
+      setProgress(null);
+    }
   }
 
   async function startRunner() {
@@ -157,9 +204,10 @@ export default function AgentsPage() {
           <Field id="guardian-vault" label="Guardian vault">
             <input id="guardian-vault" value={guardianVault} maxLength={64} onChange={(event) => setGuardianVault(event.target.value)} />
           </Field>
-          <Field id="guardian-passphrase" label="Backup passphrase (fallback)">
-            <input id="guardian-passphrase" type="password" value={passphrase} autoComplete="off" onChange={(event) => setPassphrase(event.target.value)} placeholder="Use only if wallet-signature unlock is unavailable" />
+          <Field id="guardian-passphrase" label="Backup passphrase (creation or unlock fallback)">
+            <input id="guardian-passphrase" type="password" value={passphrase} autoComplete="off" onChange={(event) => setPassphrase(event.target.value)} placeholder="Required to create a Mainnet Guardian vault" />
           </Field>
+          {progress && <p className="tile-note">{progress}</p>}
           {guardian?.detail && <p className="tile-note">{guardian.detail}</p>}
           {guardian?.xmtpAddress && (
             <div className="local-service-row">
