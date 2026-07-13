@@ -5,7 +5,7 @@ import Banner from './ui/Banner';
 import Field from './ui/Field';
 import ProgressSteps from './ui/ProgressSteps';
 import AgentAddressCards from './AgentAddresses';
-import { type XamanRefs } from '../api';
+import XamanPromptModal, { type XamanPrompt } from './XamanPromptModal';
 import { errorMessage } from '../errors';
 import { useSession } from '../contexts/SessionContext';
 import { useVaults, type VaultState } from '../contexts/VaultContext';
@@ -19,7 +19,6 @@ import { directCeremonySigner, xamanCeremonySigner } from '../zone/signers';
 import { unlockWithPassphrase, unlockWithSignature } from '../zone/unlock';
 import { createTestnetVault, unlockServerTestnetVault, unlockTestnetVault } from '../zone/testnet';
 
-interface XamanPrompt { refs: XamanRefs; label: string }
 const VAULT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function useVaultSigner(ref: ZoneRef | null, setPrompt: (prompt: XamanPrompt | null) => void): () => CeremonySigner {
@@ -36,17 +35,6 @@ function useVaultSigner(ref: ZoneRef | null, setPrompt: (prompt: XamanPrompt | n
     }
     return directCeremonySigner(ref, signZoneMessage);
   }, [ref, session, setPrompt, signZoneMessage]);
-}
-
-function XamanPromptModal({ prompt, onClose }: { prompt: XamanPrompt; onClose: () => void }) {
-  return (
-    <Modal title={prompt.label} onClose={onClose}>
-      <div className="qr-box qr-large"><img src={prompt.refs.qrPng} alt="Xaman signing QR code" /></div>
-      <p className="tile-note">
-        Scan with Xaman, or <a href={prompt.refs.deeplink} target="_blank" rel="noreferrer">open the request directly</a>.
-      </p>
-    </Modal>
-  );
 }
 
 export default function ZonePanel({ onCreate }: { onCreate: () => void }) {

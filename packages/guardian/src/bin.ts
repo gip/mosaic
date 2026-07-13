@@ -1,3 +1,5 @@
+import { createInterface } from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
 import {
   DEFAULT_GUARDIAN_VAULT,
   parseLocalCli,
@@ -46,8 +48,24 @@ if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
         throw error;
       }
     },
-    enrollRunner: async (params) => guardian.enrollRunner(params),
+    approveRunner: ({ runnerId }) => guardian.approveRunner(runnerId),
+    enrollRunner: async (params) => {
+      // The Electron UI approves via runner.approve before spawning; a
+      // CLI-started Guardian asks on its own terminal instead.
+      if (!guardian.isRunnerApproved(params.runnerId) && stdin.isTTY) {
+        const prompt = createInterface({ input: stdin, output: stdout });
+        try {
+          const answer = (await prompt.question(
+            `Approve agent runner "${params.runnerId}" (${params.environment}, ${params.network})? [y/N]: `,
+          )).trim().toLowerCase();
+          if (answer === 'y' || answer === 'yes') guardian.approveRunner(params.runnerId);
+        } finally { prompt.close(); }
+      }
+      return guardian.enrollRunner(params);
+    },
     issueGrant: async (params) => guardian.issueGrant(params),
+    authorizeCapability: (request) => guardian.authorizeCapability(request),
+    recordCapability: (request, result) => guardian.recordCapability(request, result),
   });
 }
 if (process.env.MOSAIC_SESSION_JSON) {

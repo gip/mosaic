@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   VAULT_DATA_MAX_PLAINTEXT_BYTES,
@@ -7,6 +8,10 @@ import {
   sealVaultData,
   vaultDataKey,
 } from '../dist/index.js';
+
+const vectors = JSON.parse(
+  readFileSync(new URL('../vectors/zone-vectors.json', import.meta.url), 'utf8'),
+);
 
 const secret = hexToBytes('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f');
 const ref = { rootChain: 'evm', rootAddress: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94', zone: 'mosaic-agent-runner', network: 'testnet' };
@@ -41,4 +46,15 @@ test('vault data rejects tampering and oversized JSON', () => {
 test('vault data key has a stable golden value and zone separation', () => {
   assert.equal(Buffer.from(vaultDataKey(secret, ref)).toString('hex'), 'a8867cf794acb04b5a1c23d4aec8df49d685acf30f6e75a6a794e37c7acf6bfa');
   assert.notDeepEqual(vaultDataKey(secret, ref), vaultDataKey(secret, { ...ref, zone: 'other' }));
+});
+
+test('golden vault-data vectors are frozen (release-blocking)', () => {
+  const vector = vectors.vaultData;
+  const vectorSecret = hexToBytes(vectors.zoneRootSecret);
+  assert.equal(Buffer.from(vaultDataKey(vectorSecret, vector.ref)).toString('hex'), vector.keyHex);
+  const opened = openVaultData(vectorSecret, vector.ref, {
+    header: vector.sealed.header,
+    ciphertext: new Uint8Array(Buffer.from(vector.sealed.ciphertextB64, 'base64')),
+  });
+  assert.deepEqual(opened, vector.plaintext);
 });

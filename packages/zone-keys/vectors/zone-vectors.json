@@ -291,5 +291,42 @@
         }
       }
     }
-  ]
+  ],
+  "vaultData": {
+    "domain": "MOSAIC_VAULT_DATA_V1",
+    "ref": {
+      "rootChain": "xrpl",
+      "rootAddress": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+      "zone": "top",
+      "network": "mainnet"
+    },
+    "keyHex": "b75e5476d717aa6d751500d210ba71d434de6a0996f32996cd107cfc6fc1db20",
+    "sealed": {
+      "header": {
+        "v": 1,
+        "schema": "mosaic-vault-data",
+        "alg": "xchacha20poly1305",
+        "nonce": "TfWTnXfJkAH15M7+x0JZV7+nfEA2p1Fx",
+        "revision": 3
+      },
+      "ciphertextB64": "bZrnoIGDdD/mm7T0DMuZqyBSX//rZ8eF3/GY1j6rWziRnvnREBjGj1cJ/oFE0vzGchy1pLOzsBQCzAmC7JTgOnZqSqu+Nz5BXOuxmzw3ds8IXAnAGEQDwwlYoF9jmpNiATXoDLhb0VBwd9gZ7rZ+INrhscmpXqVfShiQRIvREbWjVKhNC6NxprXWbfvsBRdh4iLpegru13fSwUfnGoLJGc2uga89Jw7pPDfBLmbqvpsds4hEkEKDuufO7Jf9uQ3mtX0znWQ1HuTnCZbBCuy6ShbhOGzKC6i8Mw/9Ck2Hil+6JCNkPkmqNMFnuqjvJoLQQRyjFlZRkCiIBn9vLY5xb2WKwDOWmEyReB9/AGND66dx"
+    },
+    "plaintext": {
+      "v": 1,
+      "identities": {
+        "guardian": {
+          "chain": "evm",
+          "addressName": "guardian",
+          "address": "0x397B641eE531B74df352e6a124ce8b3566964d78",
+          "index": 0
+        }
+      },
+      "connections": {
+        "guardian": {
+          "evmAddress": "0x397B641eE531B74df352e6a124ce8b3566964d78",
+          "xmtpEnvironment": "production"
+        }
+      }
+    }
+  }
 }

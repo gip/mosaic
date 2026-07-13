@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import type {
   AgentManifest,
   CapabilityAllowance,
+  CapabilityRequest,
+  CapabilityResult,
   ExecutionGrant,
   MosaicNetwork,
   RunnerCertificate,
@@ -17,7 +19,10 @@ const MAX_MESSAGE_BYTES = 128 * 1024;
 export interface GuardianControlRequest {
   id: string;
   token: string;
-  method: 'status' | 'shutdown' | 'session.attach' | 'guardian.start' | 'runner.enroll' | 'grant.issue';
+  method:
+    | 'status' | 'shutdown' | 'session.attach' | 'guardian.start'
+    | 'runner.approve' | 'runner.enroll' | 'grant.issue'
+    | 'capability.authorize' | 'capability.record';
   params?: Record<string, unknown>;
 }
 
@@ -34,7 +39,10 @@ export interface GuardianControlHandlers {
   shutdown(): Promise<void> | void;
   attachSession(session: LocalMcpSession): Promise<void> | void;
   startGuardian(params: { vault: string; network: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<{ evmAddress: string; xmtpAddress: string }>;
+  approveRunner(params: { runnerId: string }): Promise<void> | void;
   enrollRunner(params: { runnerId: string; runnerPublicKey: string; network: MosaicNetwork; environment: 'local' | 'remote' }): Promise<RunnerCertificate>;
+  authorizeCapability(request: CapabilityRequest): Promise<CapabilityResult | undefined> | CapabilityResult | undefined;
+  recordCapability(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): Promise<CapabilityResult> | CapabilityResult;
   issueGrant(params: {
     certificate: RunnerCertificate;
     manifest: AgentManifest;
@@ -174,6 +182,12 @@ export async function startGuardianControlServer(handlers: GuardianControlHandle
               });
               break;
             }
+            case 'runner.approve': {
+              const params = request.params ?? {};
+              if (typeof params.runnerId !== 'string') throw new Error('invalid runner.approve parameters');
+              result = await handlers.approveRunner({ runnerId: params.runnerId });
+              break;
+            }
             case 'runner.enroll': {
               const params = request.params ?? {};
               if (
@@ -206,6 +220,24 @@ export async function startGuardianControlServer(handlers: GuardianControlHandle
                 policyDigest: params.policyDigest,
                 capabilities: params.capabilities as CapabilityAllowance[],
               });
+              break;
+            }
+            case 'capability.authorize': {
+              const params = request.params ?? {};
+              if (typeof params.request !== 'object' || params.request === null) throw new Error('invalid capability.authorize parameters');
+              result = await handlers.authorizeCapability(params.request as unknown as CapabilityRequest);
+              break;
+            }
+            case 'capability.record': {
+              const params = request.params ?? {};
+              if (
+                typeof params.request !== 'object' || params.request === null ||
+                typeof params.result !== 'object' || params.result === null
+              ) throw new Error('invalid capability.record parameters');
+              result = await handlers.recordCapability(
+                params.request as unknown as CapabilityRequest,
+                params.result as unknown as Omit<CapabilityResult, 'auditEventDigest'>,
+              );
               break;
             }
             default: throw new Error('unknown control method');

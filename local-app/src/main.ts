@@ -76,10 +76,13 @@ function startService(name: ServiceName, packageName: string, args: string[] = [
 }
 
 async function waitForGuardianControl(): Promise<void> {
+  // Generous budget: a cold Guardian start loads the WalletConnect/MCP module
+  // graph before its control socket opens.
+  const deadline = Date.now() + 30_000;
   let lastError: unknown;
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try { await callGuardianControl<ServiceStatus>('status', undefined, 500); return; }
-    catch (error) { lastError = error; await new Promise((resolve) => setTimeout(resolve, 100)); }
+  while (Date.now() < deadline) {
+    try { await callGuardianControl<ServiceStatus>('status', undefined, 1_000); return; }
+    catch (error) { lastError = error; await new Promise((resolve) => setTimeout(resolve, 200)); }
   }
   throw lastError instanceof Error ? lastError : new Error('Mosaic Guardian control endpoint did not start');
 }
@@ -97,7 +100,13 @@ async function startGuardian(args: {
     await callGuardianControl<ServiceStatus>('status', undefined, 500);
   } catch {
     startService('mosaic-guardian', '@mosaic/guardian', [vault, '--network', network]);
-    await waitForGuardianControl();
+    try {
+      await waitForGuardianControl();
+    } catch (error) {
+      // Kill the half-started child so a retry is not wedged on "already running".
+      children.get('mosaic-guardian')?.kill();
+      throw error;
+    }
   }
   await callGuardianControl('session.attach', args.session as unknown as Record<string, unknown>);
   await callGuardianControl('guardian.start', {
@@ -116,8 +125,10 @@ async function startAgent(args: { vault?: string; network?: MosaicNetwork }): Pr
   const network = args.network ?? 'testnet';
   const guardian = await callGuardianControl<ServiceStatus>('status');
   if (guardian.phase !== 'running') throw new Error('Unlock Mosaic Guardian before starting an agent');
-  // The explicit UI start action is the local pairing approval. The Runner
+  // The explicit UI start action is the local pairing approval: register it
+  // with the Guardian so the Runner's enrollment is accepted. The Runner
   // creates its own device key and requests a signed, short-lived grant.
+  await callGuardianControl('runner.approve', { runnerId: `local:${vault}` });
   startService('agent-runner', '@mosaic/agent-runner', [vault, '--network', network]);
 }
 

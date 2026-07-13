@@ -2,6 +2,7 @@ import process from 'node:process';
 import type { MosaicNetwork, ServiceMessage, ServiceName } from './contracts.js';
 
 export * from './contracts.js';
+export * from './digest.js';
 
 type ParentPort = {
   on(event: 'message', listener: (event: { data: unknown }) => void): void;

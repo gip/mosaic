@@ -18,7 +18,7 @@ import {
   type RunnerCertificate,
   type ServiceStatus,
 } from '@mosaic/local-runtime';
-import { AgentSupervisor, verifyExecutionAuthorization } from './supervisor.js';
+import { AgentSupervisor, verifyExecutionAuthorization, type CapabilityAuthorizer } from './supervisor.js';
 
 const options = parseLocalCli(process.argv.slice(2), DEFAULT_RUNNER_VAULT);
 if (options.help) {
@@ -27,12 +27,19 @@ if (options.help) {
 }
 console.log(`Mosaic Agent Runner · agent ${options.vault} · ${options.network}`);
 
-if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
-  await startAuthorizedAgent();
-} else {
-  console.log('Waiting for Mosaic Guardian…');
-}
+// The service lifecycle comes up first so the ready message is sent and the
+// shutdown IPC handler exists while the agent is still executing; on shutdown
+// the supervisor's process-exit hook kills the sandbox child.
 runLocalService('agent-runner', { vault: options.vault, network: options.network });
+
+if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
+  startAuthorizedAgent().catch((error: unknown) => {
+    console.error(`Agent run failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+} else {
+  console.log('Guardian control disabled; runner is idle.');
+}
 
 async function startAuthorizedAgent(): Promise<void> {
   const status = await callGuardianControl<ServiceStatus>('status');
@@ -40,12 +47,14 @@ async function startAuthorizedAgent(): Promise<void> {
 
   const device = await loadOrCreateDeviceKey(options.vault);
   const runnerId = `local:${options.vault}`;
+  // Enrollment needs an explicit approval: the UI start action pre-approves,
+  // and a CLI-started Guardian prompts on its terminal (hence the long timeout).
   const certificate = await callGuardianControl<RunnerCertificate>('runner.enroll', {
     runnerId,
     runnerPublicKey: device.publicKeyB64,
     network: options.network,
     environment: 'local',
-  });
+  }, 120_000);
 
   const source = await loadSource();
   const capabilities: CapabilityAllowance[] = [
@@ -96,7 +105,18 @@ async function startAuthorizedAgent(): Promise<void> {
     throw new Error('Guardian grant digest mismatch');
   }
   console.log(`Authorized grant ${grant.grantId} from ${grant.guardianAddress}`);
-  const result = await new AgentSupervisor().run(source, grant);
+  const authorizer: CapabilityAuthorizer = {
+    async authorize(request) {
+      await callGuardianControl('capability.authorize', { request: request as unknown as Record<string, unknown> });
+    },
+    async record(request, result) {
+      await callGuardianControl('capability.record', {
+        request: request as unknown as Record<string, unknown>,
+        result: result as unknown as Record<string, unknown>,
+      });
+    },
+  };
+  const result = await new AgentSupervisor(authorizer).run(source, grant);
   console.log(`Agent completed · audit ${result.auditDigest} · ${result.logs.length} log event(s)`);
 }
 
@@ -131,8 +151,14 @@ async function loadOrCreateDeviceKey(agentId: string): Promise<DeviceKeyFile> {
     publicKeyB64: pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
     privateKeyB64: pair.privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'),
   };
-  await writeFile(path, `${canonicalJson(created)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-  return created;
+  try {
+    await writeFile(path, `${canonicalJson(created)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return created;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    // Another runner with the same agent ID won the race; use its key.
+    return JSON.parse(await readFile(path, 'utf8')) as DeviceKeyFile;
+  }
 }
 
 function signManifest(manifest: AgentManifest, privateKeyB64: string): AgentManifest {

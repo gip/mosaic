@@ -28,6 +28,8 @@ import {
   mosaicRuntimeDirectory,
   type AgentManifest,
   type CapabilityAllowance,
+  type CapabilityRequest,
+  type CapabilityResult,
   type ExecutionGrant,
   type MosaicNetwork,
   type RunnerCertificate,
@@ -210,6 +212,7 @@ function signerFor(address: string, signMessage: (message: string) => Promise<Ui
 export class GuardianService {
   private session?: GuardianSession;
   private readonly vaults = new Map<string, UnlockedVault>();
+  private readonly runnerApprovals = new Map<string, number>();
   private guardianIdentity?: UnlockedIdentity;
   private guardianClient?: Client<unknown>;
   private vaultCore?: VaultCore;
@@ -267,23 +270,52 @@ export class GuardianService {
     }
     if (secret.length !== 32) { secret.fill(0); throw new Error('vault secret must be 32 bytes'); }
 
-    let data: VaultDataV1 = { v: 1 };
-    let dataVersion = 0;
+    let data: VaultDataV1;
+    let dataVersion: number;
     try {
-      const blob = await this.api.blobGet(session.token, vault, 'data');
-      data = openVaultData(secret, ref, {
-        header: blob.header as unknown as VaultDataBlobHeader,
-        ciphertext: base64ToBytes(blob.ciphertextB64),
-      });
-      dataVersion = blob.version;
+      ({ data, version: dataVersion } = await this.fetchVaultData(session, ref, secret));
     } catch (error) {
-      if ((error as { code?: string }).code !== 'NOT_FOUND' && !String(error).includes('no data blob')) {
-        secret.fill(0);
-        throw error;
-      }
+      secret.fill(0);
+      throw error;
     }
     this.vaults.set(vault, { ref, item, secret, data, dataVersion, keys: new Map() });
     await this.api.zoneUnlocked(session.token, vault);
+  }
+
+  /**
+   * The mutable data blob holds no key material (spec §4.6), so an unreadable
+   * blob must never block unlock: fall back to fresh data but keep the server
+   * version so the next save overwrites the bad blob. Only transport failures
+   * propagate.
+   */
+  private async fetchVaultData(
+    session: GuardianSession,
+    ref: ZoneRef,
+    secret: Uint8Array,
+  ): Promise<{ data: VaultDataV1; version: number }> {
+    let blob: BlobResult;
+    try {
+      blob = await this.api.blobGet(session.token, ref.zone, 'data');
+    } catch (error) {
+      if ((error as { code?: string }).code === 'NOT_FOUND' || String(error).includes('no data blob')) {
+        return { data: { v: 1 }, version: 0 };
+      }
+      throw error;
+    }
+    try {
+      return {
+        data: openVaultData(secret, ref, {
+          header: blob.header as unknown as VaultDataBlobHeader,
+          ciphertext: base64ToBytes(blob.ciphertextB64),
+        }),
+        version: blob.version,
+      };
+    } catch (error) {
+      console.warn(
+        `vault ${ref.zone}: data blob v${blob.version} is unreadable, starting fresh (${error instanceof Error ? error.message : String(error)})`,
+      );
+      return { data: { v: 1 }, version: blob.version };
+    }
   }
 
   private requireVault(vault: string): UnlockedVault {
@@ -303,31 +335,48 @@ export class GuardianService {
     const derived = deriveEvmAgentKey(zoneSeed(unlocked.secret, unlocked.ref), address.index);
     unlocked.keys.get(name)?.fill(0);
     unlocked.keys.set(name, derived.privateKey.slice());
+    derived.privateKey.fill(0);
     const identity = { vault, name, index: address.index, address: derived.address };
-    unlocked.data = {
-      ...unlocked.data,
+    await this.saveData(unlocked, (data) => ({
+      ...data,
       identities: {
-        ...unlocked.data.identities,
+        ...data.identities,
         [name]: { chain: 'evm', addressName: name, address: derived.address, index: address.index },
       },
-    };
-    await this.saveData(unlocked);
+    }));
     return identity;
   }
 
-  private async saveData(unlocked: UnlockedVault): Promise<void> {
+  /**
+   * Compare-and-set save. In-memory state is committed only on success; on a
+   * version conflict (another Guardian instance wrote first) the update is
+   * rebased once onto the latest server data.
+   */
+  private async saveData(unlocked: UnlockedVault, update: (data: VaultDataV1) => VaultDataV1): Promise<void> {
     const session = this.requireSession(unlocked.ref.network);
-    const revision = unlocked.dataVersion + 1;
-    const sealed = sealVaultData(unlocked.secret, unlocked.ref, unlocked.data, revision);
-    const saved = await this.api.blobPut({
-      token: session.token,
-      zone: unlocked.ref.zone,
-      kind: 'data',
-      ciphertextB64: bytesToBase64(sealed.ciphertext),
-      header: sealed.header as unknown as Record<string, unknown>,
-      expectedVersion: unlocked.dataVersion,
-    });
-    unlocked.dataVersion = saved.version;
+    for (let attempt = 0; ; attempt++) {
+      const next = update(unlocked.data);
+      const sealed = sealVaultData(unlocked.secret, unlocked.ref, next, unlocked.dataVersion + 1);
+      try {
+        const saved = await this.api.blobPut({
+          token: session.token,
+          zone: unlocked.ref.zone,
+          kind: 'data',
+          ciphertextB64: bytesToBase64(sealed.ciphertext),
+          header: sealed.header as unknown as Record<string, unknown>,
+          expectedVersion: unlocked.dataVersion,
+        });
+        unlocked.data = next;
+        unlocked.dataVersion = saved.version;
+        return;
+      } catch (error) {
+        const conflict = (error as { code?: string }).code === 'CONFLICT' || /version conflict/i.test(String(error));
+        if (!conflict || attempt >= 1) throw error;
+        const latest = await this.fetchVaultData(session, unlocked.ref, unlocked.secret);
+        unlocked.data = latest.data;
+        unlocked.dataVersion = latest.version;
+      }
+    }
   }
 
   async startGuardian(vault: string, network: MosaicNetwork, credential?: UnlockCredential): Promise<UnlockedIdentity> {
@@ -369,8 +418,27 @@ export class GuardianService {
     this.guardianClient = client as Client<unknown>;
   }
 
+  /**
+   * Pairing approval (ADR 0001): enrollment must be preceded by an explicit
+   * approval — the UI start action or the Guardian terminal. Approvals are
+   * single-use and short-lived.
+   */
+  approveRunner(runnerId: string, ttlMs = 2 * 60_000): void {
+    if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(runnerId)) throw new Error('invalid runner ID');
+    this.runnerApprovals.set(runnerId, Date.now() + ttlMs);
+  }
+
+  isRunnerApproved(runnerId: string): boolean {
+    const until = this.runnerApprovals.get(runnerId);
+    return until !== undefined && until > Date.now();
+  }
+
   enrollRunner(params: { runnerId: string; runnerPublicKey: string; network: MosaicNetwork; environment: 'local' | 'remote' }): RunnerCertificate {
     if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    if (!this.isRunnerApproved(params.runnerId)) {
+      throw new Error(`runner ${params.runnerId} is not approved; start it from the Mosaic app or approve it in the Guardian terminal`);
+    }
+    this.runnerApprovals.delete(params.runnerId);
     return this.vaultCore.enrollRunner(params);
   }
 
@@ -385,6 +453,16 @@ export class GuardianService {
     return this.vaultCore.issueGrant(params);
   }
 
+  authorizeCapability(request: CapabilityRequest): CapabilityResult | undefined {
+    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    return this.vaultCore.authorizeCapability(request);
+  }
+
+  recordCapability(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): CapabilityResult {
+    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    return this.vaultCore.recordCapability(request, result);
+  }
+
   status(): { guardian?: UnlockedIdentity; unlockedVaults: string[] } {
     return { guardian: this.guardianIdentity, unlockedVaults: [...this.vaults.keys()] };
   }
@@ -396,6 +474,7 @@ export class GuardianService {
       vault.keys.clear();
     }
     this.vaults.clear();
+    this.runnerApprovals.clear();
     this.guardianIdentity = undefined;
     this.guardianClient = undefined;
     this.vaultCore = undefined;

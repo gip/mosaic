@@ -84,8 +84,15 @@ function settleHook(message: HookResultMessage): void {
   const hook = pending.get(message.id);
   if (!hook) return;
   pending.delete(message.id);
-  if (message.ok) hook.promise.resolve(hook.vm.newString(JSON.stringify(message.value ?? null)));
-  else hook.promise.reject(hook.vm.newError(message.error ?? 'hook failed'));
+  if (message.ok) {
+    const value = hook.vm.newString(JSON.stringify(message.value ?? null));
+    hook.promise.resolve(value);
+    value.dispose();
+  } else {
+    const error = hook.vm.newError(message.error ?? 'hook failed');
+    hook.promise.reject(error);
+    error.dispose();
+  }
   hook.promise.dispose();
 }
 

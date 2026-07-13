@@ -5,10 +5,12 @@ import {
   type ServiceStatus,
 } from '@mosaic/local-runtime/contracts';
 import { Bot, Copy, Play, ShieldCheck, Square } from 'lucide-react';
-import { backupWrapMessage, type ZoneRef } from '@mosaic/zone-keys';
+import type { ZoneRef } from '@mosaic/zone-keys';
 import StatusDot, { type StatusTone } from '../components/ui/StatusDot';
 import Banner from '../components/ui/Banner';
 import Field from '../components/ui/Field';
+import XamanPromptModal, { type XamanPrompt } from '../components/XamanPromptModal';
+import { directCeremonySigner, xamanCeremonySigner } from '../zone/signers';
 import { useSettings } from '../contexts/SettingsContext';
 import { useSession } from '../contexts/SessionContext';
 import { useVaults } from '../contexts/VaultContext';
@@ -44,6 +46,7 @@ export default function AgentsPage() {
   const [busy, setBusy] = useState<'guardian' | 'runner' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [xamanPrompt, setXamanPrompt] = useState<XamanPrompt | null>(null);
 
   useEffect(() => {
     if (!bridge) return;
@@ -82,8 +85,17 @@ export default function AgentsPage() {
           zone: guardianVault,
           network: session.network,
         };
-        const signed = await signZoneMessage(backupWrapMessage(ref));
-        signatureB64 = bytesToBase64(signed.signatureBytes);
+        // XRPL backup-wrap goes through a server-created Xaman payload;
+        // EVM/Stellar sign the canonical message directly.
+        const signer = session.chain === 'xrpl'
+          ? xamanCeremonySigner({
+              token: session.token,
+              ref,
+              onPayload: (refs, label) => setXamanPrompt({ refs, label }),
+              onPayloadDone: () => setXamanPrompt(null),
+            })
+          : directCeremonySigner(ref, signZoneMessage);
+        signatureB64 = bytesToBase64(await signer.signBackupWrap());
       }
       await bridge.startGuardian({
         vault: guardianVault,
@@ -197,6 +209,7 @@ export default function AgentsPage() {
           </div>
         ))}
       </div>
+      {xamanPrompt && <XamanPromptModal prompt={xamanPrompt} onClose={() => setXamanPrompt(null)} />}
     </section>
   );
 }

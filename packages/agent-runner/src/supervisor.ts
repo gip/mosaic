@@ -15,6 +15,9 @@ import {
   controlSignatureText,
   sha256Hex,
   type CapabilityAllowance,
+  type CapabilityOperation,
+  type CapabilityRequest,
+  type CapabilityResult,
   type ExecutionGrant,
   type RunnerCertificate,
   type SignedAgentControlMessage,
@@ -43,6 +46,17 @@ export interface SupervisorResult {
   exitCode: number;
   logs: Array<Record<string, unknown>>;
   auditDigest: string;
+}
+
+/**
+ * Guardian-side capability enforcement (Vault Core). When present, every hook
+ * is authorized before execution and recorded after it, so quotas and the
+ * audit chain are enforced by the Guardian rather than only by this
+ * (untrusted) Runner process.
+ */
+export interface CapabilityAuthorizer {
+  authorize(request: CapabilityRequest): Promise<void>;
+  record(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): Promise<void>;
 }
 
 export function verifyGuardianEnvelope(message: SignedAgentControlMessage, expectedAddress: string): void {
@@ -89,6 +103,9 @@ export class AgentSupervisor {
   private readonly logs: Array<Record<string, unknown>> = [];
   private auditHead = '0'.repeat(64);
   private sequence = 0;
+  private authorizeQueue: Promise<void> = Promise.resolve();
+
+  constructor(private readonly authorizer?: CapabilityAuthorizer) {}
 
   async run(source: string, grant: ExecutionGrant): Promise<SupervisorResult> {
     if (sha256Hex(source) !== grant.sourceDigest) throw new Error('refusing source that does not match grant');
@@ -100,10 +117,16 @@ export class AgentSupervisor {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       detached: false,
     });
+    const killChild = () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    };
+    // The runner may be stopped (shutdown IPC → process.exit) mid-run; the
+    // sandbox must never outlive its supervisor.
+    process.once('exit', killChild);
     const deadline = Math.min(Date.parse(grant.expiresAt) + grant.maxOfflineMs, Date.now() + grant.limits.wallTimeMs);
-    const timeout = setTimeout(() => child.kill('SIGKILL'), Math.max(1, deadline - Date.now()));
+    const timeout = setTimeout(killChild, Math.max(1, deadline - Date.now()));
     try {
-      const completion = this.monitor(child, grant.capabilities, grant.limits.maxHookConcurrency);
+      const completion = this.monitor(child, grant);
       child.send({
         type: 'start',
         source,
@@ -114,14 +137,20 @@ export class AgentSupervisor {
       return { exitCode, logs: structuredClone(this.logs), auditDigest: this.auditHead };
     } finally {
       clearTimeout(timeout);
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      process.off('exit', killChild);
+      killChild();
       await rm(workdir, { recursive: true, force: true });
     }
   }
 
-  private monitor(child: ChildProcess, capabilities: CapabilityAllowance[], maxConcurrency: number): Promise<number> {
-    const allowances = new Map(capabilities.map((item) => [item.operation, { ...item, calls: 0 }]));
+  private monitor(child: ChildProcess, grant: ExecutionGrant): Promise<number> {
+    const allowances = new Map(grant.capabilities.map((item) => [item.operation, { ...item, calls: 0 }]));
+    const maxConcurrency = grant.limits.maxHookConcurrency;
     let concurrent = 0;
+    const reply = (message: Record<string, unknown>): void => {
+      if (!child.connected) return;
+      try { child.send(message); } catch { /* sandbox exited between check and send */ }
+    };
     return new Promise((resolve, reject) => {
       let terminal: SandboxExit | undefined;
       child.stderr?.on('data', (chunk) => this.appendAudit('sandbox.stderr', { bytes: Buffer.byteLength(chunk) }));
@@ -134,13 +163,13 @@ export class AgentSupervisor {
         }
         if (message.type !== 'hook') return;
         if (concurrent >= maxConcurrency) {
-          child.send({ type: 'hook-result', id: message.id, ok: false, error: 'hook concurrency limit exceeded' });
+          reply({ type: 'hook-result', id: message.id, ok: false, error: 'hook concurrency limit exceeded' });
           return;
         }
         concurrent += 1;
-        void this.handleHook(message as unknown as HookRequest, allowances)
-          .then((value) => child.send({ type: 'hook-result', id: message.id, ok: true, value }))
-          .catch((error) => child.send({ type: 'hook-result', id: message.id, ok: false, error: error instanceof Error ? error.message : String(error) }))
+        void this.handleHook(message as unknown as HookRequest, allowances, grant)
+          .then((value) => reply({ type: 'hook-result', id: message.id, ok: true, value }))
+          .catch((error) => reply({ type: 'hook-result', id: message.id, ok: false, error: error instanceof Error ? error.message : String(error) }))
           .finally(() => { concurrent -= 1; });
       });
       child.on('exit', (code, signal) => {
@@ -150,12 +179,78 @@ export class AgentSupervisor {
     });
   }
 
-  private async handleHook(request: HookRequest, allowances: Map<string, CapabilityAllowance & { calls: number }>): Promise<unknown> {
+  /**
+   * Authorizations are serialized because Vault Core enforces a strict
+   * sequence; the local counter only advances once the Guardian accepts.
+   */
+  private authorizeSequenced(request: HookRequest, grant: ExecutionGrant): Promise<CapabilityRequest> {
+    const run = async (): Promise<CapabilityRequest> => {
+      const capabilityRequest: CapabilityRequest = {
+        protocol: AGENT_CONTROL_PROTOCOL,
+        kind: 'capability-request',
+        grantId: grant.grantId,
+        runnerId: grant.runnerId,
+        sequence: this.sequence + 1,
+        requestId: request.id,
+        operation: request.operation as CapabilityOperation,
+        arguments: request.arguments,
+        deadline: new Date(Date.now() + 10_000).toISOString(),
+        idempotencyKey: request.id,
+      };
+      await this.authorizer!.authorize(capabilityRequest);
+      this.sequence = capabilityRequest.sequence;
+      return capabilityRequest;
+    };
+    const result = this.authorizeQueue.then(run);
+    this.authorizeQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private recordSafe(capabilityRequest: CapabilityRequest, ok: boolean, responseBytes: number): Promise<void> {
+    return this.authorizer!.record(capabilityRequest, {
+      protocol: AGENT_CONTROL_PROTOCOL,
+      kind: 'capability-result',
+      grantId: capabilityRequest.grantId,
+      requestId: capabilityRequest.requestId,
+      sequence: capabilityRequest.sequence,
+      ok,
+      usage: { calls: 1, responseBytes },
+    }).catch((error) => {
+      this.appendAudit('capability.record-failed', {
+        requestId: capabilityRequest.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  private async handleHook(
+    request: HookRequest,
+    allowances: Map<string, CapabilityAllowance & { calls: number }>,
+    grant: ExecutionGrant,
+  ): Promise<unknown> {
     const allowance = allowances.get(request.operation);
     if (!allowance) throw new Error(`hook ${request.operation} is not granted`);
     allowance.calls += 1;
     if (allowance.calls > allowance.maxCalls) throw new Error(`hook ${request.operation} quota exceeded`);
-    this.sequence += 1;
+    let capabilityRequest: CapabilityRequest | undefined;
+    if (this.authorizer) capabilityRequest = await this.authorizeSequenced(request, grant);
+    else this.sequence += 1;
+    let value: unknown;
+    let bytes: number;
+    try {
+      value = this.executeHook(request);
+      bytes = Buffer.byteLength(JSON.stringify(value));
+      if (bytes > allowance.maxResponseBytes) throw new Error(`hook ${request.operation} response too large`);
+    } catch (error) {
+      if (capabilityRequest) await this.recordSafe(capabilityRequest, false, 0);
+      throw error;
+    }
+    this.appendAudit('hook.result', { sequence: this.sequence, requestId: request.id, operation: request.operation, responseBytes: bytes });
+    if (capabilityRequest) await this.recordSafe(capabilityRequest, true, bytes);
+    return value;
+  }
+
+  private executeHook(request: HookRequest): unknown {
     let value: unknown;
     switch (request.operation) {
       case 'log.emit': {
@@ -199,9 +294,6 @@ export class AgentSupervisor {
       }
       default: throw new Error(`hook broker ${request.operation} is not implemented`);
     }
-    const bytes = Buffer.byteLength(JSON.stringify(value));
-    if (bytes > allowance.maxResponseBytes) throw new Error(`hook ${request.operation} response too large`);
-    this.appendAudit('hook.result', { sequence: this.sequence, requestId: request.id, operation: request.operation, responseBytes: bytes });
     return value;
   }
 

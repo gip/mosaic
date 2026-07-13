@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 export type ServiceName = 'mosaic-guardian' | 'agent-runner';
 export type ServicePhase =
   | 'starting' | 'awaiting-wallet' | 'authenticating' | 'unlocking' | 'connecting'
@@ -202,14 +200,6 @@ export function canonicalJson(value: unknown): string {
   if (typeof value !== 'object') throw new Error(`canonical JSON rejects ${typeof value}`);
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
-}
-
-export function sha256Hex(value: string | Uint8Array): DigestHex {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-export function contractDigest(value: unknown): DigestHex {
-  return sha256Hex(canonicalJson(value));
 }
 
 export function unsignedControlMessage(message: SignedAgentControlMessage): Omit<SignedAgentControlMessage, 'signatureB64'> {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import test from 'node:test';
 import { AGENT_CONTROL_PROTOCOL, AGENT_RUNTIME_VERSION, contractDigest, manifestSignatureText, sha256Hex } from '@mosaic/local-runtime';
-import { openVaultData, zoneRootCommitmentHex } from '@mosaic/zone-keys';
+import { openVaultData, sealVaultData, zoneRootCommitmentHex } from '@mosaic/zone-keys';
 import { GuardianService, McpGuardianApi, assertXmtpSignatureText } from '../dist/index.js';
 
 const rootAddress = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
@@ -80,7 +80,17 @@ test('Guardian binds a signed manifest to a Runner certificate and execution gra
   const identity = await guardian.startGuardian('mosaic-agent-guardian', 'testnet');
   const pair = generateKeyPairSync('ed25519');
   const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+  assert.throws(
+    () => guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, network: 'testnet', environment: 'local' }),
+    /not approved/,
+  );
+  guardian.approveRunner('local:test');
   const certificate = guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, network: 'testnet', environment: 'local' });
+  // Approvals are single-use.
+  assert.throws(
+    () => guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, network: 'testnet', environment: 'local' }),
+    /not approved/,
+  );
   assert.equal(certificate.guardianAddress, identity.address);
   assert.equal('dbEncryptionKeyB64' in certificate, false);
 
@@ -104,6 +114,51 @@ test('Guardian binds a signed manifest to a Runner certificate and execution gra
     certificate, manifest: forbidden, configDigest: contractDigest({}), policyDigest: contractDigest({}),
     capabilities: [{ operation: 'xmtp.send', maxCalls: 1, maxResponseBytes: 1024, constraints: { recipients: ['0x1'] } }],
   }), /policy broker is not implemented/);
+});
+
+test('an unreadable data blob degrades to fresh data and is overwritten, never blocking unlock', async () => {
+  process.env.MOSAIC_XMTP_DISABLED = '1';
+  const api = new FakeApi();
+  api.blobs.set('mosaic-agent-guardian:data', {
+    kind: 'data', version: 5, commitment,
+    header: { v: 1, schema: 'mosaic-vault-data', alg: 'xchacha20poly1305', nonce: Buffer.alloc(24, 9).toString('base64'), revision: 5 },
+    ciphertextB64: Buffer.alloc(64, 1).toString('base64'),
+  });
+  const guardian = new GuardianService(api);
+  guardian.attachSession(session());
+  const identity = await guardian.startGuardian('mosaic-agent-guardian', 'testnet');
+  const stored = api.blobs.get('mosaic-agent-guardian:data');
+  assert.equal(stored.version, 6, 'save must overwrite the corrupt blob at the server version');
+  const data = openVaultData(secret, {
+    rootChain: 'evm', rootAddress, zone: 'mosaic-agent-guardian', network: 'testnet',
+  }, { header: stored.header, ciphertext: new Uint8Array(Buffer.from(stored.ciphertextB64, 'base64')) });
+  assert.equal(data.identities.guardian.address, identity.address);
+});
+
+test('a data version conflict rebases the update onto the latest server data', async () => {
+  process.env.MOSAIC_XMTP_DISABLED = '1';
+  const api = new FakeApi();
+  const guardian = new GuardianService(api);
+  guardian.attachSession(session());
+  await guardian.startGuardian('mosaic-agent-guardian', 'testnet');
+  const ref = { rootChain: 'evm', rootAddress, zone: 'mosaic-agent-guardian', network: 'testnet' };
+
+  // Another Guardian instance writes a newer blob behind this one's back.
+  const version = api.blobs.get('mosaic-agent-guardian:data').version + 1;
+  const external = sealVaultData(secret, ref, { v: 1, extensions: { external: true } }, version);
+  api.blobs.set('mosaic-agent-guardian:data', {
+    kind: 'data', version, commitment,
+    header: external.header, ciphertextB64: Buffer.from(external.ciphertext).toString('base64'),
+  });
+
+  const second = await guardian.ensureIdentity('mosaic-agent-guardian', 'second');
+  const stored = api.blobs.get('mosaic-agent-guardian:data');
+  assert.equal(stored.version, version + 1);
+  const data = openVaultData(secret, ref, {
+    header: stored.header, ciphertext: new Uint8Array(Buffer.from(stored.ciphertextB64, 'base64')),
+  });
+  assert.equal(data.extensions.external, true, 'rebase keeps the concurrent write');
+  assert.equal(data.identities.second.address, second.address);
 });
 
 test('remote signer accepts only XMTP identity challenge text', () => {

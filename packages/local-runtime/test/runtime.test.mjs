@@ -26,6 +26,8 @@ test('authenticated Guardian control socket serves Runner enrollment and grants'
   const previous = process.env.MOSAIC_RUNTIME_DIR;
   process.env.MOSAIC_RUNTIME_DIR = await mkdtemp(join(tmpdir(), 'mosaic-control-test-'));
   const status = { name: 'mosaic-guardian', phase: 'running', pid: process.pid, vault: 'guardian', network: 'testnet' };
+  const approved = [];
+  const authorized = [];
   let server;
   try {
     try {
@@ -34,6 +36,7 @@ test('authenticated Guardian control socket serves Runner enrollment and grants'
         shutdown: () => {},
         attachSession: () => {},
         startGuardian: async () => ({ evmAddress: '0x1', xmtpAddress: '0x1' }),
+        approveRunner: ({ runnerId }) => { approved.push(runnerId); },
         enrollRunner: async ({ runnerId, runnerPublicKey, network, environment }) => ({
           protocol: AGENT_CONTROL_PROTOCOL, kind: 'runner-certificate', runnerId, runnerPublicKey,
           guardianId: 'guardian', guardianAddress: '0x1', network, environment,
@@ -41,17 +44,28 @@ test('authenticated Guardian control socket serves Runner enrollment and grants'
           revocationId: 'revoke-1', signatureB64: 'AQID',
         }),
         issueGrant: async () => ({ grantId: 'grant-1' }),
+        authorizeCapability: (request) => { authorized.push(request.requestId); return undefined; },
+        recordCapability: (request, result) => ({ ...result, auditEventDigest: 'a'.repeat(64) }),
       });
     } catch (error) {
       if (error?.code === 'EPERM') { t.skip('sandbox does not permit Unix-domain listeners'); return; }
       throw error;
     }
     assert.deepEqual(await callGuardianControl('status'), status);
+    await callGuardianControl('runner.approve', { runnerId: 'runner' });
+    assert.deepEqual(approved, ['runner']);
     const certificate = await callGuardianControl('runner.enroll', {
       runnerId: 'runner', runnerPublicKey: 'public-key', network: 'testnet', environment: 'local',
     });
     assert.equal(certificate.runnerId, 'runner');
     assert.equal('dbEncryptionKeyB64' in certificate, false);
+    assert.equal(await callGuardianControl('capability.authorize', { request: { requestId: 'req-1' } }), undefined);
+    assert.deepEqual(authorized, ['req-1']);
+    const recorded = await callGuardianControl('capability.record', {
+      request: { requestId: 'req-1' },
+      result: { ok: true, usage: { calls: 1, responseBytes: 2 } },
+    });
+    assert.equal(recorded.auditEventDigest, 'a'.repeat(64));
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     if (previous === undefined) delete process.env.MOSAIC_RUNTIME_DIR;
