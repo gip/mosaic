@@ -20,7 +20,13 @@ Mosaic separates agent custody from agent execution into four boundaries:
 
 No process that has loaded a zone secret or derived transaction key may fork or
 spawn agent code. The Runner never receives a zone secret, derived transaction
-key, Guardian identity key, XMTP database key, or generic signing oracle.
+key, Guardian identity key, or generic signing oracle. The one exception is the
+agent's dedicated XMTP messaging credentials (`xmtp-owner`, `xmtp-database`;
+custody `supervisor-session`): they are generated for the agent, never derived
+from the zone secret, cannot move funds, and are delivered to the Runner only
+inside short-lived sealed key leases so it can operate the agent's XMTP
+endpoint. A compromised Runner can therefore impersonate the agent *on XMTP*
+(messaging) but can never sign transactions or recover zone key material.
 
 ## Authorization model
 
@@ -49,8 +55,12 @@ attestation/TEE mode.
 The first implementation grants only namespaced state, structured logging,
 clock, and random hooks. LLM, XMTP, WebSocket, scheduling, and transaction
 operations remain default-deny until each has an external policy broker. Strict
-XMTP recipient enforcement requires Guardian-brokered XMTP; a hostile Runner
-must not receive an authorized agent XMTP installation.
+XMTP recipient enforcement requires Guardian-brokered XMTP; until that broker
+exists the Runner operates the agent's XMTP installation under leased
+`supervisor-session` credentials, so recipient allow-lists are enforced only by
+the (untrusted) Runner and the messaging identity is exposed to Runner
+compromise. Moving XMTP custody behind the Guardian removes that exposure
+without changing wire contracts.
 
 ## Platform posture
 

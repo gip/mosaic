@@ -38,8 +38,18 @@ async function handle(raw: unknown): Promise<void> {
     let result: unknown;
     switch (message.type) {
       case 'supervisor.start': {
-        if (supervisor) { result = { running: true }; break; }
-        if (typeof message.pairingCredential !== 'string') throw new Error('missing pairing credential');
+        if (typeof message.pairingCredential !== 'string') {
+          if (supervisor) { result = { running: true }; break; }
+          throw new Error('missing pairing credential');
+        }
+        if (supervisor) {
+          // A fresh pairing credential means the Guardian restarted; the old
+          // session credential and certificate died with it.
+          await supervisor.stopAll();
+          supervisor = undefined;
+          control?.close();
+          control = undefined;
+        }
         const pair = generateKeyPairSync('ed25519');
         const runnerId = 'local-supervisor';
         control = new GuardianControlClient(message.pairingCredential);

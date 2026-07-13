@@ -161,6 +161,7 @@ export default function AgentsPage() {
   async function startRunner() {
     if (!bridge) return;
     if (!session) { setError('Log in with the root wallet that owns the agent vault first.'); return; }
+    if (session.network !== network) { setError('Wait for the wallet session to switch to the selected network.'); return; }
     setBusy('runner');
     setError(null);
     try {
@@ -180,7 +181,7 @@ export default function AgentsPage() {
         signatureB64 = bytesToBase64(await signer.signBackupWrap());
       }
       await bridge.agentStart({
-        agentId, network,
+        agentId, network: session.network,
         ...(signatureB64 ? { signatureB64 } : {}),
         ...(agentPassphrase ? { passphrase: agentPassphrase } : {}),
       });

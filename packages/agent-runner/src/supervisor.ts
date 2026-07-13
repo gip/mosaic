@@ -126,6 +126,9 @@ export class AgentSupervisor {
   private sequence = 0;
   private authorizeQueue: Promise<void> = Promise.resolve();
   private child?: ChildProcess;
+  private killTimer?: NodeJS.Timeout;
+  private killChildRef?: () => void;
+  private wallDeadline = 0;
   private readonly eventAcks = new Map<string, { resolve(): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
 
   constructor(private readonly authorizer?: CapabilityAuthorizer, private readonly external?: SupervisorExternalHooks) {}
@@ -147,8 +150,9 @@ export class AgentSupervisor {
     // The runner may be stopped (shutdown IPC → process.exit) mid-run; the
     // sandbox must never outlive its supervisor.
     process.once('exit', killChild);
-    const deadline = Math.min(Date.parse(grant.expiresAt) + grant.maxOfflineMs, Date.now() + grant.limits.wallTimeMs);
-    const timeout = setTimeout(killChild, Math.max(1, deadline - Date.now()));
+    this.killChildRef = killChild;
+    this.wallDeadline = Date.now() + grant.limits.wallTimeMs;
+    this.scheduleKill(Date.parse(grant.expiresAt) + grant.maxOfflineMs);
     try {
       const completion = this.monitor(child, grant);
       child.send({
@@ -163,7 +167,9 @@ export class AgentSupervisor {
       const exitCode = await completion;
       return { exitCode, logs: structuredClone(this.logs), auditDigest: this.auditHead };
     } finally {
-      clearTimeout(timeout);
+      clearTimeout(this.killTimer);
+      this.killTimer = undefined;
+      this.killChildRef = undefined;
       process.off('exit', killChild);
       killChild();
       this.child = undefined;
@@ -171,6 +177,22 @@ export class AgentSupervisor {
       this.eventAcks.clear();
       await rm(workdir, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * A verified lease renewal moves the sandbox kill deadline to the renewed
+   * lease expiry (plus offline grace), never past the wall-time cap. Without
+   * this the deadline stays pinned to the initial grant's short TTL.
+   */
+  extendLease(expiresAt: string, maxOfflineMs: number): void {
+    this.scheduleKill(Date.parse(expiresAt) + maxOfflineMs);
+  }
+
+  private scheduleKill(leaseDeadline: number): void {
+    if (!this.killChildRef) return;
+    const deadline = Math.min(leaseDeadline, this.wallDeadline);
+    clearTimeout(this.killTimer);
+    this.killTimer = setTimeout(this.killChildRef, Math.max(1, deadline - Date.now()));
   }
 
   async deliverEvent(event: AgentRuntimeEvent, timeoutMs = 10_000): Promise<void> {

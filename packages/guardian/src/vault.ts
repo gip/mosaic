@@ -168,7 +168,10 @@ export class VaultCore {
     if (!allowance) throw new Error(`capability ${request.operation} is not granted`);
     const calls = state.calls.get(request.operation) ?? 0;
     if (calls >= allowance.maxCalls) throw new Error(`capability ${request.operation} quota exhausted`);
-    state.calls.set(request.operation, calls + 1);
+    // transaction.propose is consumed by the proposal itself (rejectTransaction,
+    // which is reachable without a prior authorize); counting it here as well
+    // would burn two quota units per proposal.
+    if (request.operation !== 'transaction.propose') state.calls.set(request.operation, calls + 1);
     state.nextSequence += 1;
     return undefined;
   }
@@ -261,6 +264,16 @@ export class VaultCore {
     const state = this.requireGrant(grantId);
     if (state.grant.agentId !== agentId) throw new Error('grant agent binding mismatch');
     return structuredClone(state.grant);
+  }
+
+  /**
+   * Binding check for stop/lock paths. Unlike getGrant it tolerates expired
+   * or already-dropped grants: a stop arriving after expiry must still reach
+   * the zeroization, never fail on the expiry window.
+   */
+  assertGrantBinding(grantId: string, agentId: string): void {
+    const state = this.grants.get(grantId);
+    if (state && state.grant.agentId !== agentId) throw new Error('grant agent binding mismatch');
   }
 
   rejectTransaction(proposal: TransactionProposal): TransactionResult {

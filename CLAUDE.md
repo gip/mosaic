@@ -73,7 +73,10 @@ for Mainnet.
 - `packages/ui-theme` — shared visual tokens for Web and Local. Palette,
   spacing, typography scale, radii, and theme behavior belong here once.
 - `packages/guardian` / `packages/agent-runner` — independently supervised
-  local process boundaries. The runner never receives zone secrets or keys.
+  local process boundaries. The runner never receives zone secrets, derived
+  transaction keys, or the Guardian identity key; the only key material it
+  holds are the agent's dedicated XMTP messaging credentials (custody
+  `supervisor-session`), delivered as short-lived sealed leases (ADR 0001).
 - `local-app` — Electron host for the shared frontend and local processes. It
   must not contain a parallel renderer UI. The runner service starts with the
   app; individual agents start only after their zone is unlocked by the signer.

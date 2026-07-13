@@ -11,7 +11,7 @@ import {
   type RunnerCertificate,
   type TransactionProposal,
 } from '@mosaic/local-runtime';
-import { AgentSupervisor, verifyExecutionAuthorization } from './supervisor.js';
+import { AgentSupervisor, verifyExecutionAuthorization, verifyGuardianEnvelope } from './supervisor.js';
 import { createAgentXmtpClient, type AgentXmtpClient, type XmtpInboundMessage } from './xmtp.js';
 
 interface AgentInstance {
@@ -42,14 +42,18 @@ export interface AgentInstanceStatus {
 
 export class MultiAgentSupervisor {
   private readonly agents = new Map<string, AgentInstance>();
-  private readonly leaseRecipient = generateKeyLeaseRecipient();
+  private leaseRecipient = generateKeyLeaseRecipient();
 
   constructor(
     private readonly control: GuardianControlClient,
     private readonly certificate: RunnerCertificate,
   ) {
+    // The control client reconnects on the next call, so the recipient key
+    // must be replaced, not just zeroed: leases sealed after the blip go to
+    // the fresh public key advertised by start()/renew().
     control.onDisconnect(() => {
       this.leaseRecipient.privateKey.fill(0);
+      this.leaseRecipient = generateKeyLeaseRecipient();
       for (const instance of this.agents.values()) this.beginOfflineGrace(instance);
     });
   }
@@ -188,6 +192,7 @@ export class MultiAgentSupervisor {
         supervisorKeyLeasePublicKeyB64: this.leaseRecipient.publicKeyB64,
       }, 10_000);
       if (renewed.renewal.agentId !== agentId || renewed.renewal.grantId !== instance.execution.grant.grantId) throw new Error('lease renewal binding mismatch');
+      verifyGuardianEnvelope(renewed.renewal, this.certificate.guardianAddress);
       const replacement = this.openLease({ ...instance.execution, sealedKeyLease: renewed.sealedKeyLease });
       for (const [keyId, current] of instance.secretBuffers) {
         const next = replacement.get(keyId);
@@ -199,6 +204,7 @@ export class MultiAgentSupervisor {
       this.zeroSecrets(replacement);
       await instance.xmtp.updateResources(renewed.renewal.resources.filter((resource) => resource.kind === 'xmtp-contact'));
       instance.execution = { ...instance.execution, sealedKeyLease: renewed.sealedKeyLease };
+      instance.sandbox.extendLease(renewed.renewal.expiresAt, renewed.renewal.maxOfflineMs);
       if (instance.graceTimer) { clearTimeout(instance.graceTimer); instance.graceTimer = undefined; }
     } catch {
       this.beginOfflineGrace(instance);

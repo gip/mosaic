@@ -342,6 +342,15 @@ export class GuardianService {
         version: blob.version,
       };
     } catch (error) {
+      // Only a blob this Guardian could have written may be treated as
+      // corrupt-and-replaceable. An unknown header means a newer client wrote
+      // it; overwriting would silently destroy recoverable policies.
+      const header = blob.header as { v?: unknown; schema?: unknown; alg?: unknown };
+      if (header.v !== 1 || header.schema !== 'mosaic-vault-data' || header.alg !== 'xchacha20poly1305') {
+        throw new Error(
+          `vault ${ref.zone}: data blob v${blob.version} uses an unsupported format (written by a newer client?); refusing to unlock and overwrite it`,
+        );
+      }
       console.warn(
         `vault ${ref.zone}: data blob v${blob.version} is unreadable, starting fresh (${error instanceof Error ? error.message : String(error)})`,
       );
@@ -728,7 +737,9 @@ export class GuardianService {
 
   lockAgent(agentId: string, grantId?: string): void {
     if (this.guardianIdentity?.vault === agentId) throw new Error('Guardian control vault cannot be stopped as an agent');
-    if (grantId) this.vaultCore?.getGrant(grantId, agentId);
+    // Stops routinely arrive after the grant's short TTL has lapsed; the
+    // binding check must not gate zeroization on the expiry window.
+    if (grantId) this.vaultCore?.assertGrantBinding(grantId, agentId);
     const vault = this.vaults.get(agentId);
     if (!vault) return;
     vault.secret.fill(0);

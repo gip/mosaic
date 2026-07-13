@@ -78,7 +78,9 @@ function startService(name: ServiceName, packageName: string, args: string[] = [
   });
   child.on('exit', (code) => {
     children.delete(name);
-    if (name === 'agent-runner') supervisorEnrolled = false;
+    // Either side of the enrollment dying invalidates it: the runner loses
+    // its session credential, and a restarted Guardian forgets the runner.
+    if (name === 'agent-runner' || name === 'mosaic-guardian') supervisorEnrolled = false;
     const expected = quitting || statuses.get(name)?.phase === 'stopping';
     publish({
       name,
@@ -152,6 +154,19 @@ async function startGuardian(args: {
   return status;
 }
 
+async function waitForRunner(timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const phase = statuses.get('agent-runner')?.phase;
+    if (phase === 'running') return;
+    if (!children.has('agent-runner') || phase === 'failed' || phase === 'stopped') {
+      throw new Error(`Agent Runner ${phase === 'failed' ? 'failed to start' : 'exited during startup'}`);
+    }
+    if (Date.now() >= deadline) throw new Error('Agent Runner did not become ready in time');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 async function startAgent(args: { agentId?: string; vault?: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<unknown> {
   const vault = args.agentId?.trim() || args.vault?.trim() || DEFAULT_RUNNER_VAULT;
   const network = args.network ?? 'testnet';
@@ -162,15 +177,18 @@ async function startAgent(args: { agentId?: string; vault?: string; network?: Mo
     ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
     ...(args.passphrase ? { passphrase: args.passphrase } : {}),
   }, 180_000);
-  if (!children.has('agent-runner')) startService('agent-runner', '@mosaic/agent-runner', ['--network', network]);
-  while (statuses.get('agent-runner')?.phase !== 'running') await new Promise((resolve) => setTimeout(resolve, 25));
-  if (!supervisorEnrolled) {
-    const approved = await callGuardianControl<{ pairingCredential: string }>('runner.approve', { runnerId: 'local-supervisor' });
-    await supervisorRequest('supervisor.start', { pairingCredential: approved.pairingCredential });
-    supervisorEnrolled = true;
-  }
-  try { return await supervisorRequest('agent.start', { agentId: vault }); }
-  catch (error) {
+  // Everything after the unlock must lock the vault back on failure; the
+  // secrets are already live in Guardian memory.
+  try {
+    if (!children.has('agent-runner')) startService('agent-runner', '@mosaic/agent-runner', ['--network', network]);
+    await waitForRunner();
+    if (!supervisorEnrolled) {
+      const approved = await callGuardianControl<{ pairingCredential: string }>('runner.approve', { runnerId: 'local-supervisor' });
+      await supervisorRequest('supervisor.start', { pairingCredential: approved.pairingCredential });
+      supervisorEnrolled = true;
+    }
+    return await supervisorRequest('agent.start', { agentId: vault });
+  } catch (error) {
     await callGuardianControl('agent.lock', { agentId: vault }).catch(() => {});
     throw error;
   }
@@ -180,8 +198,12 @@ async function stopAgent(agentId: string): Promise<void> { await supervisorReque
 
 async function stopService(name: ServiceName): Promise<void> {
   if (name === 'mosaic-guardian') {
+    supervisorEnrolled = false;
+    // 'stopping' (not 'stopped') so a spawned child's exit handler classifies
+    // the shutdown as expected; the exit handler or status poll settles it.
+    publish({ ...statuses.get(name), name, phase: 'stopping' });
     await callGuardianControl('shutdown').catch(() => {});
-    publish({ name, phase: 'stopped' });
+    if (!children.has(name)) publish({ name, phase: 'stopped' });
     return;
   }
   const child = children.get(name);
