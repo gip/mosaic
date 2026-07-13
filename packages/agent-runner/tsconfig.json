@@ -7,5 +7,11 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../local-runtime" }]
+  "references": [
+    { "path": "../local-runtime" },
+    { "path": "../agent-sdk" },
+    { "path": "../agent-compiler" },
+    { "path": "../guardian" },
+    { "path": "../mcp" }
+  ]
 }

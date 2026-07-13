@@ -23,6 +23,11 @@
     "quickjs-emscripten": "0.32.0"
   },
   "devDependencies": {
+    "@mosaic/agent-compiler": "workspace:*",
+    "@mosaic/agent-sdk": "workspace:*",
+    "@mosaic/guardian": "workspace:*",
+    "@mosaic/mcp": "workspace:*",
+    "@mosaic/zone-keys": "workspace:*",
     "@types/node": "^24.12.3",
     "typescript": "~6.0.2"
   }

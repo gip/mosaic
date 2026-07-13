@@ -175,6 +175,21 @@ importers:
         specifier: 0.32.0
         version: 0.32.0
     devDependencies:
+      '@mosaic/agent-compiler':
+        specifier: workspace:*
+        version: link:../agent-compiler
+      '@mosaic/agent-sdk':
+        specifier: workspace:*
+        version: link:../agent-sdk
+      '@mosaic/guardian':
+        specifier: workspace:*
+        version: link:../guardian
+      '@mosaic/mcp':
+        specifier: workspace:*
+        version: link:../mcp
+      '@mosaic/zone-keys':
+        specifier: workspace:*
+        version: link:../zone-keys
       '@types/node':
         specifier: ^24.12.3
         version: 24.13.2
