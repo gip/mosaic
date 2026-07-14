@@ -11,6 +11,7 @@ import { signAndSubmitOrder } from '../components/dex/signing';
 import { useOrderBookFeed } from '../components/dex/useOrderBookFeed';
 import { useQuoteSurfaceFeed } from '../components/dex/useQuoteSurfaceFeed';
 import XamanPromptModal from '../components/XamanPromptModal';
+import Banner from '../components/ui/Banner';
 import Modal from '../components/ui/Modal';
 import StatusDot, { type StatusTone } from '../components/ui/StatusDot';
 import { useActivity } from '../contexts/ActivityContext';
@@ -26,6 +27,16 @@ const STATUS_TONES: Record<string, StatusTone> = { live: 'ok', connecting: 'busy
 interface PendingXamanPrompt {
   refs: XamanRefs;
   cancel: () => void;
+}
+
+function DexTestnetNotice({ network }: { network: 'mainnet' | 'testnet' }) {
+  if (network !== 'testnet') return null;
+  return (
+    <Banner tone="warn">
+      <strong>Testnet market data is not representative of Mainnet.</strong>{' '}
+      Prices, liquidity, and order-book activity may be sparse or artificial.
+    </Banner>
+  );
 }
 
 function assetFromDeployment(deployment: ReturnType<typeof deploymentFor>): Asset | null {
@@ -126,6 +137,7 @@ export function DexOverviewPage() {
   const markets = useMemo(() => buildMarkets(network, catalog.chains, catalog.assets), [catalog.assets, catalog.chains, network]);
   return <section className="dex-page dex-overview">
     <header className="dex-overview-heading"><div><h2>DEX markets</h2><p>Live central-limit-order books on Stellar and XRPL. Select a market to inspect depth, compare execution cost, or place a limit order.</p></div><span>{network}</span></header>
+    <DexTestnetNotice network={network} />
     {markets.length > 0 ? <div className="dex-market-grid">{markets.map((market) => <MarketPreview market={market} key={market.id} />)}</div> : <p>No XRPL or Stellar markets are enabled for {network}.</p>}
   </section>;
 }
@@ -171,7 +183,7 @@ export default function DexPage() {
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [xaman, setXaman] = useState<PendingXamanPrompt | null>(null);
 
-  if (!market) return <section className="dex-page"><h2>DEX</h2><p>No XRPL or Stellar markets are enabled for {network}.</p></section>;
+  if (!market) return <section className="dex-page"><h2>DEX</h2><DexTestnetNotice network={network} /><p>No XRPL or Stellar markets are enabled for {network}.</p></section>;
   const bestBid = book.snapshot?.bids[0]?.price;
   const bestAsk = book.snapshot?.asks[0]?.price;
   const midpoint = bestBid && bestAsk ? (Number(bestBid) + Number(bestAsk)) / 2 : undefined;
@@ -214,6 +226,7 @@ export default function DexPage() {
       <div><div className="dex-market-title"><select aria-label="Market" value={market.id} onChange={(event) => chooseMarket(event.target.value)}>{markets.map((item) => <option value={item.id} key={item.id}>{item.baseSymbol} / {item.quoteSymbol} · {item.chain.toUpperCase()}</option>)}</select><span>{network}</span></div><Link className="dex-market-back" to="/dex">All markets</Link></div>
       <dl className="dex-market-stats"><div><dt>Best bid</dt><dd>{format(bestBid)}</dd></div><div><dt>Best ask</dt><dd>{format(bestAsk)}</dd></div><div><dt>Midpoint</dt><dd>{format(midpoint)}</dd></div><div><dt>Spread</dt><dd>{format(spread)}</dd></div><div><dt>Feed</dt><dd><StatusDot tone={STATUS_TONES[book.status] ?? 'idle'}>{book.status}</StatusDot></dd></div></dl>
     </header>
+    <DexTestnetNotice network={network} />
     {book.error && <p className="activity-summary-error">Market feed: {book.error.message}</p>}
     <div className="dex-trading-grid">
       <div className="dex-market-panel">

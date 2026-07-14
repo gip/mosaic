@@ -10,7 +10,7 @@ function loadNetwork(): Network {
   } catch {
     /* storage unavailable */
   }
-  return 'testnet';
+  return 'mainnet';
 }
 
 interface SettingsValue {
