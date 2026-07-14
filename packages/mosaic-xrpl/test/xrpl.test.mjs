@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { encode, Wallet } from 'xrpl';
 import {
   createAdapter,
+  decodeCurrency,
+  isValidXrplIssuer,
   normalizeCurrency,
   normalizeXrplAssetAmount,
   prepareXrplCancel,
@@ -21,6 +23,15 @@ const REQ = {
   quote: { kind: 'issued', code: 'RLUSD', issuer: ISSUER },
   fundedAccounts: { base: 'rXrpFunded', quote: 'rRlusdFunded' },
 };
+
+test('XRPL market URL helpers normalize, decode, and validate issued assets', () => {
+  assert.equal(normalizeCurrency('RLUSD'), RLUSD_HEX);
+  assert.equal(decodeCurrency(RLUSD_HEX.toLowerCase()), 'RLUSD');
+  assert.equal(decodeCurrency('USD'), 'USD');
+  assert.equal(decodeCurrency('F'.repeat(40)), null);
+  assert.equal(isValidXrplIssuer(ISSUER), true);
+  assert.equal(isValidXrplIssuer('rNotAValidIssuer'), false);
+});
 
 test('limit orders map sell to exact-spend tfSell and buy to exact-receive', async () => {
   const prepared = [];

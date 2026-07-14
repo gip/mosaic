@@ -1,4 +1,5 @@
 import { cmpDecimals, divDecimals, mulRatio } from '@mosaic/chain-core';
+import { StrKey } from '@stellar/stellar-sdk';
 import type {
   AdapterFetchOptions,
   AdapterStreamEvent,
@@ -21,6 +22,11 @@ export const HORIZON_ENDPOINTS: Record<Network, string> = {
 };
 
 const HORIZON_MAX_ORDER_BOOK_DEPTH = 200;
+
+/** Validate a Stellar classic-account issuer, including its StrKey checksum. */
+export function isValidStellarIssuer(address: string): boolean {
+  return StrKey.isValidEd25519PublicKey(address);
+}
 
 interface HorizonLevel {
   price_r: { n: number; d: number };

@@ -15,6 +15,11 @@ export interface ChainModule {
   createOrderBookFeed(request: OrderBookRequest, options?: OrderBookFeedOptions): OrderBookFeed;
   createQuoteSurfaceFeed(request: OrderBookRequest, options?: QuoteSurfaceFeedOptions): QuoteSurfaceFeed;
   createBalancesFeed(request: BalancesRequest, options?: BalancesFeedOptions): BalancesFeed;
+  /** Chain-native validation helpers, loaded with the chain's lazy chunk. */
+  isValidXrplIssuer?(address: string): boolean;
+  isValidStellarIssuer?(address: string): boolean;
+  normalizeCurrency?(code: string): string;
+  decodeCurrency?(code: string): string | null;
 }
 
 /**

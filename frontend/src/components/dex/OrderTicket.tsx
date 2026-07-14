@@ -214,7 +214,7 @@ export default function OrderTicket({ market, book, selection }: { market: Tradi
       <div className="order-total"><span>Quote total</span><strong className="mono">{total || '—'} {market.quoteSymbol}</strong></div>
       <div className="order-meta"><span>Fee / reserve</span><span>Calculated at review</span><span>Time in force</span><strong>Good ’til cancelled</strong></div>
       {crosses && <p className="order-crossing">This limit crosses the current book and may execute immediately, up to your limit.</p>}
-      {!allowed && <p className="order-policy">Review assets are available for market inspection only. Mark both assets Allowed before trading.</p>}
+      {!allowed && <p className="order-policy">This pair is available for market inspection only. Both assets must exactly match Allowed catalog deployments before trading.</p>}
       {accounts.length === 0 && <p className="order-policy">No matching root account or unlocked vault address is available for {market.chain.toUpperCase()}.</p>}
       {error && <p className="activity-summary-error">{error}</p>}
       <button type="button" className={`btn-primary order-submit order-submit--${side}`} disabled={busy || !allowed || !selected || !total} onClick={() => void review()}>{busy ? 'Preparing…' : `Review ${side} order`}</button>

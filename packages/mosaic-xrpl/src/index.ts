@@ -16,6 +16,8 @@ export {
   XRPL_HTTP_ENDPOINTS,
   XRPL_WS_ENDPOINTS,
   createAdapter,
+  decodeCurrency,
+  isValidXrplIssuer,
   normalizeCurrency,
   toXrplAmountSpec,
   wsRequestBatchSettled,
