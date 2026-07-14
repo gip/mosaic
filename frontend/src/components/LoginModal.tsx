@@ -26,7 +26,7 @@ export default function LoginModal({ onClose }: { onClose: () => void }) {
   }, [session, onClose]);
 
   return (
-    <Modal title="Log in with your root wallet" onClose={onClose}>
+    <Modal title="Log in with your root wallet" onClose={onClose} closeButtonOnly>
       <p className="login-intro">
         Your root wallet authorizes vaults, enables agents, and recovers agent keys. Mosaic uses mobile
         wallets so those approvals remain available beyond a browser-extension-only session.
