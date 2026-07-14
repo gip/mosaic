@@ -191,4 +191,46 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX agent_artifact_tickets_expiry_idx ON agent_artifact_tickets (expires_at);
   `,
+  `
+  ALTER TABLE zone_addresses ADD COLUMN address TEXT;
+  CREATE UNIQUE INDEX zone_addresses_public_address_idx
+    ON zone_addresses (chain, address) WHERE address IS NOT NULL;
+
+  CREATE TABLE dex_orders (
+    id UUID PRIMARY KEY,
+    cursor BIGSERIAL UNIQUE NOT NULL,
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    chain TEXT NOT NULL CHECK (chain IN ('xrpl','stellar')),
+    source_address TEXT NOT NULL,
+    status TEXT NOT NULL,
+    record JSONB NOT NULL,
+    signed_payload TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE INDEX dex_orders_owner_cursor_idx
+    ON dex_orders (root_chain, root_address, network, cursor DESC);
+  CREATE INDEX dex_orders_nonterminal_idx
+    ON dex_orders (status, updated_at) WHERE status IN ('submitted','confirmed','open','partially_filled','unknown');
+  `,
+  `
+  CREATE TABLE dex_activity_events (
+    cursor BIGSERIAL PRIMARY KEY,
+    order_id UUID NOT NULL REFERENCES dex_orders(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    record JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX dex_activity_events_order_idx ON dex_activity_events (order_id, cursor DESC);
+
+  ALTER TABLE dex_orders ADD COLUMN activity_cursor BIGINT;
+  INSERT INTO dex_activity_events (order_id, status, record, created_at)
+    SELECT id, status, record, updated_at FROM dex_orders ORDER BY cursor;
+  UPDATE dex_orders orders SET activity_cursor = event.cursor
+    FROM dex_activity_events event WHERE event.order_id = orders.id;
+  ALTER TABLE dex_orders ALTER COLUMN activity_cursor SET NOT NULL;
+  CREATE UNIQUE INDEX dex_orders_activity_cursor_idx ON dex_orders (activity_cursor);
+  `,
 ];

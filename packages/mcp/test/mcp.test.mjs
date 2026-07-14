@@ -22,6 +22,8 @@ import { startHttpServer } from '../dist/http.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { AGENT_ARTIFACT_PROTOCOL, AGENT_RUNTIME_VERSION, artifactDigest, sha256Hex } from '@mosaic/local-runtime';
+import { XummXamanService } from '../dist/xaman.js';
+import { jsonValuesEqual, xamanTransactionTemplate, xrplSignedFieldMatches } from '../dist/server.js';
 
 const evmAccount = privateKeyToAccount('0x' + '42'.repeat(32));
 const stellarPriv = new Uint8Array(32).fill(0x55);
@@ -31,6 +33,23 @@ const xrplAddress = deriveAddress(xrplKeypair.publicKey);
 
 const allowAuthority = async () => ({ authoritative: true, reason: 'test' });
 const testnetVaultKey = new Uint8Array(32).fill(0x19);
+
+test('XRPL signed amount comparison ignores JSON key order but rejects value changes', () => {
+  const prepared = { currency: 'USD', issuer: xrplAddress, value: '7.5' };
+  const decoded = { value: '7.5', currency: 'USD', issuer: xrplAddress };
+  assert.equal(jsonValuesEqual(decoded, prepared), true);
+  assert.equal(jsonValuesEqual({ ...decoded, value: '7.6' }, prepared), false);
+});
+
+test('Xaman LastLedgerSequence handling is bounded and supports low-index networks', () => {
+  const lowLedger = { TransactionType: 'OfferCreate', LastLedgerSequence: 1_020 };
+  assert.deepEqual(xamanTransactionTemplate(lowLedger), { ...lowLedger, LastLedgerSequence: 20 });
+  const highLedger = { TransactionType: 'OfferCreate', LastLedgerSequence: 90_000_020 };
+  assert.equal(xamanTransactionTemplate(highLedger), highLedger);
+  assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_080, 1_020, true), true);
+  assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_121, 1_020, true), false);
+  assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_080, 1_020, false), false);
+});
 
 test('MemoryStore isolates immutable agent artifacts and versions encrypted agent-secret blobs', async () => {
   const store = new MemoryStore();
@@ -67,6 +86,49 @@ test('MemoryStore isolates immutable agent artifacts and versions encrypted agen
   await store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: new Uint8Array(48).fill(7), header: { schema: 'mosaic-agent-secrets' }, expectedVersion: 0 });
   await assert.rejects(() => store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: new Uint8Array(48), header: {}, expectedVersion: 0 }), /version conflict/);
   assert.deepEqual(await store.listBlobKinds(zone.id), [{ kind: 'agent-secrets', version: 1 }]);
+});
+
+test('MemoryStore binds public vault addresses immutably and isolates paginated activity', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: evmAccount.address };
+  const zone = await store.createZone({
+    rootChain: owner.chain, rootAddress: owner.address, zone: 'trading', network: 'testnet',
+    commitment: 'ab'.repeat(32), policyHash: 'policy', localSignerPublicKey: 'public',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  });
+  const address = await store.createZoneAddress(zone.id, 'stellar', 'maker');
+  await store.bindZoneAddresses(zone.id, [{ id: address.id, address: stellarAddress }]);
+  assert.equal((await store.listZoneAddresses(zone.id)).find(({ id }) => id === address.id)?.address, stellarAddress);
+  await assert.rejects(() => store.bindZoneAddresses(zone.id, [{ id: address.id, address: `${stellarAddress}X` }]), /immutable/);
+
+  const now = new Date().toISOString();
+  const base = {
+    owner, network: 'testnet', chain: 'stellar', sourceAddress: stellarAddress, sourceKind: 'vault',
+    zone: 'trading', addressId: address.id, addressName: 'maker', side: 'sell', action: 'sell',
+    base: { kind: 'native' }, quote: { kind: 'issued', code: 'USDC', issuer: stellarAddress },
+    baseSymbol: 'XLM', quoteSymbol: 'USDC', amount: '2', limitPrice: '3', quoteTotal: '6',
+    fee: '0.00001', feeSymbol: 'XLM', reserveImpact: null, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: 'awaiting_signature', filledAmount: '0', remainingAmount: '2', createdAt: now, updatedAt: now,
+    signingRequest: { kind: 'stellar', unsignedXdr: 'AAAA', networkPassphrase: 'test' },
+  };
+  const first = await store.createDexOrder({ ...base, id: crypto.randomUUID(), orderId: crypto.randomUUID() });
+  const second = await store.createDexOrder({ ...base, id: crypto.randomUUID(), orderId: crypto.randomUUID(), status: 'open' });
+  assert.deepEqual((await store.listActivity(owner, 'testnet', { after: first.cursor })).map(({ id }) => id), [second.id]);
+  assert.equal((await store.listActivity(owner, 'testnet', { status: 'open' })).length, 1);
+  assert.equal((await store.listActivity({ chain: 'evm', address: '0x0000000000000000000000000000000000000001' }, 'testnet')).length, 0);
+});
+
+test('Xaman DEX payloads are explicitly sign-only', async () => {
+  const service = new XummXamanService('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222');
+  let request;
+  service.sdk.payload.create = async (value) => {
+    request = value;
+    return { uuid: 'order-payload', refs: { qr_png: 'qr', websocket_status: 'ws' }, next: { always: 'link' } };
+  };
+  const refs = await service.createTransactionPayload({ TransactionType: 'OfferCancel', Account: xrplAddress, OfferSequence: 7 }, 'Cancel offer');
+  assert.equal(request.options.submit, false);
+  assert.equal(request.txjson.TransactionType, 'OfferCancel');
+  assert.equal(refs.uuid, 'order-payload');
 });
 
 /** Signs any payload the server creates, like a Xaman wallet would. */

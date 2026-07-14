@@ -1060,3 +1060,333 @@
 .dex-surface td.dex-price {
   font-weight: 500;
 }
+
+/* ------------------------------------------------------------ trading workspace */
+
+.dex-workspace {
+  max-width: 1440px;
+  gap: var(--sp-4);
+}
+
+.dex-market-header,
+.dex-market-panel,
+.order-ticket,
+.dex-analytics,
+.dex-activity {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+}
+
+.dex-market-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.dex-market-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: 3px;
+}
+
+.dex-market-title select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: clamp(22px, 3vw, 34px);
+  line-height: 1.1;
+  font-weight: 600;
+  padding: 0 28px 0 0;
+  cursor: pointer;
+}
+
+.dex-market-title > span {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--fg-muted);
+  font: 10px var(--font-mono);
+  text-transform: uppercase;
+}
+
+.dex-market-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(82px, 1fr));
+  margin: 0;
+}
+
+.dex-market-stats > div {
+  padding: 0 var(--sp-4);
+  border-left: 1px solid var(--line);
+}
+
+.dex-market-stats dt,
+.order-review dt,
+.activity-details dt {
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.dex-market-stats dd {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.dex-trading-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 350px;
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+.dex-market-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(390px, .85fr);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dex-market-panel > .depth-chart-shell {
+  padding: var(--sp-4);
+  border-right: 1px solid var(--line);
+}
+
+.dex-market-panel .dex-chart { height: 440px; }
+
+.dex-order-book {
+  min-width: 0;
+  max-height: 530px;
+  overflow: auto;
+}
+
+.dex-order-book-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--sp-3);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.dex-order-book-head span { color: var(--fg-dim); font-size: 10px; }
+.dex-order-book > .dex-book tbody tr:not(.dex-spread) { cursor: pointer; }
+
+.dex-side-tabs {
+  display: inline-flex;
+  gap: var(--sp-1);
+  padding: 3px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+}
+
+.dex-side-tabs button {
+  border: 0;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+
+.dex-side-tabs button.active {
+  background: var(--bg-elevated);
+  color: var(--fg);
+  box-shadow: var(--shadow-1);
+}
+
+.dex-cost-view { padding: var(--sp-3); }
+.dex-cost-intro { margin-bottom: var(--sp-3); }
+.dex-cost-intro p { margin: 0; color: var(--fg-muted); font-size: var(--fs-xs); }
+.dex-cost-intro span { display: block; margin-top: 3px; color: var(--warn); font-size: var(--fs-xs); }
+.dex-cost-view .dex-execution-table { min-width: 470px; }
+.dex-cost-view .dex-execution-table th,
+.dex-cost-view .dex-execution-table td { padding: 7px 5px; }
+
+.dex-cost-action {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dex-cost-action:hover,
+.dex-cost-action:focus-visible {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.order-ticket {
+  position: sticky;
+  top: 106px;
+  padding: var(--sp-4);
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.order-ticket label,
+.activity-filters label {
+  display: grid;
+  gap: var(--sp-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.order-ticket select,
+.order-ticket input { width: 100%; }
+
+.order-side-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  border-radius: var(--r-2);
+  background: var(--bg-inset);
+}
+
+.order-side-tabs button { border: 0; background: transparent; }
+.order-side-tabs button.active.buy { background: var(--buy-dim); color: var(--buy); }
+.order-side-tabs button.active.sell { background: var(--sell-dim); color: var(--sell); }
+
+.order-available,
+.order-total {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.order-available strong,
+.order-total strong { color: var(--fg); font-weight: 500; }
+
+.order-total {
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.order-meta {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+
+.order-meta strong { color: var(--fg); font-weight: 500; }
+
+.order-crossing,
+.order-policy {
+  margin: 0;
+  border-left: 2px solid var(--warn);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--warn-dim);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+}
+
+.order-policy { border-color: var(--accent); background: var(--accent-dim); }
+.order-submit { width: 100%; justify-content: center; }
+.order-submit--buy { background: var(--buy); border-color: var(--buy); }
+.order-submit--sell { background: var(--sell); border-color: var(--sell); }
+.order-ticket-empty h3 { margin: 0 0 var(--sp-2); }
+.order-ticket-empty p { margin: 0; color: var(--fg-muted); }
+
+.order-review {
+  display: grid;
+  gap: 0;
+  margin: 0 0 var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+.order-review > div {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.order-review dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.order-review small { display: block; margin-top: 3px; color: var(--fg-dim); }
+
+.dex-analytics,
+.dex-activity { padding: var(--sp-4); }
+.dex-analytics { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); gap: var(--sp-5); }
+.dex-analytics h3,
+.dex-section-heading h3 { margin: 3px 0; }
+.dex-analytics p { max-width: 530px; margin: 0; color: var(--fg-muted); }
+.dex-quote-grid { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: var(--sp-2); }
+.dex-quote-grid > div { display: grid; gap: 4px; padding: var(--sp-3); background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-2); }
+.dex-quote-grid strong { font-family: var(--font-mono); font-size: var(--fs-sm); }
+.dex-quote-grid span { color: var(--fg-muted); font-size: var(--fs-xs); }
+.dex-section-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+
+@media (max-width: 1100px) {
+  .dex-market-header { align-items: flex-start; flex-direction: column; }
+  .dex-market-stats { width: 100%; }
+  .dex-market-stats > div:first-child { border-left: 0; padding-left: 0; }
+  .dex-market-panel { grid-template-columns: 1fr; }
+  .dex-market-panel > .depth-chart-shell { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+@media (max-width: 820px) {
+  .dex-trading-grid { grid-template-columns: 1fr; }
+  .order-ticket { position: static; }
+  .dex-analytics { grid-template-columns: 1fr; }
+  .dex-quote-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .dex-page { padding-inline: var(--sp-3); }
+  .dex-market-header { padding: var(--sp-4); }
+  .dex-market-stats { grid-template-columns: repeat(2, 1fr); gap: var(--sp-3); }
+  .dex-market-stats > div { border-left: 0; padding: 0; }
+  .dex-market-panel .dex-chart { height: 310px; }
+}
+
+/* ------------------------------------------------------------ DEX market directory */
+
+.dex-overview { max-width: 1440px; }
+.dex-overview-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--sp-4); }
+.dex-overview-heading h2 { margin: 0 0 var(--sp-2); }
+.dex-overview-heading p { max-width: 680px; margin: 0; color: var(--fg-muted); }
+.dex-overview-heading > span { border: 1px solid var(--line-strong); border-radius: 999px; padding: 4px 9px; color: var(--fg-muted); font: 10px var(--font-mono); text-transform: uppercase; }
+.dex-market-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+.dex-market-card { min-width: 0; padding: var(--sp-4); background: var(--bg-panel); border: 1px solid var(--line); border-radius: var(--r-3); }
+.dex-market-card > header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.dex-market-card > header span { color: var(--fg-dim); font: 10px var(--font-mono); }
+.dex-market-card > header h3 { margin: 3px 0 0; font-size: var(--fs-lg); }
+.dex-market-card > header h3 a { color: var(--fg); text-decoration: none; }
+.dex-market-card > header h3 a:hover { color: var(--accent); }
+.dex-market-card .depth-chart-shell { margin-top: var(--sp-3); }
+.dex-market-card .dex-chart { height: 250px; }
+.dex-market-card-cost { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--line); }
+.dex-market-card-cost h4 { margin: 0 0 var(--sp-2); }
+.dex-market-card-cost .dex-cost-view { padding: 0; }
+.dex-market-card > dl { display: grid; grid-template-columns: repeat(3, 1fr); margin: var(--sp-3) 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.dex-market-card > dl div { padding: var(--sp-2); text-align: center; }
+.dex-market-card > dl div + div { border-left: 1px solid var(--line); }
+.dex-market-card > dl dt { color: var(--fg-dim); font-size: 10px; text-transform: uppercase; }
+.dex-market-card > dl dd { margin: 3px 0 0; font-family: var(--font-mono); }
+.dex-market-card-link { display: inline-block; margin-top: var(--sp-2); font-size: var(--fs-sm); }
+.dex-market-back { display: inline-block; margin-top: var(--sp-2); color: var(--fg-muted); font-size: var(--fs-xs); }
+
+@media (max-width: 980px) {
+  .dex-market-grid { grid-template-columns: 1fr; }
+}

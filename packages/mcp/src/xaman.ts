@@ -29,6 +29,7 @@ export interface XamanPayloadResult {
 
 export interface XamanService {
   createSignInPayload(message: ZoneMessage, instruction: string): Promise<XamanPayloadRefs>;
+  createTransactionPayload?(transaction: Record<string, unknown>, instruction: string): Promise<XamanPayloadRefs>;
   getPayloadResult(uuid: string): Promise<XamanPayloadResult>;
 }
 
@@ -61,6 +62,27 @@ export class XummXamanService implements XamanService {
       qrPng: created.refs.qr_png,
       websocketStatus: created.refs.websocket_status,
       deeplink: created.next.always,
+    };
+  }
+
+  async createTransactionPayload(transaction: Record<string, unknown>, instruction: string): Promise<XamanPayloadRefs> {
+    let created;
+    try {
+      created = await this.sdk.payload.create(
+        {
+          txjson: transaction,
+          options: { submit: false },
+          custom_meta: { instruction: instruction.slice(0, 280) },
+        } as unknown as Parameters<XummSdk['payload']['create']>[0],
+        true,
+      );
+    } catch (error) {
+      throw new MosaicMcpError('XAMAN_UNAVAILABLE', `Xaman transaction payload create failed: ${String(error)}`, { cause: error });
+    }
+    if (!created) throw new MosaicMcpError('XAMAN_UNAVAILABLE', 'Xaman transaction payload create returned nothing');
+    return {
+      uuid: created.uuid, qrPng: created.refs.qr_png,
+      websocketStatus: created.refs.websocket_status, deeplink: created.next.always,
     };
   }
 

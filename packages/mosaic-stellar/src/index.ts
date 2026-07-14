@@ -16,6 +16,19 @@ export { HORIZON_ENDPOINTS, createAdapter } from './adapter.js';
 export { readSseStream } from './sse.js';
 export type { SseMessage } from './sse.js';
 export { fetchBalances } from './balances.js';
+export {
+  buildStellarOfferOperation,
+  getStellarOfferRemaining,
+  lookupStellarTransaction,
+  prepareStellarCancel,
+  prepareStellarOrder,
+  signStellarTransaction,
+  stellarTransactionMatchesUnsigned,
+  stellarTransactionHash,
+  submitStellarTransaction,
+  verifyStellarTransaction,
+  type PreparedStellarOrder,
+} from './orders.js';
 
 /** Streaming Stellar order-book feed (Horizon SSE over `fetch`). */
 export function createOrderBookFeed(

@@ -20,7 +20,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@mosaic/catalog": "workspace:*",
+    "@mosaic/chain-core": "workspace:*",
     "@mosaic/local-runtime": "workspace:*",
+    "@mosaic/stellar": "workspace:*",
+    "@mosaic/xrpl": "workspace:*",
     "@mosaic/zone-keys": "workspace:*",
     "postgres": "^3.4.7",
     "xumm-sdk": "^1.11.2",

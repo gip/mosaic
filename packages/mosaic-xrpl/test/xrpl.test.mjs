@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createAdapter, normalizeCurrency, toXrplAmountSpec } from '../dist/index.js';
+import { encode } from 'xrpl';
+import { createAdapter, normalizeCurrency, normalizeXrplAssetAmount, prepareXrplOrder, toXrplAmountSpec } from '../dist/index.js';
 
 const ISSUER = 'rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De';
 const RLUSD_HEX = `524C555344${'0'.repeat(30)}`;
@@ -12,6 +13,66 @@ const REQ = {
   quote: { kind: 'issued', code: 'RLUSD', issuer: ISSUER },
   fundedAccounts: { base: 'rXrpFunded', quote: 'rRlusdFunded' },
 };
+
+test('limit orders map sell to exact-spend tfSell and buy to exact-receive', async () => {
+  const prepared = [];
+  const clientFactory = () => ({
+    connect: async () => {},
+    disconnect: async () => {},
+    autofill: async (transaction) => {
+      const result = { ...transaction, Sequence: 7, Fee: '12', LastLedgerSequence: 99 };
+      prepared.push(result);
+      return result;
+    },
+  });
+  const intent = {
+    chain: 'xrpl', network: 'testnet', sourceAddress: 'rSource', sourceKind: 'vault', side: 'sell',
+    base: { kind: 'native' }, quote: { kind: 'issued', code: 'RLUSD', issuer: ISSUER },
+    baseSymbol: 'XRP', quoteSymbol: 'RLUSD', amount: '2.5', limitPrice: '3',
+  };
+  await prepareXrplOrder(intent, '7.5', clientFactory);
+  await prepareXrplOrder({ ...intent, side: 'buy' }, '7.5', clientFactory);
+  assert.deepEqual(prepared[0].TakerGets, '2500000');
+  assert.deepEqual(prepared[0].TakerPays, { currency: RLUSD_HEX, issuer: ISSUER, value: '7.5' });
+  assert.equal(prepared[0].Flags, 0x00080000);
+  assert.deepEqual(prepared[1].TakerGets, { currency: RLUSD_HEX, issuer: ISSUER, value: '7.5' });
+  assert.deepEqual(prepared[1].TakerPays, '2500000');
+  assert.equal(prepared[1].Flags, 0);
+  assert.doesNotThrow(() => encode({ ...prepared[0], Account: ISSUER, SigningPubKey: '' }));
+
+  const issued = { kind: 'issued', code: 'USD', issuer: 'rUsdIssuer' };
+  await prepareXrplOrder({ ...intent, base: issued, baseSymbol: 'USD' }, '7.5', clientFactory);
+  assert.deepEqual(prepared[2].TakerGets, { currency: 'USD', issuer: 'rUsdIssuer', value: '2.5' });
+});
+
+test('XRPL order amounts are quantized before Xaman payload encoding', async () => {
+  const transactions = [];
+  const clientFactory = () => ({
+    connect: async () => {},
+    disconnect: async () => {},
+    autofill: async (transaction) => {
+      const prepared = { ...transaction, Sequence: 8, Fee: '12', LastLedgerSequence: 100 };
+      transactions.push(prepared);
+      return prepared;
+    },
+  });
+  const intent = {
+    chain: 'xrpl', network: 'testnet', sourceAddress: ISSUER, sourceKind: 'root', side: 'sell',
+    base: { kind: 'native' }, quote: { kind: 'issued', code: 'RLUSD', issuer: ISSUER },
+    baseSymbol: 'XRP', quoteSymbol: 'RLUSD', amount: '1.23456789', limitPrice: '1',
+  };
+
+  await prepareXrplOrder(intent, '0.123456789012345678901', clientFactory);
+  await prepareXrplOrder({ ...intent, side: 'buy' }, '0.123456789012345678901', clientFactory);
+
+  assert.equal(transactions[0].TakerGets, '1234567');
+  assert.equal(transactions[0].TakerPays.value, '0.1234567890123457');
+  assert.equal(transactions[1].TakerGets.value, '0.1234567890123456');
+  assert.doesNotThrow(() => encode({ ...transactions[0], SigningPubKey: '' }));
+  assert.doesNotThrow(() => encode({ ...transactions[1], SigningPubKey: '' }));
+  assert.equal(normalizeXrplAssetAmount({ kind: 'native' }, '0.0000001', 'ceil'), '0.000001');
+  assert.throws(() => normalizeXrplAssetAmount({ kind: 'native' }, '0.0000001'), /positive decimal/);
+});
 
 // Offers giving base (XRP) for quote → asks; the reverse → bids.
 const ASK_OFFER = {

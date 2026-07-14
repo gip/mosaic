@@ -6,6 +6,7 @@ import StatusDot from './components/ui/StatusDot';
 import Banner from './components/ui/Banner';
 import MainnetLockReminder from './components/MainnetLockReminder';
 import BalancesStrip from './components/balances/BalancesStrip';
+import ActivityDrawer from './components/activity/ActivityDrawer';
 import { useSession } from './contexts/SessionContext';
 import { useSettings } from './contexts/SettingsContext';
 import { useTheme } from './contexts/ThemeContext';
@@ -37,6 +38,7 @@ export default function App() {
   const navItems = [
     { to: '/', label: 'Home', end: true },
     { to: '/dex', label: 'DEX' },
+    { to: '/activity', label: 'Activity' },
     { to: '/assets', label: 'Assets' },
     { to: '/vaults', label: 'Vaults' },
     ...(localApp ? [{ to: '/agents', label: 'Agents' }] : []),
@@ -115,7 +117,7 @@ export default function App() {
             {vaults.map((vault) => <option value={vault.zone} key={vault.zone}>{vault.zone === 'default' ? 'Default' : vault.zone}</option>)}
           </select>
         </StatusDot>
-        {activeVault?.status === 'locked' && <button type="button" className="btn-sm" onClick={() => setUnlockVault(activeVault)}>Unlock</button>}
+        {activeVault?.status === 'locked' && <button type="button" className="topbar-session-button" onClick={() => setUnlockVault(activeVault)}>Unlock</button>}
       </div>
     </div>
   ) : null;
@@ -155,12 +157,12 @@ export default function App() {
                       {copied ? 'copied' : short(session.address)}
                     </button>
                   </StatusDot>
-                  <button type="button" onClick={() => void logout()}>
+                  <button type="button" className="topbar-session-button" onClick={() => void logout()}>
                     Log out
                   </button>
                 </>
               ) : (
-                <button type="button" className="btn-primary btn-sm" onClick={() => setLoginOpen(true)}>
+                <button type="button" className="topbar-session-button" onClick={() => setLoginOpen(true)}>
                   Log in
                 </button>
               )}
@@ -231,6 +233,7 @@ export default function App() {
       <main className="app-main">
         <Outlet />
       </main>
+      {session && <ActivityDrawer />}
       {loginOpen && (
         <Suspense fallback={null}>
           <LoginModal onClose={() => setLoginOpen(false)} />

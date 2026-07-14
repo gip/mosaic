@@ -22,6 +22,18 @@ export {
 } from './adapter.js';
 export type { XrplBatchOutcome, XrplRpcResult } from './adapter.js';
 export { fetchBalances } from './balances.js';
+export {
+  prepareXrplCancel,
+  prepareXrplOrder,
+  getXrplOfferRemaining,
+  lookupXrplTransaction,
+  normalizeXrplAssetAmount,
+  signXrplTransaction,
+  submitXrplTransaction,
+  verifyXrplTransaction,
+  xrplTransactionHash,
+  type PreparedXrplOrder,
+} from './orders.js';
 
 /** Streaming XRPL order-book feed (WS `subscribe` books + debounced `book_offers`). */
 export function createOrderBookFeed(

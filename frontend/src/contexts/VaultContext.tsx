@@ -46,10 +46,10 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [metadataWarning, setMetadataWarning] = useState<string | null>(null);
   const loadSequence = useRef(0);
 
-  const reportUnlocked = useCallback(async (zone: string) => {
+  const reportUnlocked = useCallback(async (zone: string, addresses?: DerivedVaultAddress[]) => {
     if (!session) return;
     try {
-      const result = await api.zoneUnlocked(session.token, zone);
+      const result = await api.zoneUnlocked(session.token, zone, addresses?.map(({ id, address }) => ({ id, address })));
       setVaults((current) => current.map((vault) => (
         vault.zone === zone ? { ...vault, lastUnlockedAt: result.lastUnlockedAt } : vault
       )));
@@ -82,13 +82,13 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         };
         const cached = await unlockFromCache(ref, item.commitment, item.addresses);
         if (cached) {
-          void reportUnlocked(item.zone);
+          void reportUnlocked(item.zone, cached.addresses);
           return { ...item, status: 'unlocked', derivedAddresses: cached.addresses };
         }
         if (item.mode === 'testnet-server') {
           try {
             const unlocked = await unlockServerTestnetVault(session.token, ref, item.commitment, item.addresses);
-            void reportUnlocked(item.zone);
+            void reportUnlocked(item.zone, unlocked);
             return { ...item, status: 'unlocked', derivedAddresses: unlocked };
           } catch {
             // Keep the vault visible and locked if the sandbox server is unavailable.
@@ -128,7 +128,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     setVaults((current) => current.map((vault) => (
       vault.zone === zone ? { ...vault, status: 'unlocked', derivedAddresses: addresses } : vault
     )));
-    await reportUnlocked(zone);
+    await reportUnlocked(zone, addresses);
   }, [reportUnlocked]);
 
   const registerCreated = useCallback(async (zone: string) => {

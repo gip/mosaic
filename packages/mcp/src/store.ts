@@ -13,12 +13,14 @@ import {
 } from '@mosaic/catalog';
 import type { AgentChain, Network, RootChain } from '@mosaic/zone-keys';
 import type { AgentArtifactManifest } from '@mosaic/local-runtime';
+import type { ActivityRecord, OrderStatus } from '@mosaic/chain-core';
 import { MosaicMcpError } from './errors.js';
 import { MIGRATIONS } from './migrations.js';
 
 /**
- * Persistence for the zone MCP. The store holds ONLY ciphertext and public
- * metadata — never key material, never a signature usable to derive keys.
+ * Persistence for the zone MCP. The store never holds key material or a
+ * signature usable to derive keys. Signed transaction envelopes may exist
+ * only while backend submission is unresolved and are never returned/logged.
  * Session tokens are stored hashed.
  */
 
@@ -79,7 +81,31 @@ export interface ZoneAddressRecord {
   chain: AgentChain;
   index: number;
   name: string;
+  /** Public derived address, bound when the owning vault is unlocked. */
+  address?: string;
   createdAt: string;
+}
+
+export type SigningRequest =
+  | { kind: 'xrpl'; unsignedTransaction: Record<string, unknown> }
+  | { kind: 'stellar'; unsignedXdr: string; networkPassphrase: string }
+  | { kind: 'xaman'; uuid: string; qrPng: string; websocketStatus: string; deeplink: string };
+
+export interface DexOrderRecord extends ActivityRecord {
+  owner: CatalogOwner;
+  signingRequest: SigningRequest;
+  /** Server-side unsigned XRPL transaction retained when Xaman is the signing surface. */
+  preparedTransaction?: Record<string, unknown>;
+  /** Present only until submission reaches a terminal response. Never exposed by activity APIs. */
+  signedPayload?: string;
+}
+
+export interface ActivityQuery {
+  after?: number;
+  limit?: number;
+  chain?: 'xrpl' | 'stellar';
+  status?: OrderStatus;
+  sourceAddress?: string;
 }
 
 export interface CatalogOwner {
@@ -156,6 +182,14 @@ export interface MosaicStore {
   markZoneUnlocked(chain: RootChain, address: string, zone: string, network: Network): Promise<ZoneRecord | undefined>;
   listZoneAddresses(zoneId: string): Promise<ZoneAddressRecord[]>;
   createZoneAddress(zoneId: string, chain: AgentChain, name?: string): Promise<ZoneAddressRecord>;
+  bindZoneAddresses(zoneId: string, addresses: { id: string; address: string }[]): Promise<ZoneAddressRecord[]>;
+
+  createDexOrder(record: Omit<DexOrderRecord, 'cursor'>): Promise<DexOrderRecord>;
+  getDexOrder(owner: CatalogOwner, network: Network, id: string): Promise<DexOrderRecord | undefined>;
+  updateDexOrder(owner: CatalogOwner, network: Network, id: string, patch: Partial<DexOrderRecord>): Promise<DexOrderRecord>;
+  listActivity(owner: CatalogOwner, network: Network, query?: ActivityQuery): Promise<DexOrderRecord[]>;
+  /** Internal restart reconciliation queue; never exposed as an MCP tool. */
+  listNonterminalDexOrders(): Promise<DexOrderRecord[]>;
 
   putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }>;
   /** Latest version of the given kind. */
@@ -416,6 +450,86 @@ export class PostgresStore implements MosaicStore {
       if ((error as { code?: string }).code === '23505') throw new MosaicMcpError('CONFLICT', `address name already exists: ${requestedName}`);
       throw error;
     }
+  }
+
+  async bindZoneAddresses(zoneId: string, addresses: { id: string; address: string }[]): Promise<ZoneAddressRecord[]> {
+    await this.sql.begin(async (tx) => {
+      for (const binding of addresses) {
+        const [row] = await tx`SELECT zone_id, address FROM zone_addresses WHERE id = ${binding.id} FOR UPDATE`;
+        if (!row || row.zone_id !== zoneId) throw new MosaicMcpError('NOT_FOUND', `zone address not found: ${binding.id}`);
+        if (row.address && row.address !== binding.address) throw new MosaicMcpError('CONFLICT', 'derived address binding is immutable');
+        await tx`UPDATE zone_addresses SET address = ${binding.address} WHERE id = ${binding.id}`;
+      }
+    });
+    return this.listZoneAddresses(zoneId);
+  }
+
+  async createDexOrder(record: Omit<DexOrderRecord, 'cursor'>): Promise<DexOrderRecord> {
+    const owner = normalizeCatalogOwner(record.owner);
+    const stored = { ...record, owner, signedPayload: undefined };
+    const cursor = await this.sql.begin(async (tx) => {
+      const [allocated] = await tx`SELECT nextval(pg_get_serial_sequence('dex_activity_events', 'cursor')) AS cursor`;
+      await tx`
+        INSERT INTO dex_orders (id, root_chain, root_address, network, chain, source_address, status, record, signed_payload, created_at, updated_at, activity_cursor)
+        VALUES (${record.id}, ${owner.chain}, ${owner.address}, ${record.network}, ${record.chain}, ${record.sourceAddress}, ${record.status},
+          ${tx.json(stored as unknown as postgres.JSONValue)}, ${record.signedPayload ?? null}, ${record.createdAt}, ${record.updatedAt}, ${allocated!.cursor})`;
+      await tx`
+        INSERT INTO dex_activity_events (cursor, order_id, status, record, created_at)
+        VALUES (${allocated!.cursor}, ${record.id}, ${record.status}, ${tx.json(stored as unknown as postgres.JSONValue)}, ${record.createdAt})`;
+      return Number(allocated!.cursor);
+    });
+    return { ...record, owner, cursor };
+  }
+
+  async getDexOrder(ownerValue: CatalogOwner, network: Network, id: string): Promise<DexOrderRecord | undefined> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const [row] = await this.sql`
+      SELECT activity_cursor AS cursor, record, signed_payload FROM dex_orders
+      WHERE id = ${id} AND root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}`;
+    return row ? rowToDexOrder(row) : undefined;
+  }
+
+  async updateDexOrder(ownerValue: CatalogOwner, network: Network, id: string, patch: Partial<DexOrderRecord>): Promise<DexOrderRecord> {
+    const current = await this.getDexOrder(ownerValue, network, id);
+    if (!current) throw new MosaicMcpError('NOT_FOUND', `order not found: ${id}`);
+    const next: DexOrderRecord = {
+      ...current, ...patch, id: current.id, cursor: current.cursor, owner: current.owner, network: current.network,
+      updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    };
+    const json = { ...next, signedPayload: undefined };
+    const cursor = await this.sql.begin(async (tx) => {
+      const [event] = await tx`
+        INSERT INTO dex_activity_events (order_id, status, record, created_at)
+        VALUES (${id}, ${next.status}, ${tx.json(json as unknown as postgres.JSONValue)}, ${next.updatedAt}) RETURNING cursor`;
+      await tx`
+        UPDATE dex_orders SET status = ${next.status}, record = ${tx.json(json as unknown as postgres.JSONValue)},
+          signed_payload = ${next.signedPayload ?? null}, updated_at = ${next.updatedAt}, activity_cursor = ${event!.cursor}
+        WHERE id = ${id}`;
+      return Number(event!.cursor);
+    });
+    return { ...next, cursor };
+  }
+
+  async listActivity(ownerValue: CatalogOwner, network: Network, query: ActivityQuery = {}): Promise<DexOrderRecord[]> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const limit = Math.min(Math.max(query.limit ?? 100, 1), 250);
+    const rows = await this.sql`
+      SELECT activity_cursor AS cursor, record, signed_payload FROM dex_orders
+      WHERE root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}
+        AND activity_cursor > ${query.after ?? 0}
+        AND (${query.chain ?? null}::text IS NULL OR chain = ${query.chain ?? null})
+        AND (${query.status ?? null}::text IS NULL OR status = ${query.status ?? null})
+        AND (${query.sourceAddress ?? null}::text IS NULL OR source_address = ${query.sourceAddress ?? null})
+      ORDER BY activity_cursor DESC LIMIT ${limit}`;
+    return rows.map(rowToDexOrder);
+  }
+
+  async listNonterminalDexOrders(): Promise<DexOrderRecord[]> {
+    const rows = await this.sql`
+      SELECT activity_cursor AS cursor, record, signed_payload FROM dex_orders
+      WHERE status IN ('submitted','confirmed','open','partially_filled','unknown')
+      ORDER BY activity_cursor`;
+    return rows.map(rowToDexOrder);
   }
 
   async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }> {
@@ -738,7 +852,17 @@ function rowToZoneAddress(row: postgres.Row): ZoneAddressRecord {
     chain: row.chain as AgentChain,
     index: row.derivation_index as number,
     name: row.name as string,
+    address: (row.address as string | null) ?? undefined,
     createdAt: new Date(row.created_at as string).toISOString(),
+  };
+}
+
+function rowToDexOrder(row: postgres.Row): DexOrderRecord {
+  const record = row.record as unknown as DexOrderRecord;
+  return {
+    ...record,
+    cursor: Number(row.cursor),
+    signedPayload: (row.signed_payload as string | null) ?? undefined,
   };
 }
 
@@ -752,7 +876,10 @@ export class MemoryStore implements MosaicStore {
   private blobs = new Map<string, BlobRecord[]>();
   private agentArtifacts = new Map<string, AgentArtifactRecord>();
   private agentArtifactTickets = new Map<string, AgentArtifactTicketRecord>();
+  private dexActivityEvents: DexOrderRecord[] = [];
   private zoneAddresses = new Map<string, ZoneAddressRecord[]>();
+  private dexOrders = new Map<string, DexOrderRecord>();
+  private activityCursor = 0;
   private nonces = new Set<string>();
   private customChains = new Map<string, CustomChainRecord>();
   /** owner key → chain id → enabled */
@@ -858,6 +985,66 @@ export class MemoryStore implements MosaicStore {
     const record = { id: randomUUID(), zoneId, chain, index, name, createdAt: new Date().toISOString() };
     list.push(record);
     return record;
+  }
+
+  async bindZoneAddresses(zoneId: string, addresses: { id: string; address: string }[]): Promise<ZoneAddressRecord[]> {
+    const list = this.zoneAddresses.get(zoneId);
+    if (!list) throw new MosaicMcpError('NOT_FOUND', 'zone not found');
+    for (const binding of addresses) {
+      const record = list.find(({ id }) => id === binding.id);
+      if (!record) throw new MosaicMcpError('NOT_FOUND', `zone address not found: ${binding.id}`);
+      if (record.address && record.address !== binding.address) throw new MosaicMcpError('CONFLICT', 'derived address binding is immutable');
+      record.address = binding.address;
+    }
+    return this.listZoneAddresses(zoneId);
+  }
+
+  async createDexOrder(record: Omit<DexOrderRecord, 'cursor'>): Promise<DexOrderRecord> {
+    if (this.dexOrders.has(record.id)) throw new MosaicMcpError('CONFLICT', `order already exists: ${record.id}`);
+    const stored: DexOrderRecord = { ...structuredClone(record), owner: normalizeCatalogOwner(record.owner), cursor: ++this.activityCursor };
+    this.dexOrders.set(stored.id, stored);
+    this.dexActivityEvents.push(structuredClone(stored));
+    return structuredClone(stored);
+  }
+
+  async getDexOrder(ownerValue: CatalogOwner, network: Network, id: string): Promise<DexOrderRecord | undefined> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const record = this.dexOrders.get(id);
+    if (!record || record.owner.chain !== owner.chain || record.owner.address !== owner.address || record.network !== network) return undefined;
+    return structuredClone(record);
+  }
+
+  async updateDexOrder(owner: CatalogOwner, network: Network, id: string, patch: Partial<DexOrderRecord>): Promise<DexOrderRecord> {
+    const current = await this.getDexOrder(owner, network, id);
+    if (!current) throw new MosaicMcpError('NOT_FOUND', `order not found: ${id}`);
+    const next: DexOrderRecord = {
+      ...current, ...structuredClone(patch), id: current.id, cursor: ++this.activityCursor, owner: current.owner, network: current.network,
+      updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    };
+    this.dexOrders.set(id, next);
+    this.dexActivityEvents.push(structuredClone(next));
+    return structuredClone(next);
+  }
+
+  async listActivity(ownerValue: CatalogOwner, network: Network, query: ActivityQuery = {}): Promise<DexOrderRecord[]> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const limit = Math.min(Math.max(query.limit ?? 100, 1), 250);
+    return [...this.dexOrders.values()]
+      .filter((record) => record.owner.chain === owner.chain && record.owner.address === owner.address && record.network === network)
+      .filter((record) => record.cursor > (query.after ?? 0))
+      .filter((record) => query.chain === undefined || record.chain === query.chain)
+      .filter((record) => query.status === undefined || record.status === query.status)
+      .filter((record) => query.sourceAddress === undefined || record.sourceAddress === query.sourceAddress)
+      .sort((a, b) => b.cursor - a.cursor)
+      .slice(0, limit)
+      .map((record) => structuredClone(record));
+  }
+
+  async listNonterminalDexOrders(): Promise<DexOrderRecord[]> {
+    return [...this.dexOrders.values()]
+      .filter(({ status }) => ['submitted', 'confirmed', 'open', 'partially_filled', 'unknown'].includes(status))
+      .sort((left, right) => left.cursor - right.cursor)
+      .map((record) => structuredClone(record));
   }
 
   async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }> {

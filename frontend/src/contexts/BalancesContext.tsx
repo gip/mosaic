@@ -19,6 +19,7 @@ import type {
 } from '@mosaic/chain-core';
 import { loadChainModule } from '../chains/load';
 import { useCatalog } from './CatalogContext';
+import { useSession } from './SessionContext';
 import { useSettings } from './SettingsContext';
 import { useVaults } from './VaultContext';
 
@@ -26,7 +27,7 @@ const FAMILIES: readonly AgentChain[] = ['xrpl', 'stellar', 'evm'];
 
 export interface AssetTotal {
   asset: KnownAsset;
-  /** Decimal string: sum across all unlocked-vault addresses of the family. */
+  /** Decimal string: sum across the root account and unlocked-vault addresses. */
   amount: string;
 }
 
@@ -55,7 +56,7 @@ interface FamilyState {
 interface BalancesValue {
   /** Per-family aggregates for the strip, ordered xrpl / stellar / evm. */
   families: FamilyBalances[];
-  /** Per-account balances for an unlocked-vault address, null until fetched. */
+  /** Per-account balances for any address in the current portfolio request. */
   accountBalances: (chain: AgentChain, address: string) => AccountBalances | null;
 }
 
@@ -63,7 +64,8 @@ const BalancesContext = createContext<BalancesValue | null>(null);
 
 /**
  * One polling balances feed per chain family, covering the trusted assets and
- * every unlocked-vault address whose vault enables the family. Feeds restart
+ * the authenticated root account plus every unlocked-vault address whose vault
+ * enables the family. Feeds restart
  * when the derived request changes — vault unlock/lock, network switch, asset
  * trust edits, vault chain toggles — via the same stringified-request effect
  * key the dex hooks use. Hosted as a context so the header strip and the
@@ -71,6 +73,7 @@ const BalancesContext = createContext<BalancesValue | null>(null);
  */
 export function BalancesProvider({ children }: { children: ReactNode }) {
   const { vaults } = useVaults();
+  const { session } = useSession();
   const { assets, chains } = useCatalog();
   const { network } = useSettings();
   const [state, setState] = useState<Partial<Record<AgentChain, FamilyState>>>({});
@@ -79,8 +82,6 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
     const unlocked = vaults.filter((vault) => vault.status === 'unlocked');
     const out: FamilyConfig[] = [];
     for (const family of FAMILIES) {
-      // Balances are vault-scoped: a family runs when any unlocked vault
-      // enables it, regardless of the account-level chain settings.
       const chain = chains.find((c) => c.family === family && c.network === network);
       if (!chain) continue;
       const enabledVaults = unlocked.filter((vault) =>
@@ -88,11 +89,14 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
       );
       const addresses = [
         ...new Set(
-          enabledVaults.flatMap((vault) =>
-            (vault.derivedAddresses ?? [])
-              .filter((entry) => entry.chain === family)
-              .map((entry) => entry.address),
-          ),
+          [
+            ...(session?.chain === family && session.network === network ? [session.address] : []),
+            ...enabledVaults.flatMap((vault) =>
+              (vault.derivedAddresses ?? [])
+                .filter((entry) => entry.chain === family)
+                .map((entry) => entry.address),
+            ),
+          ],
         ),
       ];
       if (addresses.length === 0) continue;
@@ -109,6 +113,7 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
             kind: 'issued',
             code: deployment.symbol,
             issuer: deployment.address,
+            currencyCode: deployment.currencyCode,
           });
         }
       }
@@ -116,7 +121,7 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
       out.push({ chain: family, label: chain.name, request: { network, addresses, assets: known } });
     }
     return out;
-  }, [chains, assets, network, vaults]);
+  }, [chains, assets, network, session, vaults]);
 
   // Plain data built with deterministic property order above, so equal
   // configurations produce identical keys and do not churn the feeds.

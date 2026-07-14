@@ -82,7 +82,7 @@ export async function fetchBalances(
     const balances: AssetBalance[] = req.assets.map((asset) => {
       if (asset.kind === 'native') return { asset, amount: xrpBalance };
       const lines = linesFor(outcomes[linesIndex.get(asset.issuer)!]);
-      const currency = normalizeCurrency(asset.code);
+      const currency = normalizeCurrency(asset.currencyCode ?? asset.code);
       const line = lines.find((l) => l.account === asset.issuer && l.currency === currency);
       return { asset, amount: line?.balance ?? '0' };
     });

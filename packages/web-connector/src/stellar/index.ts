@@ -63,11 +63,24 @@ export async function signStellarZoneMessageWithFreighter(
   };
 }
 
+export async function signStellarTransactionWithFreighter(
+  address: string,
+  xdr: string,
+  network: Network,
+): Promise<string> {
+  const { signTransaction } = await import('@stellar/freighter-api');
+  const result = await signTransaction(xdr, { address, networkPassphrase: NETWORK_PASSPHRASES[network] });
+  if (result.error) throw new Error(String(result.error));
+  if (!result.signedTxXdr) throw new Error('Freighter returned no signed transaction');
+  return result.signedTxXdr;
+}
+
 // ----------------------------------------------------------- WalletConnect
 
 export interface StellarWalletConnectSession {
   address: string;
   signZoneMessage(message: ZoneMessage): Promise<SignedZoneMessage>;
+  signTransaction(xdr: string): Promise<string>;
   disconnect(): Promise<void>;
 }
 
@@ -134,7 +147,7 @@ export async function connectStellarWalletConnect(opts: {
   const { uri, approval } = await client.connect({
     requiredNamespaces: {
       stellar: {
-        methods: ['stellar_signMessage'],
+        methods: ['stellar_signMessage', 'stellar_signXDR'],
         chains: [chainId],
         events: [],
       },
@@ -161,6 +174,16 @@ export async function connectStellarWalletConnect(opts: {
       if (!signed) throw new Error('wallet returned no signed message');
       const signatureBytes = base64ToBytes(signed);
       return { signatureBytes, envelope: { type: 'stellar', signatureB64: signed } };
+    },
+    async signTransaction(xdr: string): Promise<string> {
+      const result = (await client.request({
+        topic: session.topic,
+        chainId,
+        request: { method: 'stellar_signXDR', params: { xdr } },
+      })) as string | { signedXdr?: string; signedXDR?: string; xdr?: string };
+      const signed = typeof result === 'string' ? result : result.signedXdr ?? result.signedXDR ?? result.xdr;
+      if (!signed) throw new Error('This WalletConnect wallet does not return signed Stellar XDR. Use Freighter extension for this order.');
+      return signed;
     },
     async disconnect(): Promise<void> {
       await client.disconnect({

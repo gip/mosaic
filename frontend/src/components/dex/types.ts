@@ -29,6 +29,8 @@ export const NATIVE_SYMBOLS: Record<DexChain, string> = {
   evm: 'ETH',
 };
 
+export const EXECUTION_QUOTE_AMOUNTS = ['1', '10', '100', '1000', '10000', '100000', '500000'];
+
 export function assetLabel(asset: Asset, chain: DexChain): string {
   return asset.kind === 'native' ? NATIVE_SYMBOLS[chain] : asset.code;
 }

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createAdapter } from '../dist/index.js';
+import { Operation } from '@stellar/stellar-sdk';
+import { buildStellarOfferOperation, createAdapter } from '../dist/index.js';
 
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 
@@ -11,6 +12,26 @@ const REQ = {
   quote: { kind: 'issued', code: 'USDC', issuer: USDC_ISSUER },
   fundedAccounts: { base: null, quote: null },
 };
+
+test('limit orders use manageSellOffer for sell and manageBuyOffer for exact buy', () => {
+  const intent = {
+    chain: 'stellar', network: 'mainnet', sourceAddress: 'GSource', sourceKind: 'vault', side: 'sell',
+    base: { kind: 'native' }, quote: { kind: 'issued', code: 'USDC', issuer: USDC_ISSUER },
+    baseSymbol: 'XLM', quoteSymbol: 'USDC', amount: '2', limitPrice: '3',
+  };
+  const sell = Operation.fromXDRObject(buildStellarOfferOperation(intent));
+  const buy = Operation.fromXDRObject(buildStellarOfferOperation({ ...intent, side: 'buy' }));
+  assert.equal(sell.type, 'manageSellOffer');
+  assert.equal(sell.selling.code, 'XLM');
+  assert.equal(sell.buying.code, 'USDC');
+  assert.equal(sell.amount, '2.0000000');
+  assert.equal(sell.price, '3');
+  assert.equal(buy.type, 'manageBuyOffer');
+  assert.equal(buy.selling.code, 'USDC');
+  assert.equal(buy.buying.code, 'XLM');
+  assert.equal(buy.buyAmount, '2.0000000');
+  assert.equal(buy.price, '3');
+});
 
 // Trimmed live capture of GET /order_book (XLM/USDC, July 2026).
 const HORIZON_BOOK = {

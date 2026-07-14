@@ -70,7 +70,7 @@ export function normalizeCurrency(code: string): string {
 
 export function toXrplAmountSpec(asset: Asset): XrplAmountSpec {
   if (asset.kind === 'native') return { currency: 'XRP' };
-  return { currency: normalizeCurrency(asset.code), issuer: asset.issuer };
+  return { currency: normalizeCurrency(asset.currencyCode ?? asset.code), issuer: asset.issuer };
 }
 
 function amountValue(amount: XrplAmount): string {
