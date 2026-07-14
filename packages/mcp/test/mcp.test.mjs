@@ -23,7 +23,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { AGENT_ARTIFACT_PROTOCOL, AGENT_RUNTIME_VERSION, artifactDigest, sha256Hex } from '@mosaic/local-runtime';
 import { XummXamanService } from '../dist/xaman.js';
-import { jsonValuesEqual, xamanTransactionTemplate, xrplSignedFieldMatches } from '../dist/server.js';
+import { requireEnvUint32 } from '../dist/env.js';
+import { createMosaicMcpServer, jsonValuesEqual, xamanTransactionTemplate, xrplSignedFieldMatches } from '../dist/server.js';
+import { signXrplTransaction } from '@mosaic/xrpl';
 
 const evmAccount = privateKeyToAccount('0x' + '42'.repeat(32));
 const stellarPriv = new Uint8Array(32).fill(0x55);
@@ -41,14 +43,55 @@ test('XRPL signed amount comparison ignores JSON key order but rejects value cha
   assert.equal(jsonValuesEqual({ ...decoded, value: '7.6' }, prepared), false);
 });
 
+test('required UInt32 environment parsing is strict and accepts both boundaries', () => {
+  assert.equal(requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', '0'), 0);
+  assert.equal(requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', '4294967295'), 4294967295);
+  assert.throws(() => requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', undefined), /missing required env var/);
+  for (const value of ['', '-1', '+1', '1.0', '1e2', ' 1', '1 ', '4294967296', 'not-a-number']) {
+    assert.throws(() => requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', value), /invalid|missing/);
+  }
+});
+
 test('Xaman LastLedgerSequence handling is bounded and supports low-index networks', () => {
-  const lowLedger = { TransactionType: 'OfferCreate', LastLedgerSequence: 1_020 };
+  const lowLedger = { TransactionType: 'OfferCreate', LastLedgerSequence: 1_020, SourceTag: 77 };
   assert.deepEqual(xamanTransactionTemplate(lowLedger), { ...lowLedger, LastLedgerSequence: 20 });
   const highLedger = { TransactionType: 'OfferCreate', LastLedgerSequence: 90_000_020 };
   assert.equal(xamanTransactionTemplate(highLedger), highLedger);
   assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_080, 1_020, true), true);
   assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_121, 1_020, true), false);
   assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_080, 1_020, false), false);
+  assert.equal(xrplSignedFieldMatches('SourceTag', 77, 77, true), true);
+  assert.equal(xrplSignedFieldMatches('SourceTag', undefined, 77, true), false);
+  assert.equal(xrplSignedFieldMatches('SourceTag', 78, 77, true), false);
+});
+
+test('restart reconciliation fails a legacy untagged XRPL transaction without broadcasting it', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: evmAccount.address };
+  const unsignedTransaction = {
+    TransactionType: 'OfferCancel', Account: xrplAddress, OfferSequence: 1,
+    Fee: '12', Sequence: 1, LastLedgerSequence: 100,
+  };
+  const privateKey = Uint8Array.from(Buffer.from(xrplKeypair.privateKey.slice(2), 'hex'));
+  const publicKey = Uint8Array.from(Buffer.from(xrplKeypair.publicKey, 'hex'));
+  const { txBlob } = signXrplTransaction(unsignedTransaction, privateKey, publicKey);
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  await store.createDexOrder({
+    id, orderId: id, owner, network: 'testnet', chain: 'xrpl', sourceAddress: xrplAddress, sourceKind: 'root',
+    side: 'sell', action: 'cancel', base: { kind: 'native' }, quote: { kind: 'issued', code: 'USD', issuer: xrplAddress },
+    baseSymbol: 'XRP', quoteSymbol: 'USD', amount: '1', limitPrice: '1', quoteTotal: '1',
+    fee: '0.000012', feeSymbol: 'XRP', reserveImpact: null, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: 'unknown', filledAmount: '0', remainingAmount: '1', createdAt: now, updatedAt: now,
+    signingRequest: { kind: 'xrpl', unsignedTransaction }, preparedTransaction: unsignedTransaction, signedPayload: txBlob,
+  });
+
+  createMosaicMcpServer({ store, xrplSourceTag: 77 });
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  const failed = await store.getDexOrder(owner, 'testnet', id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.signedPayload, undefined);
+  assert.match(failed.error, /SourceTag must equal configured source tag 77/);
 });
 
 test('MemoryStore isolates immutable agent artifacts and versions encrypted agent-secret blobs', async () => {
@@ -439,7 +482,7 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
   const store = new MemoryStore();
   const xaman = new FakeXaman(xrplKeypair, xrplAddress);
   const auth = new AuthService(store, xaman, { checkAuthority: allowAuthority });
-  const server = await startHttpServer({ store, auth, xaman, testnetVaultKey, bind: '127.0.0.1:0' });
+  const server = await startHttpServer({ store, auth, xaman, xrplSourceTag: 77, testnetVaultKey, bind: '127.0.0.1:0' });
   const client = await connectClient(server.url);
   try {
     // login (evm)

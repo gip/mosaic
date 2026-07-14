@@ -42,6 +42,7 @@ import {
 import { authorizeZoneMessage, backupWrapMessage, verifyCommitment, type AgentChain, type Network, type ZoneRef } from '@mosaic/zone-keys';
 import { xrplSignInTxJson } from '@mosaic/zone-keys/verify';
 import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, type Session } from './auth.js';
+import { requireEnvUint32, validateUint32 } from './env.js';
 import { MosaicMcpError, mcpErrorContent } from './errors.js';
 import { createStderrLogger, type MosaicLogger } from './logging.js';
 import { MemoryStore, type BlobKind, type DexOrderRecord, type MosaicStore, type SigningRequest } from './store.js';
@@ -53,6 +54,8 @@ export interface MosaicMcpOptions {
   auth?: AuthService;
   xaman?: XamanService;
   logger?: MosaicLogger;
+  /** XRPL UInt32 SourceTag. Defaults to the required MOSAIC_XRPL_SOURCE_TAG environment variable. */
+  xrplSourceTag?: number;
   /** Persistent server-side envelope key for the explicitly custodial Testnet sandbox mode. */
   testnetVaultKey?: Uint8Array;
 }
@@ -74,6 +77,7 @@ const MAX_AGENT_SECRET_BLOB_BYTES = 64 * 1024 + 16;
 const XAMAN_RELATIVE_LEDGER_THRESHOLD = 32_570;
 const XAMAN_LAST_LEDGER_OFFSET = 20;
 const XAMAN_MAX_LAST_LEDGER_DRIFT = 100;
+const XRPL_SOURCE_TAG_ENV = 'MOSAIC_XRPL_SOURCE_TAG';
 const zoneNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 const signatureSchema = z.union([
@@ -134,6 +138,39 @@ export function xrplSignedFieldMatches(
   return jsonValuesEqual(signed, expected);
 }
 
+export function resolveXrplSourceTag(override?: number): number {
+  return override === undefined
+    ? requireEnvUint32(XRPL_SOURCE_TAG_ENV)
+    : validateUint32('xrplSourceTag', override);
+}
+
+class XrplSourceTagMismatchError extends MosaicMcpError {
+  constructor(expected: number) {
+    super('VALIDATION_FAILED', `XRPL transaction SourceTag must equal configured source tag ${expected}`);
+  }
+}
+
+function preparedXrplTransaction(record: DexOrderRecord): Record<string, unknown> | undefined {
+  if (record.preparedTransaction) return record.preparedTransaction;
+  return record.signingRequest.kind === 'xrpl' ? record.signingRequest.unsignedTransaction : undefined;
+}
+
+function assertPreparedXrplSourceTag(record: DexOrderRecord, expected: number): void {
+  if (record.chain === 'xrpl' && preparedXrplTransaction(record)?.SourceTag !== expected) {
+    throw new XrplSourceTagMismatchError(expected);
+  }
+}
+
+async function failSourceTagRecord(
+  store: MosaicStore,
+  record: DexOrderRecord,
+  error: XrplSourceTagMismatchError,
+): Promise<DexOrderRecord> {
+  return store.updateDexOrder(record.owner, record.network, record.id, {
+    status: 'failed', error: error.message, signedPayload: undefined, confirmedAt: new Date().toISOString(),
+  });
+}
+
 function sameAsset(left: DexOrderIntent['base'], right: DexOrderIntent['base']): boolean {
   return left.kind === 'native'
     ? right.kind === 'native'
@@ -156,7 +193,7 @@ function subtractDecimals(left: string, right: string): string {
   return fraction ? `${text.slice(0, -scale)}.${fraction}` : text.slice(0, -scale);
 }
 
-async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord): Promise<DexOrderRecord> {
+async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord, xrplSourceTag: number): Promise<DexOrderRecord> {
   if (['submitted', 'unknown'].includes(record.status) && record.signedPayload) {
     const known = record.transactionHash
       ? record.chain === 'xrpl'
@@ -182,8 +219,18 @@ async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord): Pr
       }
       return next;
     }
+    if (record.chain === 'xrpl') {
+      try {
+        assertPreparedXrplSourceTag(record, xrplSourceTag);
+        const signed = verifyXrplTransaction(record.signedPayload);
+        if (signed.SourceTag !== xrplSourceTag) throw new XrplSourceTagMismatchError(xrplSourceTag);
+      } catch (error) {
+        if (error instanceof XrplSourceTagMismatchError) return failSourceTagRecord(store, record, error);
+        throw error;
+      }
+    }
     const result = record.chain === 'xrpl'
-      ? await submitXrplTransaction(record.network, record.signedPayload)
+      ? await submitXrplTransaction(record.network, record.signedPayload, xrplSourceTag)
       : await submitStellarTransaction(record.network, record.signedPayload);
     const successful = result.resultCode === 'tesSUCCESS' || result.resultCode === 'success';
     const stellarResult = record.chain === 'stellar'
@@ -233,7 +280,7 @@ async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord): Pr
 
 const reconciliationStarted = new WeakSet<object>();
 
-function assertXrplMatches(record: DexOrderRecord, txBlob: string): void {
+function assertXrplMatches(record: DexOrderRecord, txBlob: string, xrplSourceTag: number): void {
   if (record.signingRequest.kind !== 'xrpl' && record.signingRequest.kind !== 'xaman') {
     throw new MosaicMcpError('VALIDATION_FAILED', 'order does not expect an XRPL signature');
   }
@@ -242,6 +289,9 @@ function assertXrplMatches(record: DexOrderRecord, txBlob: string): void {
     ? record.signingRequest.unsignedTransaction
     : (record as DexOrderRecord & { preparedTransaction?: Record<string, unknown> }).preparedTransaction;
   if (!expected) throw new MosaicMcpError('INTERNAL', 'prepared XRPL transaction is missing');
+  if (expected.SourceTag !== xrplSourceTag || signed.SourceTag !== xrplSourceTag) {
+    throw new XrplSourceTagMismatchError(xrplSourceTag);
+  }
   const signatureFields = new Set(['SigningPubKey', 'TxnSignature']);
   for (const field of Object.keys(signed)) {
     if (!signatureFields.has(field) && !(field in expected)) {
@@ -263,6 +313,7 @@ function assertStellarMatches(record: DexOrderRecord, signedXdr: string): void {
 }
 
 export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
+  const xrplSourceTag = resolveXrplSourceTag(opts.xrplSourceTag);
   const store = opts.store ?? new MemoryStore();
   const auth = opts.auth ?? new AuthService(store, opts.xaman);
   const logger = opts.logger ?? createStderrLogger();
@@ -271,7 +322,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     reconciliationStarted.add(store as object);
     queueMicrotask(() => {
       void store.listNonterminalDexOrders()
-        .then((records) => Promise.allSettled(records.map((record) => reconcileDexOrder(store, record))))
+        .then((records) => Promise.allSettled(records.map((record) => reconcileDexOrder(store, record, xrplSourceTag))))
         .catch((error: unknown) => logger.warn?.(`DEX restart reconciliation failed: ${error instanceof Error ? error.message : String(error)}`));
     });
   }
@@ -522,7 +573,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         baseSymbol: String(args.baseSymbol), quoteSymbol: String(args.quoteSymbol), amount, limitPrice,
       };
       const prepared = chain === 'xrpl'
-        ? await prepareXrplOrder(intent, quoteTotal)
+        ? await prepareXrplOrder(intent, quoteTotal, xrplSourceTag)
         : await prepareStellarOrder(intent, quoteTotal);
       let signingRequest: SigningRequest;
       let preparedTransaction: Record<string, unknown> | undefined;
@@ -579,20 +630,26 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       }
       const signed = args.signed as { kind: 'xrpl'; txBlob: string } | { kind: 'stellar'; signedXdr: string } | { kind: 'xaman'; payloadUuid: string };
       let payload: string;
-      if (signed.kind === 'xaman') {
-        if (record.signingRequest.kind !== 'xaman' || record.signingRequest.uuid !== signed.payloadUuid || !opts.xaman) {
-          throw new MosaicMcpError('VALIDATION_FAILED', 'Xaman payload does not belong to this order');
+      try {
+        assertPreparedXrplSourceTag(record, xrplSourceTag);
+        if (signed.kind === 'xaman') {
+          if (record.signingRequest.kind !== 'xaman' || record.signingRequest.uuid !== signed.payloadUuid || !opts.xaman) {
+            throw new MosaicMcpError('VALIDATION_FAILED', 'Xaman payload does not belong to this order');
+          }
+          const result = await opts.xaman.getPayloadResult(signed.payloadUuid);
+          if (!result.resolved || !result.signed || !result.hex) throw new MosaicMcpError('AUTH_INVALID', 'Xaman order payload is not signed');
+          payload = result.hex;
+          assertXrplMatches(record, payload, xrplSourceTag);
+        } else if (signed.kind === 'xrpl') {
+          payload = signed.txBlob;
+          assertXrplMatches(record, payload, xrplSourceTag);
+        } else {
+          payload = signed.signedXdr;
+          assertStellarMatches(record, payload);
         }
-        const result = await opts.xaman.getPayloadResult(signed.payloadUuid);
-        if (!result.resolved || !result.signed || !result.hex) throw new MosaicMcpError('AUTH_INVALID', 'Xaman order payload is not signed');
-        payload = result.hex;
-        assertXrplMatches(record, payload);
-      } else if (signed.kind === 'xrpl') {
-        payload = signed.txBlob;
-        assertXrplMatches(record, payload);
-      } else {
-        payload = signed.signedXdr;
-        assertStellarMatches(record, payload);
+      } catch (error) {
+        if (error instanceof XrplSourceTagMismatchError) await failSourceTagRecord(store, record, error);
+        throw error;
       }
       const submittedAt = new Date().toISOString();
       const transactionHash = record.chain === 'xrpl'
@@ -601,7 +658,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       await store.updateDexOrder(owner, session.network, record.id, { status: 'submitted', signedPayload: payload, submittedAt, transactionHash });
       try {
         const result = record.chain === 'xrpl'
-          ? await submitXrplTransaction(record.network, payload)
+          ? await submitXrplTransaction(record.network, payload, xrplSourceTag)
           : await submitStellarTransaction(record.network, payload);
         const stellarResult = record.chain === 'stellar'
           ? result as Awaited<ReturnType<typeof submitStellarTransaction>>
@@ -658,7 +715,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       }
       if (!original.offerId) throw new MosaicMcpError('VALIDATION_FAILED', 'the network offer id is not available yet');
       const prepared = original.chain === 'xrpl'
-        ? await prepareXrplCancel(original.network, original.sourceAddress, Number(original.offerId))
+        ? await prepareXrplCancel(original.network, original.sourceAddress, Number(original.offerId), xrplSourceTag)
         : await prepareStellarCancel(
             original.network,
             original.sourceAddress,
@@ -707,7 +764,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       const pending = (await store.listNonterminalDexOrders())
         .filter((record) => record.owner.chain === session.chain && record.owner.address === session.address && record.network === session.network)
         .slice(0, 20);
-      if (pending.length > 0) await Promise.allSettled(pending.map((record) => reconcileDexOrder(store, record)));
+      if (pending.length > 0) await Promise.allSettled(pending.map((record) => reconcileDexOrder(store, record, xrplSourceTag)));
       let records = await store.listActivity(
         { chain: session.chain, address: session.address }, session.network,
         {

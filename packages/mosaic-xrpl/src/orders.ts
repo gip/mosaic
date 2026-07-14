@@ -32,6 +32,13 @@ export interface PreparedXrplOrder {
 }
 
 const XRPL_IOU_SIGNIFICANT_DIGITS = 16;
+const XRPL_UINT32_MAX = 0xffff_ffff;
+
+function assertSourceTag(sourceTag: number): void {
+  if (!Number.isInteger(sourceTag) || sourceTag < 0 || sourceTag > XRPL_UINT32_MAX) {
+    throw new Error('XRPL source tag must be a UInt32 integer');
+  }
+}
 
 function normalizeIssuedValue(value: string, rounding: DecimalRounding): string {
   assertPositiveDecimal(value, 'XRPL issued amount');
@@ -83,20 +90,24 @@ function bytesToHex(bytes: Uint8Array): string {
 export async function prepareXrplOrder(
   intent: DexOrderIntent,
   quoteTotal: string,
+  sourceTag: number,
   clientFactory: (url: string) => Client = (url) => new Client(url),
 ): Promise<PreparedXrplOrder> {
+  assertSourceTag(sourceTag);
   const client = clientFactory(endpoint(intent.network));
   await client.connect();
   try {
     const transaction: OfferCreate = intent.side === 'sell'
       ? {
           TransactionType: 'OfferCreate', Account: intent.sourceAddress,
+          SourceTag: sourceTag,
           TakerGets: xrplAmount(intent.base, intent.amount),
           TakerPays: xrplAmount(intent.quote, quoteTotal, 'ceil'),
           Flags: 0x00080000,
         }
       : {
           TransactionType: 'OfferCreate', Account: intent.sourceAddress,
+          SourceTag: sourceTag,
           TakerGets: xrplAmount(intent.quote, quoteTotal),
           TakerPays: xrplAmount(intent.base, intent.amount),
           Flags: 0,
@@ -119,13 +130,15 @@ export async function prepareXrplCancel(
   network: Network,
   sourceAddress: string,
   offerSequence: number,
+  sourceTag: number,
   clientFactory: (url: string) => Client = (url) => new Client(url),
 ): Promise<PreparedXrplOrder> {
+  assertSourceTag(sourceTag);
   const client = clientFactory(endpoint(network));
   await client.connect();
   try {
     const prepared = await client.autofill({
-      TransactionType: 'OfferCancel', Account: sourceAddress, OfferSequence: offerSequence,
+      TransactionType: 'OfferCancel', Account: sourceAddress, OfferSequence: offerSequence, SourceTag: sourceTag,
     } as OfferCancel) as OfferCancel;
     return {
       kind: 'xrpl', unsignedTransaction: prepared,
@@ -174,8 +187,14 @@ export async function lookupXrplTransaction(
 export async function submitXrplTransaction(
   network: Network,
   txBlob: string,
+  expectedSourceTag: number,
   clientFactory: (url: string) => Client = (url) => new Client(url),
 ): Promise<{ hash: string; ledger?: string; resultCode: string }> {
+  assertSourceTag(expectedSourceTag);
+  const transaction = verifyXrplTransaction(txBlob);
+  if (transaction.SourceTag !== expectedSourceTag) {
+    throw new Error(`XRPL transaction SourceTag must equal configured source tag ${expectedSourceTag}`);
+  }
   const client = clientFactory(endpoint(network));
   await client.connect();
   try {
