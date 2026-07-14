@@ -159,7 +159,7 @@ test('xrpl surface stream: settles on the first reply carrying alternatives (no 
   handle.close();
 });
 
-test('xrpl surface stream: all-failed cycle emits error; socket drop emits closed', async () => {
+test('xrpl surface stream: all-failed cycle emits error; socket drop surfaces its reason', async () => {
   const events = [];
   const { ws } = openXrplSurface(events);
   ws.onopen();
@@ -181,7 +181,9 @@ test('xrpl surface stream: all-failed cycle emits error; socket drop emits close
   assert.equal(events[0].type, 'error');
   assert.match(events[0].error.message, /noPermission/);
 
-  ws.onclose(); // server drop
+  ws.onclose({ code: 1008, reason: 'Connection (public) IP limit reached' });
+  assert.equal(events.at(-2).type, 'error');
+  assert.equal(events.at(-2).error.message, 'XRPL WebSocket closed (1008): Connection (public) IP limit reached');
   assert.equal(events.at(-1).type, 'closed');
 });
 

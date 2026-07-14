@@ -1,17 +1,8 @@
 import { Fragment, useState } from 'react';
 import type { ActivityRecord } from '@mosaic/chain-core';
+import { activityExplorerUrl } from './activityPresentation';
 
 const ACTIVE = new Set(['awaiting_signature', 'submitted', 'confirmed', 'open', 'partially_filled', 'unknown']);
-
-function explorerUrl(activity: ActivityRecord): string | null {
-  if (!activity.transactionHash) return null;
-  if (activity.chain === 'xrpl') {
-    const host = activity.network === 'mainnet' ? 'livenet.xrpl.org' : 'testnet.xrpl.org';
-    return `https://${host}/transactions/${activity.transactionHash}`;
-  }
-  const network = activity.network === 'mainnet' ? 'public' : 'testnet';
-  return `https://stellar.expert/explorer/${network}/tx/${activity.transactionHash}`;
-}
 
 function time(value?: string): string {
   return value ? new Date(value).toLocaleString() : '—';
@@ -36,6 +27,7 @@ export default function ActivityTable({ activities, compact = false, onCancel }:
         <tbody>
           {activities.map((activity) => {
             const open = expanded === activity.id;
+            const explorerUrl = activityExplorerUrl(activity);
             return (
               <Fragment key={activity.id}>
                 <tr className="activity-table-row" onClick={() => setExpanded(open ? null : activity.id)} aria-expanded={open} tabIndex={0} onKeyDown={(event) => {
@@ -65,7 +57,7 @@ export default function ActivityTable({ activities, compact = false, onCancel }:
                     <div><dt>Submitted</dt><dd>{time(activity.submittedAt)}</dd></div>
                     <div><dt>Confirmed</dt><dd>{time(activity.confirmedAt)}</dd></div>
                     <div><dt>Result</dt><dd>{activity.resultCode ?? '—'}</dd></div>
-                    <div><dt>Transaction</dt><dd>{explorerUrl(activity) ? <a href={explorerUrl(activity)!} target="_blank" rel="noreferrer">View on explorer</a> : '—'}</dd></div>
+                    <div><dt>Transaction</dt><dd>{explorerUrl ? <a href={explorerUrl} target="_blank" rel="noreferrer">View on explorer</a> : '—'}</dd></div>
                     {activity.error && <div className="activity-details-error"><dt>Error</dt><dd>{activity.error}</dd></div>}
                   </dl>
                 </td></tr>}

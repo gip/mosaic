@@ -77,6 +77,31 @@ determinism-regression test that re-verifies recorded backup-wrap signatures
 against current library versions — if that one fails, an encoding drift would
 strand existing layer-1 blobs; never update the recorded values.
 
+## Recover a Mainnet backup file
+
+The local recovery CLI reads an exported `mosaic-vault-backup-*.json`, prompts
+for its backup passphrase without echoing it, verifies the recovered vault
+secret against the commitment, decrypts optional vault data, and prints the
+index-0 addresses for all three chains:
+
+```sh
+pnpm vault:recover ./mosaic-vault-backup-default-mainnet.json
+```
+
+The backup does not contain the backend address registry. Derive additional
+known indexes with repeated or comma-separated `--index` options:
+
+```sh
+pnpm vault:recover ./backup.json --index 0,1,2
+```
+
+Private key output is deliberately opt-in. It writes secrets to standard
+output, so do not paste, log, or redirect the result to an unprotected file:
+
+```sh
+pnpm vault:recover ./backup.json --index 0 --show-private-keys
+```
+
 ## Custody model (browser zones)
 
 Mainnet and signed browser zones are non-custodial for key material, with a

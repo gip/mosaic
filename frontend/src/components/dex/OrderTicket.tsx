@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ArrowRight, ShieldCheck, Zap } from 'lucide-react';
 import type { Asset, OrderBookSnapshot, OrderSide } from '@mosaic/chain-core';
 import { multiplyDecimals } from '@mosaic/chain-core';
 import { api, type DexOrderPrepareResult, type XamanRefs } from '../../api';
@@ -9,6 +10,11 @@ import { useTradingAccounts, type TradingAccount } from '../../hooks/useTradingA
 import XamanPromptModal from '../XamanPromptModal';
 import Modal from '../ui/Modal';
 import { signAndSubmitOrder } from './signing';
+
+interface PendingXamanPrompt {
+  refs: XamanRefs;
+  cancel: () => void;
+}
 
 export interface TradingMarket {
   id: string;
@@ -33,6 +39,89 @@ export interface OrderTicketSelection {
   nonce: number;
 }
 
+function shortAddress(address: string): string {
+  return address.length > 22 ? `${address.slice(0, 11)}…${address.slice(-9)}` : address;
+}
+
+function OrderReviewModal({
+  prepared,
+  account,
+  crosses,
+  busy,
+  error,
+  onClose,
+  onSubmit,
+}: {
+  prepared: DexOrderPrepareResult;
+  account: TradingAccount;
+  crosses: boolean;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  const { order } = prepared;
+  const isBuy = order.side === 'buy';
+
+  return <Modal title="Review limit order" onClose={onClose}>
+    <div className={`offer-review offer-review--${order.side}`}>
+      <section className="offer-review-hero" aria-label="Order summary">
+        <div className="offer-review-kicker">
+          <span className={`pill ${order.side}`}>{order.side}</span>
+          <span className="mono">{order.chain.toUpperCase()} · {order.network}</span>
+        </div>
+        <div className="offer-review-market">
+          <div>
+            <span>{isBuy ? 'You receive' : 'You sell'}</span>
+            <strong className="num">{order.amount}<small>{order.baseSymbol}</small></strong>
+          </div>
+          <ArrowRight size={20} strokeWidth={1.6} aria-hidden="true" />
+          <div>
+            <span>Limit price</span>
+            <strong className="num">{order.limitPrice}<small>{order.quoteSymbol}</small></strong>
+          </div>
+        </div>
+        <div className="offer-review-total">
+          <span>{isBuy ? 'Maximum spend' : 'Minimum proceeds'}</span>
+          <strong className="num">{order.quoteTotal} {order.quoteSymbol}</strong>
+        </div>
+      </section>
+
+      <dl className="offer-review-details">
+        <div className="offer-review-source">
+          <dt>Source account</dt>
+          <dd><strong>{account.label}</strong><code title={account.address}>{shortAddress(account.address)}</code><small>{account.kind === 'root' ? 'Root wallet' : 'Vault'}</small></dd>
+        </div>
+        <div>
+          <dt>Network fee</dt>
+          <dd className="num">{order.fee} {order.feeSymbol}</dd>
+        </div>
+        <div>
+          <dt>Reserve impact</dt>
+          <dd>{order.reserveImpact ?? 'No additional reserve required'}</dd>
+        </div>
+        <div>
+          <dt>Time in force</dt>
+          <dd>Good ’til cancelled</dd>
+        </div>
+      </dl>
+
+      {crosses && <p className="order-crossing offer-review-notice"><Zap size={17} aria-hidden="true" /><span><strong>May fill immediately</strong>This price crosses the current book. Any remainder will stay open at your limit.</span></p>}
+      {error && <p className="activity-summary-error">{error}</p>}
+
+      <footer className="offer-review-actions">
+        <p><ShieldCheck size={15} aria-hidden="true" />Only this exact order will be signed.</p>
+        <div>
+          <button type="button" className="btn-ghost" disabled={busy} onClick={onClose}>Back</button>
+          <button type="button" className={`btn-primary offer-review-submit order-submit--${order.side}`} disabled={busy} onClick={onSubmit}>
+            {busy ? 'Waiting for signature…' : <>Sign &amp; place order <ArrowRight size={15} aria-hidden="true" /></>}
+          </button>
+        </div>
+      </footer>
+    </div>
+  </Modal>;
+}
+
 export default function OrderTicket({ market, book, selection }: { market: TradingMarket; book: OrderBookSnapshot | null; selection: OrderTicketSelection | null }) {
   const { session, signRootStellarTransaction } = useSession();
   const { accountBalances } = useBalances();
@@ -45,7 +134,7 @@ export default function OrderTicket({ market, book, selection }: { market: Tradi
   const [prepared, setPrepared] = useState<DexOrderPrepareResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [xaman, setXaman] = useState<XamanRefs | null>(null);
+  const [xaman, setXaman] = useState<PendingXamanPrompt | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
   const selected = accounts.find(({ address }) => address === accountAddress) ?? accounts[0];
   if (selection && selection.nonce !== selectionNonce) {
@@ -100,7 +189,7 @@ export default function OrderTicket({ market, book, selection }: { market: Tradi
     try {
       const result = await signAndSubmitOrder(prepared, account, session, {
         signRootStellarTransaction,
-        showXaman: setXaman,
+        showXaman: (refs, cancel) => setXaman({ refs, cancel }),
         hideXaman: () => setXaman(null),
       });
       if (result.order.status === 'failed' || result.order.status === 'unknown') throw new Error(result.order.error ?? `Order status: ${result.order.status}`);
@@ -130,20 +219,15 @@ export default function OrderTicket({ market, book, selection }: { market: Tradi
       {error && <p className="activity-summary-error">{error}</p>}
       <button type="button" className={`btn-primary order-submit order-submit--${side}`} disabled={busy || !allowed || !selected || !total} onClick={() => void review()}>{busy ? 'Preparing…' : `Review ${side} order`}</button>
     </>}
-    {prepared && selected && <Modal title="Review exact limit order" onClose={() => !busy && setPrepared(null)}>
-      <dl className="order-review">
-        <div><dt>Action</dt><dd>{prepared.order.side.toUpperCase()} {prepared.order.amount} {prepared.order.baseSymbol}</dd></div>
-        <div><dt>Limit</dt><dd>{prepared.order.limitPrice} {prepared.order.quoteSymbol}</dd></div>
-        <div><dt>Maximum total</dt><dd>{prepared.order.quoteTotal} {prepared.order.quoteSymbol}</dd></div>
-        <div><dt>Source</dt><dd>{selected.label}<small className="mono">{selected.address}</small></dd></div>
-        <div><dt>Fee</dt><dd>{prepared.order.fee} {prepared.order.feeSymbol}</dd></div>
-        <div><dt>Reserve impact</dt><dd>{prepared.order.reserveImpact ?? 'None'}</dd></div>
-        <div><dt>Time in force</dt><dd>Good ’til cancelled</dd></div>
-      </dl>
-      {crosses && <p className="order-crossing">This order can fill immediately; any remainder will rest on the book.</p>}
-      {error && <p className="activity-summary-error">{error}</p>}
-      <button type="button" className="btn-primary" disabled={busy} onClick={() => void submit(selected)}>{busy ? 'Waiting for signature…' : 'Sign and submit'}</button>
-    </Modal>}
-    {xaman && <XamanPromptModal prompt={{ refs: xaman, label: 'Sign the limit order in Xaman' }} onClose={() => setXaman(null)} />}
+    {prepared && selected && <OrderReviewModal
+      prepared={prepared}
+      account={selected}
+      crosses={crosses}
+      busy={busy}
+      error={error}
+      onClose={() => !busy && setPrepared(null)}
+      onSubmit={() => void submit(selected)}
+    />}
+    {xaman && <XamanPromptModal prompt={{ refs: xaman.refs, label: 'Sign the limit order in Xaman' }} onClose={() => { xaman.cancel(); setXaman(null); }} />}
   </aside>;
 }

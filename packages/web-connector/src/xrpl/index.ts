@@ -26,6 +26,7 @@ export function watchXamanPayload(
   websocketStatus: string,
   opts: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<XamanWatchResult> {
+  if (opts.signal?.aborted) return Promise.reject(new Error('cancelled'));
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(websocketStatus);
     const timeout = setTimeout(() => finish(new Error('Xaman payload timed out')), opts.timeoutMs ?? 5 * 60_000);

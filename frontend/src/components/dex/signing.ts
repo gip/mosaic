@@ -5,7 +5,7 @@ import type { TradingAccount } from '../../hooks/useTradingAccounts';
 
 export interface DexSigningUi {
   signRootStellarTransaction: (xdr: string) => Promise<string>;
-  showXaman: (refs: XamanRefs) => void;
+  showXaman: (refs: XamanRefs, cancel: () => void) => void;
   hideXaman: () => void;
 }
 
@@ -58,12 +58,16 @@ export async function signAndSubmitOrder(
   ui: DexSigningUi,
 ) {
   if (prepared.signingRequest.kind === 'xaman') {
-    ui.showXaman(prepared.signingRequest);
+    const abort = new AbortController();
+    ui.showXaman(prepared.signingRequest, () => abort.abort());
     try {
       const { watchXamanPayload } = await import('@mosaic/web-connector/xrpl');
-      const watched = await watchXamanPayload(prepared.signingRequest.websocketStatus);
+      const watched = await watchXamanPayload(prepared.signingRequest.websocketStatus, { signal: abort.signal });
       if (!watched.signed) throw new Error(watched.expired ? 'The Xaman order request expired.' : 'The order was declined in Xaman.');
       return api.dexOrderSubmit(session.token, prepared.order.id, { kind: 'xaman', payloadUuid: prepared.signingRequest.uuid });
+    } catch (cause) {
+      if (abort.signal.aborted) throw new Error('Xaman signing cancelled.', { cause });
+      throw cause;
     } finally {
       ui.hideXaman();
     }

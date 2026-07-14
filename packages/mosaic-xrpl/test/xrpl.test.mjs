@@ -386,15 +386,17 @@ test('openStream: transaction events coalesce into one debounced book_offers ref
   assert.equal(ws.sent.length, 5);
 });
 
-test('openStream: unexpected socket close emits closed for the feed to reconnect', async () => {
+test('openStream: unexpected socket close surfaces the reason before reconnecting', async () => {
   const events = [];
   const { ws } = openFakeStream(events);
   ws.onopen();
-  ws.onclose(); // server drop, not handle.close()
+  ws.onclose({ code: 1008, reason: 'Connection (public) IP limit reached' });
+  await drain();
   assert.deepEqual(
     events.map((e) => e.type),
-    ['closed'],
+    ['error', 'closed'],
   );
+  assert.equal(events[0].error.message, 'XRPL WebSocket closed (1008): Connection (public) IP limit reached');
 });
 
 test('openStream: invalid issued code throws synchronously', () => {

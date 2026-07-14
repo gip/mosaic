@@ -23,6 +23,11 @@ import { api, type DexOrderPrepareResult, type XamanRefs } from '../api';
 
 const STATUS_TONES: Record<string, StatusTone> = { live: 'ok', connecting: 'busy', reconnecting: 'warn', idle: 'idle' };
 
+interface PendingXamanPrompt {
+  refs: XamanRefs;
+  cancel: () => void;
+}
+
 function assetFromDeployment(deployment: ReturnType<typeof deploymentFor>): Asset | null {
   if (!deployment) return null;
   return deployment.kind === 'native'
@@ -164,7 +169,7 @@ export default function DexPage() {
   const [cancelReview, setCancelReview] = useState<{ prepared: DexOrderPrepareResult; account: TradingAccount } | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [xaman, setXaman] = useState<XamanRefs | null>(null);
+  const [xaman, setXaman] = useState<PendingXamanPrompt | null>(null);
 
   if (!market) return <section className="dex-page"><h2>DEX</h2><p>No XRPL or Stellar markets are enabled for {network}.</p></section>;
   const bestBid = book.snapshot?.bids[0]?.price;
@@ -197,7 +202,7 @@ export default function DexPage() {
     if (!session || !cancelReview) return;
     setCancelBusy(true); setCancelError(null);
     try {
-      await signAndSubmitOrder(cancelReview.prepared, cancelReview.account, session, { signRootStellarTransaction, showXaman: setXaman, hideXaman: () => setXaman(null) });
+      await signAndSubmitOrder(cancelReview.prepared, cancelReview.account, session, { signRootStellarTransaction, showXaman: (refs, cancel) => setXaman({ refs, cancel }), hideXaman: () => setXaman(null) });
       setCancelReview(null);
       await refresh();
     } catch (cause) { setCancelError(cause instanceof Error ? cause.message : String(cause)); }
@@ -228,6 +233,6 @@ export default function DexPage() {
     </div>
     <section className="dex-activity"><div className="dex-section-heading"><div><span className="eyebrow">THIS MARKET</span><h3>Open orders and activity</h3></div>{cancelBusy && <span>Preparing cancellation…</span>}</div>{cancelError && <p className="activity-summary-error">{cancelError}</p>}<ActivityTable activities={marketActivity} onCancel={(activity) => void prepareCancel(activity)} /></section>
     {cancelReview && <Modal title="Review order cancellation" onClose={() => !cancelBusy && setCancelReview(null)}><dl className="order-review"><div><dt>Offer</dt><dd>{cancelReview.prepared.order.offerId}</dd></div><div><dt>Pair</dt><dd>{cancelReview.prepared.order.baseSymbol}/{cancelReview.prepared.order.quoteSymbol}</dd></div><div><dt>Source</dt><dd>{cancelReview.account.label}<small className="mono">{cancelReview.account.address}</small></dd></div><div><dt>Fee</dt><dd>{cancelReview.prepared.order.fee} {cancelReview.prepared.order.feeSymbol}</dd></div></dl>{cancelError && <p className="activity-summary-error">{cancelError}</p>}<button type="button" className="btn-primary" disabled={cancelBusy} onClick={() => void submitCancel()}>{cancelBusy ? 'Waiting for signature…' : 'Sign and cancel'}</button></Modal>}
-    {xaman && <XamanPromptModal prompt={{ refs: xaman, label: 'Sign the cancellation in Xaman' }} onClose={() => setXaman(null)} />}
+    {xaman && <XamanPromptModal prompt={{ refs: xaman.refs, label: 'Sign the cancellation in Xaman' }} onClose={() => { xaman.cancel(); setXaman(null); }} />}
   </section>;
 }

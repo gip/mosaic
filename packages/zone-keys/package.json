@@ -16,6 +16,7 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
+    "recover": "pnpm build && node scripts/recover-backup.mjs",
     "test": "tsc -b && node --test test/*.test.mjs"
   },
   "dependencies": {

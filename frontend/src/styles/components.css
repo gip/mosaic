@@ -1150,6 +1150,9 @@ tbody tr:hover {
 .activity-page {
   max-width: 1100px;
 }
+.activity-page .activity-groups {
+  margin-top: var(--sp-5);
+}
 .activity-groups {
   display: grid;
   gap: var(--sp-3);
@@ -1169,6 +1172,15 @@ tbody tr:hover {
 }
 .activity-summary-main {
   min-width: 0;
+}
+.activity-field-label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
 }
 .activity-summary-heading {
   display: flex;
@@ -1265,23 +1277,11 @@ tbody tr:hover {
 .activity-details > div { min-width: 0; }
 .activity-details dd { margin: 3px 0 0; overflow-wrap: anywhere; }
 .activity-details-error { grid-column: 1 / -1; color: var(--err); }
-.activity-filters {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
-  gap: var(--sp-3);
-  margin: var(--sp-5) 0 var(--sp-4);
-  padding: var(--sp-4);
-  background: var(--bg-panel);
-  border: 1px solid var(--line);
-  border-radius: var(--r-3);
-}
-
 @media (max-width: 720px) {
   .activity-panel {
     width: calc(100vw - 2 * var(--sp-3));
     max-height: 75vh;
   }
-  .activity-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .activity-details { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
 }
 .activity-tx-list {
@@ -1317,6 +1317,17 @@ tbody tr:hover {
   font-size: var(--fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.activity-tx-pending {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 720px) {
+  .activity-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
 }
 
 /* ---------------- Responsive header ----------------

@@ -1325,6 +1325,207 @@
 .order-review dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .order-review small { display: block; margin-top: 3px; color: var(--fg-dim); }
 
+/* Exact-order review, using the same flat panels and data rows as the DEX. */
+.offer-review {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.offer-review-hero { display: grid; }
+
+.offer-review-kicker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  color: var(--fg-dim);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.offer-review-kicker .pill {
+  padding-block: 2px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.offer-review-kicker .mono {
+  font-size: 10px;
+  word-break: normal;
+}
+
+.offer-review-market {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0;
+  border-top: 1px solid var(--line);
+}
+
+.offer-review-market > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--sp-1);
+}
+
+.offer-review-market > div:last-child { text-align: right; }
+
+.offer-review-market > div > span,
+.offer-review-total > span {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+
+.offer-review-market strong {
+  color: var(--fg);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.offer-review-market strong small {
+  margin-left: var(--sp-2);
+  color: var(--fg-muted);
+  font: 500 var(--fs-xs) var(--font-sans);
+}
+
+.offer-review-market > svg {
+  justify-self: center;
+  color: var(--fg-dim);
+}
+
+.offer-review-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.offer-review-total strong {
+  color: var(--fg);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.offer-review-details {
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.offer-review-details > div {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.offer-review-details dt {
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.offer-review-details dd {
+  margin: 0;
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.offer-review-source dd {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.offer-review-source code {
+  color: var(--fg-muted);
+  font: var(--fs-xs) var(--font-mono);
+}
+
+.offer-review-source small {
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.offer-review-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+.offer-review-notice > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--warn);
+}
+
+.offer-review-notice span { display: grid; gap: 2px; }
+.offer-review-notice strong { font-size: var(--fs-sm); }
+
+.offer-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+.offer-review-actions p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--fs-xs);
+}
+
+.offer-review-actions p svg { color: var(--accent); }
+
+.offer-review-actions > div {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.offer-review-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-width: 168px;
+}
+
+@media (max-width: 480px) {
+  .offer-review-market {
+    grid-template-columns: 1fr;
+    gap: var(--sp-3);
+  }
+  .offer-review-market > svg { display: none; }
+  .offer-review-market > div:last-child { text-align: left; }
+  .offer-review-details > div { grid-template-columns: 108px minmax(0, 1fr); }
+  .offer-review-actions { align-items: stretch; flex-direction: column; }
+  .offer-review-actions > div { display: grid; grid-template-columns: auto 1fr; }
+  .offer-review-submit { min-width: 0; }
+}
+
 .dex-analytics,
 .dex-activity { padding: var(--sp-4); }
 .dex-analytics { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); gap: var(--sp-5); }
