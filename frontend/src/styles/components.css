@@ -88,6 +88,7 @@ button[aria-pressed="true"] {
 
 /* ---------------- Header / nav ---------------- */
 header.topbar {
+  --topbar-control-h: 30px;
   display: flex;
   align-items: center;
   gap: var(--sp-5);
@@ -192,7 +193,7 @@ header.topbar {
   justify-content: center;
   padding: 0;
   width: 30px;
-  height: 30px;
+  height: var(--topbar-control-h);
   flex: none;
   color: var(--fg-muted);
   border: 1px solid var(--line-strong);
@@ -258,6 +259,7 @@ header.topbar {
   gap: var(--sp-2);
 }
 .vault-switcher select {
+  height: var(--topbar-control-h);
   min-width: 120px;
   padding: 4px 24px 4px 8px;
   font-family: var(--font-mono);
@@ -275,6 +277,7 @@ header.topbar {
 }
 .network-switch {
   display: inline-flex;
+  height: var(--topbar-control-h);
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--line-strong);
@@ -284,6 +287,7 @@ header.topbar {
 .network-switch button {
   display: inline-flex;
   align-items: center;
+  height: 100%;
   gap: 6px;
   padding: 2px 8px;
   border: none;
@@ -331,7 +335,7 @@ button.topbar-session-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 30px;
+  height: var(--topbar-control-h);
   padding: 0 10px;
   font-size: var(--fs-sm);
   line-height: 1;
@@ -342,6 +346,7 @@ button.topbar-session-button {
   white-space: nowrap;
 }
 .address-button {
+  height: var(--topbar-control-h);
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   padding: 4px 8px;
