@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_ASSETS, BUILTIN_CHAINS, defaultCatalogSnapshot } from '../dist/index.js';
+import { BUILTIN_ASSETS, BUILTIN_CHAINS, XRPL_CURRENCY_CODES, defaultCatalogSnapshot } from '../dist/index.js';
 
 test('built-in chain and asset IDs and deployments are unique', () => {
   assert.equal(BUILTIN_CHAINS.length, 6);
@@ -18,6 +18,7 @@ test('built-in chain and asset IDs and deployments are unique', () => {
     for (const deployment of asset.deployments) {
       assert.ok(BUILTIN_CHAINS.some(({ id }) => id === deployment.chainId));
       assert.equal(deployment.kind === 'issued', typeof deployment.address === 'string');
+      assert.ok(Number.isInteger(deployment.decimals) && deployment.decimals >= 0 && deployment.decimals <= 18);
     }
   }
 });
@@ -27,7 +28,13 @@ test('official stablecoin deployment addresses are pinned', () => {
   const rlusd = BUILTIN_ASSETS.find(({ id }) => id === 'rlusd');
   assert.equal(usdc.deployments.find(({ chainId }) => chainId === 'base-mainnet').address, '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
   assert.equal(usdc.deployments.find(({ chainId }) => chainId === 'xrpl-testnet').address, 'rHuGNhqTG32mfmAvWA8hUyWRLV3tCSwKQt');
+  assert.equal(usdc.deployments.find(({ chainId }) => chainId === 'xrpl-mainnet').currencyCode, XRPL_CURRENCY_CODES.USDC);
   assert.equal(rlusd.deployments.find(({ chainId }) => chainId === 'xrpl-testnet').address, 'rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV');
+  assert.equal(rlusd.deployments.find(({ chainId }) => chainId === 'xrpl-mainnet').currencyCode, XRPL_CURRENCY_CODES.RLUSD);
+  assert.equal(usdc.deployments.find(({ chainId }) => chainId === 'xrpl-mainnet').decimals, 6);
+  assert.equal(rlusd.deployments.find(({ chainId }) => chainId === 'xrpl-mainnet').decimals, 6);
+  assert.match(XRPL_CURRENCY_CODES.RLUSD, /^[0-9A-F]{40}$/);
+  assert.equal(Buffer.from(XRPL_CURRENCY_CODES.RLUSD, 'hex').toString('utf8').replace(/\0+$/, ''), 'RLUSD');
   assert.deepEqual(rlusd.deployments.map(({ chainId }) => chainId), ['xrpl-mainnet', 'xrpl-testnet']);
 });
 

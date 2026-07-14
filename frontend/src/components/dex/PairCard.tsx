@@ -29,7 +29,7 @@ const SOURCE_LABELS: { id: keyof PairSources; label: string }[] = [
   { id: 'paths', label: 'Paths' },
 ];
 const HISTORY_MAX = 600;
-const QUOTE_AMOUNTS = ['1', '10', '100', '1000', '10000', '100000'];
+const QUOTE_AMOUNTS = ['1', '10', '100', '1000', '10000', '100000', '500000'];
 
 const STATUS_TONES: Record<string, StatusTone> = {
   live: 'ok',
@@ -119,7 +119,7 @@ function ExecutionCostTable({
     <section className="dex-execution" aria-label="Execution cost">
       <div className="dex-execution-head">
         <h4>Execution cost</h4>
-        <p>Execution cost versus the current mid price; lower is better.</p>
+        <p>Execution cost versus the current mid price; lower is better. Costs are computed from the order-book mid.</p>
       </div>
       <div className="dex-execution-scroll">
         <table className="dex-book dex-execution-table">

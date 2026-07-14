@@ -1,0 +1,28 @@
+{
+  "packageName": "compiler-fixture",
+  "version": "1.0.0",
+  "entry": "src/agent.ts",
+  "tsconfig": "tsconfig.json",
+  "capabilities": {
+    "required": [
+      {
+        "operation": "log.emit",
+        "maxCalls": 2,
+        "maxResponseBytes": 1024,
+        "constraints": { "maxEntryBytes": 1024 }
+      }
+    ],
+    "optional": []
+  },
+  "resourceSlots": [],
+  "limits": {
+    "memoryBytes": 8388608,
+    "stackBytes": 262144,
+    "wallTimeMs": 60000,
+    "maxPendingJobs": 16,
+    "maxHookConcurrency": 2,
+    "maxHookResponseBytes": 4096,
+    "maxEventBytes": 4096
+  },
+  "minimumRuntimeVersion": "2.0.0"
+}

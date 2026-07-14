@@ -20,13 +20,19 @@ const DB_NAME = 'mosaic-zone-cache';
 const STORE = 'secrets';
 const DEVICE_KEYS = 'deviceKeys';
 
+let databasePromise: Promise<IDBPDatabase> | undefined;
+
 function dbPromise(): Promise<IDBPDatabase> {
-  return openDB(DB_NAME, 2, {
+  databasePromise ??= openDB(DB_NAME, 2, {
     upgrade(db) {
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
       if (!db.objectStoreNames.contains(DEVICE_KEYS)) db.createObjectStore(DEVICE_KEYS);
     },
+    terminated() {
+      databasePromise = undefined;
+    },
   });
+  return databasePromise;
 }
 
 export async function cacheTestnetDeviceKey(ref: ZoneRef, rawKey: Uint8Array): Promise<void> {
@@ -122,4 +128,24 @@ export async function clearZoneCache(): Promise<void> {
   } catch {
     /* cache is best-effort */
   }
+}
+
+/** Permanently remove every browser-cached secret and Testnet device key. */
+export async function deleteZoneCacheDatabase(): Promise<void> {
+  const db = await dbPromise();
+  const transaction = db.transaction([STORE, DEVICE_KEYS], 'readwrite');
+  await Promise.all([
+    transaction.objectStore(STORE).clear(),
+    transaction.objectStore(DEVICE_KEYS).clear(),
+    transaction.done,
+  ]);
+  db.close();
+  databasePromise = undefined;
+
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(DB_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error ?? new Error(`Could not delete ${DB_NAME}`));
+    request.onblocked = () => reject(new Error(`Could not delete ${DB_NAME}: the database is still open`));
+  });
 }

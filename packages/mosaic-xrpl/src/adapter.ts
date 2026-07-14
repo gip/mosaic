@@ -70,7 +70,7 @@ export function normalizeCurrency(code: string): string {
 
 export function toXrplAmountSpec(asset: Asset): XrplAmountSpec {
   if (asset.kind === 'native') return { currency: 'XRP' };
-  return { currency: normalizeCurrency(asset.code), issuer: asset.issuer };
+  return { currency: normalizeCurrency(asset.currencyCode ?? asset.code), issuer: asset.issuer };
 }
 
 function amountValue(amount: XrplAmount): string {
@@ -199,6 +199,14 @@ function assertRpcSuccess(result: XrplRpcResult | undefined): XrplRpcResult {
   return result;
 }
 
+function webSocketCloseError(event?: Pick<CloseEvent, 'code' | 'reason'>): Error {
+  const reason = event?.reason?.trim();
+  if (event?.code && reason) return new Error(`XRPL WebSocket closed (${event.code}): ${reason}`);
+  if (event?.code) return new Error(`XRPL WebSocket closed (${event.code})`);
+  if (reason) return new Error(`XRPL WebSocket closed: ${reason}`);
+  return new Error('XRPL WebSocket closed unexpectedly');
+}
+
 /** Per-request outcome of a settled WS batch: a result or the rippled error code. */
 export interface XrplBatchOutcome {
   result?: XrplRpcResult;
@@ -255,7 +263,7 @@ export function wsRequestBatchSettled(
       if (--remaining === 0) finish(() => resolve(outcomes));
     };
     ws.onerror = () => finish(() => reject(new Error('XRPL WebSocket error')));
-    ws.onclose = () => finish(() => reject(new Error('XRPL WebSocket closed')));
+    ws.onclose = (event) => finish(() => reject(webSocketCloseError(event)));
   });
 }
 
@@ -577,17 +585,24 @@ export function createAdapter(): DexAdapter {
         if (!closed) emit({ type: 'error', error: new Error('XRPL WebSocket error') });
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        const intentional = closed;
+        closed = true;
+        const error = webSocketCloseError(event);
         for (const id of [...waiters.keys()]) {
-          settleWaiter(id, { alternatives: null, error: new Error('XRPL WebSocket closed') });
+          settleWaiter(id, { alternatives: null, error });
         }
-        for (const rpc of rpcWaiters.values()) rpc.reject(new Error('XRPL WebSocket closed'));
+        for (const rpc of rpcWaiters.values()) rpc.reject(error);
         rpcWaiters.clear();
-        if (!closed) emit({ type: 'closed' });
+        if (!intentional) {
+          emit({ type: 'error', error });
+          emit({ type: 'closed' });
+        }
       };
 
       return {
         close() {
+          if (closed) return;
           closed = true;
           for (const id of [...waiters.keys()]) settleWaiter(id, { alternatives: null });
           for (const rpc of rpcWaiters.values()) rpc.reject(new Error('closed'));
@@ -709,14 +724,21 @@ export function createAdapter(): DexAdapter {
         fail(new Error('XRPL WebSocket error'));
       };
 
-      ws.onclose = () => {
-        for (const entry of pending.values()) entry.reject(new Error('XRPL WebSocket closed'));
+      ws.onclose = (event) => {
+        const intentional = closed;
+        closed = true;
+        const error = webSocketCloseError(event);
+        for (const entry of pending.values()) entry.reject(error);
         pending.clear();
-        if (!closed) emit({ type: 'closed' });
+        if (!intentional) {
+          emit({ type: 'error', error });
+          emit({ type: 'closed' });
+        }
       };
 
       return {
         close() {
+          if (closed) return;
           closed = true;
           if (refetchTimer !== null) {
             clearTimeout(refetchTimer);

@@ -45,10 +45,10 @@ for Mainnet.
   registry, encrypted blob storage, Xaman payload proxy, XRPL
   authoritative-key ledger checks.
 - `packages/local-runtime` — shared utility-process lifecycle and IPC contract
-  for the Electron host, Signer/Policy Manager, and Agent Runner.
+  for the Electron host, Mosaic Guardian, and Agent Runner.
 - `packages/ui-theme` — shared visual tokens for Web and Local. Palette,
   spacing, typography scale, radii, and theme behavior belong here once.
-- `packages/local-signer` / `packages/agent-runner` — independently supervised
+- `packages/guardian` / `packages/agent-runner` — independently supervised
   local process boundaries. The runner never receives zone secrets or keys.
 - `local-app` — Electron host for the shared frontend and local processes. It
   must not contain a parallel renderer UI. The runner service starts with the
@@ -68,6 +68,7 @@ for Mainnet.
   `docker compose up -d`, and `.env` per `.env.example`).
 - `pnpm --filter frontend dev` — Vite dev server.
 - `pnpm local:dev` — build and run the Electron local app.
+- `pnpm --filter @mosaic/guardian start -- [vault] --network testnet` — run Mosaic Guardian (defaults to vault `mosaic-agent-guardian` and Testnet).
 - Postgres tests run only when `MOSAIC_TEST_DATABASE_URL` is set; MemoryStore
   tests always run.
 

@@ -20,7 +20,8 @@
     "test": "tsc -b && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@mosaic/chain-core": "workspace:*"
+    "@mosaic/chain-core": "workspace:*",
+    "xrpl": "^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.12.3",

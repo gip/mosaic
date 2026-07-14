@@ -4,7 +4,8 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import './index.css';
 import App from './App';
 import Home from './pages/Home';
-import DexPage from './pages/DexPage';
+import DexPage, { DexOverviewPage } from './pages/DexPage';
+import ActivityPage from './pages/ActivityPage';
 import SettingsPage from './pages/SettingsPage';
 import AssetsPage from './pages/AssetsPage';
 import AgentsPage from './pages/AgentsPage';
@@ -15,6 +16,7 @@ import { CatalogProvider } from './contexts/CatalogContext';
 import { BalancesProvider } from './contexts/BalancesContext';
 import { VaultProvider } from './contexts/VaultContext';
 import { WalletSettingsProvider } from './contexts/WalletSettingsContext';
+import { ActivityProvider } from './contexts/ActivityContext';
 import SettingsLayout from './pages/SettingsLayout';
 import VaultsPage from './pages/VaultsPage';
 
@@ -36,7 +38,9 @@ function AppRoute() {
             <VaultProvider>
               <CatalogProvider>
                 <BalancesProvider>
-                  <App />
+                  <ActivityProvider>
+                    <App />
+                  </ActivityProvider>
                 </BalancesProvider>
               </CatalogProvider>
             </VaultProvider>
@@ -53,7 +57,9 @@ const router = createBrowserRouter([
     element: <AppRoute />,
     children: [
       { index: true, element: <Home /> },
-      { path: 'dex', element: <DexPage /> },
+      { path: 'dex', element: <DexOverviewPage /> },
+      { path: 'dex/:chain/:pair', element: <DexPage /> },
+      { path: 'activity', element: <ActivityPage /> },
       { path: 'assets', element: <AssetsPage /> },
       { path: 'agents', element: <AgentsPage /> },
       { path: 'vaults', element: <VaultsPage /> },

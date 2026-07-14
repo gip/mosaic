@@ -7,6 +7,7 @@ import { canonicalBytes } from './canonical.js';
 import { zoneRootCommitment, zoneRootCommitmentHex, ZONE_ROOT_SECRET_LENGTH } from './commitment.js';
 import { backupWrapMessage } from './messages.js';
 import type { ZoneRef } from './types.js';
+import type { WrappedVaultData, VaultDataBlobHeader } from './vaultData.js';
 
 /**
  * Recovery blob crypto (spec §4). Two wrap paths over the same AEAD:
@@ -200,6 +201,8 @@ export interface BackupFile {
   commitment: string;
   createdAt: string;
   blobs: Partial<Record<'sig' | 'pass', { header: BlobHeader; ciphertext: string }>>;
+  /** Latest mutable encrypted vault data, when exported from an unlocked vault. */
+  data?: { header: VaultDataBlobHeader; ciphertext: string };
 }
 
 export function encodeBackupFile(
@@ -207,6 +210,7 @@ export function encodeBackupFile(
   commitmentHex: string,
   blobs: Partial<Record<'sig' | 'pass', WrappedBlob>>,
   createdAt: string,
+  data?: WrappedVaultData,
 ): BackupFile {
   const encoded: BackupFile['blobs'] = {};
   for (const kind of ['sig', 'pass'] as const) {
@@ -224,10 +228,15 @@ export function encodeBackupFile(
     commitment: commitmentHex,
     createdAt,
     blobs: encoded,
+    ...(data ? { data: { header: data.header, ciphertext: base64.encode(data.ciphertext) } } : {}),
   };
 }
 
 export function decodeBackupBlob(entry: { header: BlobHeader; ciphertext: string }): WrappedBlob {
+  return { header: entry.header, ciphertext: base64.decode(entry.ciphertext) };
+}
+
+export function decodeVaultDataBackupBlob(entry: { header: VaultDataBlobHeader; ciphertext: string }): WrappedVaultData {
   return { header: entry.header, ciphertext: base64.decode(entry.ciphertext) };
 }
 

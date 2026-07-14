@@ -10,6 +10,7 @@ import {
   mulRatio,
   parseScaled,
 } from '../dist/decimal.js';
+import { multiplyDecimals, quantizeDecimal } from '../dist/trading.js';
 
 test('parseScaled / formatScaled round-trip', () => {
   assert.equal(formatScaled(parseScaled('123.456', 15), 15), '123.456');
@@ -68,4 +69,23 @@ test('cmpDecimals and isZeroDecimal', () => {
   assert.equal(isZeroDecimal('0'), true);
   assert.equal(isZeroDecimal('0.000'), true);
   assert.equal(isZeroDecimal('0.0001'), false);
+});
+
+test('limit-order decimal multiplication is exact and rejects unsafe input', () => {
+  assert.equal(multiplyDecimals('0.1', '0.2'), '0.02');
+  assert.equal(multiplyDecimals('100000000000000001', '0.000001'), '100000000000.000001');
+  assert.equal(multiplyDecimals('12.3400', '5.000'), '61.7');
+  assert.throws(() => multiplyDecimals('1e3', '2'), /positive decimal/);
+  assert.throws(() => multiplyDecimals('-1', '2'), /positive decimal/);
+  assert.throws(() => multiplyDecimals('0', '2'), /positive decimal/);
+});
+
+test('asset amount quantization is exact and direction-aware', () => {
+  assert.equal(quantizeDecimal('12.3456789', 6), '12.345678');
+  assert.equal(quantizeDecimal('12.3456789', 6, 'ceil'), '12.345679');
+  assert.equal(quantizeDecimal('0.0000001', 6), '0');
+  assert.equal(quantizeDecimal('0.0000001', 6, 'ceil'), '0.000001');
+  assert.equal(quantizeDecimal('1.000000', 6), '1');
+  assert.equal(quantizeDecimal('9.9', 0, 'ceil'), '10');
+  assert.throws(() => quantizeDecimal('1', -1), /decimals/);
 });

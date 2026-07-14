@@ -21,6 +21,11 @@ import { MemoryStore, PostgresStore, hashToken } from '../dist/store.js';
 import { startHttpServer } from '../dist/http.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { AGENT_ARTIFACT_PROTOCOL, AGENT_RUNTIME_VERSION, artifactDigest, sha256Hex } from '@mosaic/local-runtime';
+import { XummXamanService } from '../dist/xaman.js';
+import { requireEnvUint32 } from '../dist/env.js';
+import { createMosaicMcpServer, jsonValuesEqual, xamanTransactionTemplate, xrplSignedFieldMatches } from '../dist/server.js';
+import { signXrplTransaction } from '@mosaic/xrpl';
 
 const evmAccount = privateKeyToAccount('0x' + '42'.repeat(32));
 const stellarPriv = new Uint8Array(32).fill(0x55);
@@ -30,6 +35,145 @@ const xrplAddress = deriveAddress(xrplKeypair.publicKey);
 
 const allowAuthority = async () => ({ authoritative: true, reason: 'test' });
 const testnetVaultKey = new Uint8Array(32).fill(0x19);
+
+test('XRPL signed amount comparison ignores JSON key order but rejects value changes', () => {
+  const prepared = { currency: 'USD', issuer: xrplAddress, value: '7.5' };
+  const decoded = { value: '7.5', currency: 'USD', issuer: xrplAddress };
+  assert.equal(jsonValuesEqual(decoded, prepared), true);
+  assert.equal(jsonValuesEqual({ ...decoded, value: '7.6' }, prepared), false);
+});
+
+test('required UInt32 environment parsing is strict and accepts both boundaries', () => {
+  assert.equal(requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', '0'), 0);
+  assert.equal(requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', '4294967295'), 4294967295);
+  assert.throws(() => requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', undefined), /missing required env var/);
+  for (const value of ['', '-1', '+1', '1.0', '1e2', ' 1', '1 ', '4294967296', 'not-a-number']) {
+    assert.throws(() => requireEnvUint32('MOSAIC_XRPL_SOURCE_TAG', value), /invalid|missing/);
+  }
+});
+
+test('Xaman LastLedgerSequence handling is bounded and supports low-index networks', () => {
+  const lowLedger = { TransactionType: 'OfferCreate', LastLedgerSequence: 1_020, SourceTag: 77 };
+  assert.deepEqual(xamanTransactionTemplate(lowLedger), { ...lowLedger, LastLedgerSequence: 20 });
+  const highLedger = { TransactionType: 'OfferCreate', LastLedgerSequence: 90_000_020 };
+  assert.equal(xamanTransactionTemplate(highLedger), highLedger);
+  assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_080, 1_020, true), true);
+  assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_121, 1_020, true), false);
+  assert.equal(xrplSignedFieldMatches('LastLedgerSequence', 1_080, 1_020, false), false);
+  assert.equal(xrplSignedFieldMatches('SourceTag', 77, 77, true), true);
+  assert.equal(xrplSignedFieldMatches('SourceTag', undefined, 77, true), false);
+  assert.equal(xrplSignedFieldMatches('SourceTag', 78, 77, true), false);
+});
+
+test('restart reconciliation fails a legacy untagged XRPL transaction without broadcasting it', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: evmAccount.address };
+  const unsignedTransaction = {
+    TransactionType: 'OfferCancel', Account: xrplAddress, OfferSequence: 1,
+    Fee: '12', Sequence: 1, LastLedgerSequence: 100,
+  };
+  const privateKey = Uint8Array.from(Buffer.from(xrplKeypair.privateKey.slice(2), 'hex'));
+  const publicKey = Uint8Array.from(Buffer.from(xrplKeypair.publicKey, 'hex'));
+  const { txBlob } = signXrplTransaction(unsignedTransaction, privateKey, publicKey);
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  await store.createDexOrder({
+    id, orderId: id, owner, network: 'testnet', chain: 'xrpl', sourceAddress: xrplAddress, sourceKind: 'root',
+    side: 'sell', action: 'cancel', base: { kind: 'native' }, quote: { kind: 'issued', code: 'USD', issuer: xrplAddress },
+    baseSymbol: 'XRP', quoteSymbol: 'USD', amount: '1', limitPrice: '1', quoteTotal: '1',
+    fee: '0.000012', feeSymbol: 'XRP', reserveImpact: null, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: 'unknown', filledAmount: '0', remainingAmount: '1', createdAt: now, updatedAt: now,
+    signingRequest: { kind: 'xrpl', unsignedTransaction }, preparedTransaction: unsignedTransaction, signedPayload: txBlob,
+  });
+
+  createMosaicMcpServer({ store, xrplSourceTag: 77 });
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  const failed = await store.getDexOrder(owner, 'testnet', id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.signedPayload, undefined);
+  assert.match(failed.error, /SourceTag must equal configured source tag 77/);
+});
+
+test('MemoryStore isolates immutable agent artifacts and versions encrypted agent-secret blobs', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: evmAccount.address };
+  const source = 'await mosaic.runtime.waitUntilStopped();';
+  const manifest = {
+    protocol: AGENT_ARTIFACT_PROTOCOL, packageName: 'agent-one', version: '1.0.0', sourceDigest: sha256Hex(source),
+    capabilities: { required: [], optional: [] }, resourceSlots: [],
+    limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
+    minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+  };
+  const digest = artifactDigest(manifest);
+  assert.deepEqual(await store.putAgentArtifact({ owner, network: 'testnet', artifactDigest: digest, manifest, source: Buffer.from(source) }), { created: true });
+  assert.deepEqual(await store.putAgentArtifact({ owner, network: 'testnet', artifactDigest: digest, manifest, source: Buffer.from(source) }), { created: false });
+  assert.equal((await store.getAgentArtifact(owner, 'testnet', digest)).manifest.packageName, 'agent-one');
+  assert.equal(await store.getAgentArtifact({ chain: 'evm', address: '0x0000000000000000000000000000000000000001' }, 'testnet', digest), undefined);
+  assert.equal((await store.listAgentArtifacts(owner, 'testnet', 'agent-one')).length, 1);
+
+  const rawTicket = 'ab'.repeat(32);
+  const ticketHash = sha256Hex(rawTicket);
+  await store.createAgentArtifactTicket({
+    ticketHash, owner, network: 'testnet', artifactDigest: digest,
+    runnerCertificateDigest: 'cd'.repeat(32), expiresAt: new Date(Date.now() + 300_000).toISOString(), maxReads: 3,
+  });
+  assert.equal(await store.consumeAgentArtifactTicket(rawTicket), undefined, 'only the ticket hash is stored');
+  for (let read = 1; read <= 3; read += 1) assert.equal((await store.consumeAgentArtifactTicket(ticketHash)).reads, read);
+  assert.equal(await store.consumeAgentArtifactTicket(ticketHash), undefined, 'ticket is exhausted after three reads');
+
+  const zone = await store.createZone({
+    rootChain: 'evm', rootAddress: evmAccount.address, zone: 'agent-one', network: 'testnet',
+    commitment: 'aa'.repeat(32), policyHash: 'policy', localSignerPublicKey: 'public',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  });
+  await store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: new Uint8Array(48).fill(7), header: { schema: 'mosaic-agent-secrets' }, expectedVersion: 0 });
+  await assert.rejects(() => store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: new Uint8Array(48), header: {}, expectedVersion: 0 }), /version conflict/);
+  assert.deepEqual(await store.listBlobKinds(zone.id), [{ kind: 'agent-secrets', version: 1 }]);
+});
+
+test('MemoryStore binds public vault addresses immutably and isolates paginated activity', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: evmAccount.address };
+  const zone = await store.createZone({
+    rootChain: owner.chain, rootAddress: owner.address, zone: 'trading', network: 'testnet',
+    commitment: 'ab'.repeat(32), policyHash: 'policy', localSignerPublicKey: 'public',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  });
+  await store.addZoneChain(zone.id, 'stellar');
+  const address = await store.createZoneAddress(zone.id, 'stellar', 'maker');
+  await store.bindZoneAddresses(zone.id, [{ id: address.id, address: stellarAddress }]);
+  assert.equal((await store.listZoneAddresses(zone.id)).find(({ id }) => id === address.id)?.address, stellarAddress);
+  await assert.rejects(() => store.bindZoneAddresses(zone.id, [{ id: address.id, address: `${stellarAddress}X` }]), /immutable/);
+
+  const now = new Date().toISOString();
+  const base = {
+    owner, network: 'testnet', chain: 'stellar', sourceAddress: stellarAddress, sourceKind: 'vault',
+    zone: 'trading', addressId: address.id, addressName: 'maker', side: 'sell', action: 'sell',
+    base: { kind: 'native' }, quote: { kind: 'issued', code: 'USDC', issuer: stellarAddress },
+    baseSymbol: 'XLM', quoteSymbol: 'USDC', amount: '2', limitPrice: '3', quoteTotal: '6',
+    fee: '0.00001', feeSymbol: 'XLM', reserveImpact: null, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: 'awaiting_signature', filledAmount: '0', remainingAmount: '2', createdAt: now, updatedAt: now,
+    signingRequest: { kind: 'stellar', unsignedXdr: 'AAAA', networkPassphrase: 'test' },
+  };
+  const first = await store.createDexOrder({ ...base, id: crypto.randomUUID(), orderId: crypto.randomUUID() });
+  const second = await store.createDexOrder({ ...base, id: crypto.randomUUID(), orderId: crypto.randomUUID(), status: 'open' });
+  assert.deepEqual((await store.listActivity(owner, 'testnet', { after: first.cursor })).map(({ id }) => id), [second.id]);
+  assert.equal((await store.listActivity(owner, 'testnet', { status: 'open' })).length, 1);
+  assert.equal((await store.listActivity({ chain: 'evm', address: '0x0000000000000000000000000000000000000001' }, 'testnet')).length, 0);
+});
+
+test('Xaman DEX payloads are explicitly sign-only', async () => {
+  const service = new XummXamanService('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222');
+  let request;
+  service.sdk.payload.create = async (value) => {
+    request = value;
+    return { uuid: 'order-payload', refs: { qr_png: 'qr', websocket_status: 'ws' }, next: { always: 'link' } };
+  };
+  const refs = await service.createTransactionPayload({ TransactionType: 'OfferCancel', Account: xrplAddress, OfferSequence: 7 }, 'Cancel offer');
+  assert.equal(request.options.submit, false);
+  assert.equal(request.txjson.TransactionType, 'OfferCancel');
+  assert.equal(refs.uuid, 'order-payload');
+});
 
 /** Signs any payload the server creates, like a Xaman wallet would. */
 class FakeXaman {
@@ -171,8 +315,14 @@ test('catalog preferences default, isolate owners, normalize EVM addresses, and 
 
   const defaults = await store.listCatalog(upperOwner);
   assert.equal(defaults.chains.length, 6);
-  assert.ok(defaults.chains.every((chain) => chain.enabled));
+  assert.ok(defaults.chains.filter(({ family }) => family === 'evm').every((chain) => chain.enabled));
+  assert.ok(defaults.chains.filter(({ family }) => family !== 'evm').every((chain) => !chain.enabled));
   assert.ok(defaults.assets.every((asset) => asset.trustState === 'allowed'));
+
+  const setup = await store.completeChainSetup(upperOwner, ['base', 'stellar']);
+  assert.equal(setup.settings.chainSetupCompleted, true);
+  assert.ok(setup.chains.filter(({ chainKey }) => chainKey === 'stellar').every(({ enabled }) => enabled));
+  await assert.rejects(() => store.completeChainSetup(upperOwner, ['stellar']), /root wallet chain/);
 
   // One toggle flips every network variant of the logical chain.
   const updated = await store.setChainEnabled(upperOwner, 'xrpl', false);
@@ -182,7 +332,8 @@ test('catalog preferences default, isolate owners, normalize EVM addresses, and 
   assert.equal(lower.chains.find((chain) => chain.id === 'xrpl-mainnet').enabled, false);
   assert.equal(lower.chains.find((chain) => chain.id === 'xrpl-testnet').enabled, false);
   assert.equal(lower.assets.find((asset) => asset.id === 'rlusd').trustState, 'hidden');
-  assert.equal((await store.listCatalog(otherOwner)).chains.find((chain) => chain.id === 'xrpl-mainnet').enabled, true);
+  assert.equal((await store.listCatalog(otherOwner)).chains.find((chain) => chain.id === 'xrpl-mainnet').enabled, false);
+  assert.equal((await store.listCatalog(otherOwner)).chains.find((chain) => chain.id === 'stellar-mainnet').enabled, true);
   assert.equal((await store.listCatalog(otherOwner)).assets.find((asset) => asset.id === 'rlusd').trustState, 'allowed');
 
   // Custom chains are single-network singletons keyed by their own id.
@@ -228,20 +379,20 @@ test('wallet settings default to 3 minutes, validate options, normalize EVM addr
   const lowerOwner = { chain: 'evm', address: '0xabcdef' };
   const otherOwner = { chain: 'stellar', address: stellarAddress };
 
-  assert.deepEqual(await store.getWalletSettings(upperOwner), { lockReminderMinutes: 3 });
-  await store.setWalletSettings(upperOwner, { lockReminderMinutes: 10 });
-  assert.deepEqual(await store.getWalletSettings(lowerOwner), { lockReminderMinutes: 10 });
-  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 3 });
-  await store.setWalletSettings(otherOwner, { lockReminderMinutes: 0 });
-  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 0 });
-  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: 2 }), /invalid lockReminderMinutes/);
-  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: -1 }), /invalid lockReminderMinutes/);
+  assert.deepEqual(await store.getWalletSettings(upperOwner), { lockReminderMinutes: 3, chainSetupCompleted: false });
+  await store.setWalletSettings(upperOwner, { lockReminderMinutes: 10, chainSetupCompleted: true });
+  assert.deepEqual(await store.getWalletSettings(lowerOwner), { lockReminderMinutes: 10, chainSetupCompleted: true });
+  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 3, chainSetupCompleted: false });
+  await store.setWalletSettings(otherOwner, { lockReminderMinutes: 0, chainSetupCompleted: false });
+  assert.deepEqual(await store.getWalletSettings(otherOwner), { lockReminderMinutes: 0, chainSetupCompleted: false });
+  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: 2, chainSetupCompleted: true }), /invalid lockReminderMinutes/);
+  await assert.rejects(() => store.setWalletSettings(upperOwner, { lockReminderMinutes: -1, chainSetupCompleted: true }), /invalid lockReminderMinutes/);
 });
 
 test('vault chain settings copy the account settings at creation and diverge independently', async () => {
   const store = new MemoryStore();
   const owner = { chain: 'evm', address: '0xabcdef' };
-  await store.setChainEnabled(owner, 'xrpl', false);
+  await store.completeChainSetup(owner, ['base', 'stellar']);
 
   const zone = await store.createZone({
     rootChain: 'evm', rootAddress: '0xAbCdEf', zone: 'top', network: 'testnet',
@@ -266,6 +417,28 @@ test('vault chain settings copy the account settings at creation and diverge ind
 
   await assert.rejects(() => store.setZoneChainEnabled(zone.id, 'unknown', true), /unknown chain/);
   await assert.rejects(() => store.listZoneChainSettings('00000000-0000-0000-0000-000000000000'), /zone not found/);
+});
+
+test('vault creation allocates one #0 address per enabled family, including multiple EVM chains', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: '0xabcdef' };
+  await store.completeChainSetup(owner, ['base']);
+  await store.upsertCustomChain({ id: 'optimism-testnet', name: 'Optimism Testnet', network: 'testnet', evmChainId: 11155420, enabled: true });
+  await store.setChainEnabled(owner, 'optimism-testnet', true);
+  const evmOnly = await store.createZone({
+    rootChain: owner.chain, rootAddress: owner.address, zone: 'evm-only', network: 'testnet',
+    commitment: 'ab'.repeat(32), policyHash: 'ph', localSignerPublicKey: 'k',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  });
+  assert.deepEqual((await store.listZoneAddresses(evmOnly.id)).map(({ chain, index }) => [chain, index]), [['evm', 0]]);
+
+  await store.setChainEnabled(owner, 'stellar', true);
+  const mixed = await store.createZone({
+    rootChain: owner.chain, rootAddress: owner.address, zone: 'mixed', network: 'testnet',
+    commitment: 'cd'.repeat(32), policyHash: 'ph', localSignerPublicKey: 'k',
+    authorizeMessage: {}, authorizeSignature: {}, xrplSignInTemplate: null, layer1Enabled: true,
+  });
+  assert.deepEqual((await store.listZoneAddresses(mixed.id)).map(({ chain, index }) => [chain, index]), [['evm', 0], ['stellar', 0]]);
 });
 
 test('vaults without stored chain settings lazily copy the account settings on first read', async () => {
@@ -304,10 +477,15 @@ test('MemoryStore lists zones deterministically and scopes unlock metadata to th
   const unlocked = await store.markZoneUnlocked('evm', evmAccount.address, 'earlier', 'testnet');
   assert.ok(unlocked.lastUnlockedAt);
   assert.deepEqual((await store.listZoneAddresses(earlier.id)).map(({ chain, index, name }) => [chain, index, name]), [
-    ['evm', 0, '#0'], ['stellar', 0, '#0'], ['xrpl', 0, '#0'],
+    ['evm', 0, '#0'],
   ]);
   const evm1 = await store.createZoneAddress(earlier.id, 'evm');
   const evm2 = await store.createZoneAddress(earlier.id, 'evm', 'treasury');
+  await assert.rejects(() => store.createZoneAddress(earlier.id, 'xrpl'), /enable the xrpl chain family/);
+  const added = await store.addZoneChain(earlier.id, 'xrpl');
+  assert.equal(added.created, true);
+  assert.deepEqual([added.address.chain, added.address.index, added.address.name], ['xrpl', 0, '#0']);
+  assert.equal((await store.addZoneChain(earlier.id, 'xrpl')).created, false);
   const xrpl1 = await store.createZoneAddress(earlier.id, 'xrpl');
   assert.deepEqual([evm1.index, evm1.name, evm2.index, evm2.name, xrpl1.index, xrpl1.name], [1, '#1', 2, 'treasury', 1, '#1']);
   await assert.rejects(() => store.createZoneAddress(earlier.id, 'evm', 'treasury'), /already exists/);
@@ -339,7 +517,7 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
   const store = new MemoryStore();
   const xaman = new FakeXaman(xrplKeypair, xrplAddress);
   const auth = new AuthService(store, xaman, { checkAuthority: allowAuthority });
-  const server = await startHttpServer({ store, auth, xaman, testnetVaultKey, bind: '127.0.0.1:0' });
+  const server = await startHttpServer({ store, auth, xaman, xrplSourceTag: 77, testnetVaultKey, bind: '127.0.0.1:0' });
   const client = await connectClient(server.url);
   try {
     // login (evm)
@@ -358,7 +536,24 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     // catalog defaults and trust updates are authenticated and wallet-scoped
     const catalog = await call(client, 'catalog_list', { token });
     assert.equal(catalog.chains.length, 6);
+    assert.ok(catalog.chains.filter(({ family }) => family === 'evm').every(({ enabled }) => enabled));
+    assert.ok(catalog.chains.filter(({ family }) => family !== 'evm').every(({ enabled }) => !enabled));
     assert.equal(catalog.assets.find((asset) => asset.id === 'rlusd').trustState, 'allowed');
+    const blockedSecret = new Uint8Array(32).fill(5);
+    await assert.rejects(
+      () => call(client, 'zone_create_testnet', {
+        token, zone: 'before-setup', zoneRootCommitment: zoneRootCommitmentHex(blockedSecret),
+        zoneRootSecretB64: Buffer.from(blockedSecret).toString('base64'),
+      }),
+      /complete chain setup/,
+    );
+    const setup = await call(client, 'chain_setup_complete', { token, enabledChainKeys: ['base', 'stellar'] });
+    assert.equal(setup.settings.chainSetupCompleted, true);
+    assert.ok(setup.chains.filter(({ chainKey }) => chainKey === 'stellar').every(({ enabled }) => enabled));
+    await assert.rejects(
+      () => call(client, 'chain_setup_complete', { token, enabledChainKeys: ['stellar'] }),
+      /root wallet chain/,
+    );
     const hidden = await call(client, 'asset_trust_set', { token, assetId: 'rlusd', state: 'hidden' });
     assert.equal(hidden.trustState, 'hidden');
     const disabled = await call(client, 'chain_enabled_set', { token, chainKey: 'xrpl', enabled: false });
@@ -407,7 +602,7 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     assert.equal(listed[0].commitment, commitment);
     assert.equal(listed[0].lastUnlockedAt, undefined);
     assert.deepEqual(listed[0].addresses.map(({ chain, index, name }) => [chain, index, name]), [
-      ['evm', 0, '#0'], ['stellar', 0, '#0'], ['xrpl', 0, '#0'],
+      ['evm', 0, '#0'], ['stellar', 0, '#0'],
     ]);
     // Vault chains copied the account settings (xrpl disabled above) at creation, in product order.
     assert.deepEqual(listed[0].chains.map(({ chainId, enabled }) => [chainId, enabled]), [
@@ -415,8 +610,10 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     ]);
 
     // Per-vault toggles are independent of the account settings.
-    const vaultChains = await call(client, 'zone_chain_set', { token, zone: 'top', chainKey: 'xrpl', enabled: true });
-    assert.equal(vaultChains.find(({ chainKey }) => chainKey === 'xrpl').enabled, true);
+    const addedXrpl = await call(client, 'zone_chain_add', { token, zone: 'top', chainKey: 'xrpl' });
+    assert.equal(addedXrpl.chains.find(({ chainKey }) => chainKey === 'xrpl').enabled, true);
+    assert.deepEqual([addedXrpl.address.chain, addedXrpl.address.index, addedXrpl.address.name, addedXrpl.created], ['xrpl', 0, '#0', true]);
+    assert.equal((await call(client, 'zone_chain_add', { token, zone: 'top', chainKey: 'xrpl' })).created, false);
     assert.equal(
       (await call(client, 'catalog_list', { token })).chains.find(({ id }) => id === 'xrpl-testnet').enabled,
       false,
@@ -499,6 +696,48 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     assert.equal(got.commitment, commitment);
     await assert.rejects(() => call(client, 'blob_get', { token, zone: 'top', kind: 'pass' }), /no pass blob/);
 
+    const dataCiphertext = Buffer.alloc(64 * 1024 + 16, 3).toString('base64');
+    assert.deepEqual(await call(client, 'blob_put', {
+      token, zone: 'top', kind: 'data', ciphertextB64: dataCiphertext,
+      header: { v: 1, schema: 'mosaic-vault-data', revision: 1 }, expectedVersion: 0,
+    }), { version: 1 });
+    await assert.rejects(() => call(client, 'blob_put', {
+      token, zone: 'top', kind: 'data', ciphertextB64: dataCiphertext,
+      header: { v: 1, schema: 'mosaic-vault-data', revision: 1 }, expectedVersion: 0,
+    }), /version conflict/);
+
+    const agentSecretsCiphertext = Buffer.alloc(64 * 1024 + 16, 4).toString('base64');
+    assert.deepEqual(await call(client, 'blob_put', {
+      token, zone: 'top', kind: 'agent-secrets', ciphertextB64: agentSecretsCiphertext,
+      header: { v: 1, schema: 'mosaic-agent-secrets', revision: 1 }, expectedVersion: 0,
+    }), { version: 1 });
+    assert.equal((await call(client, 'blob_get', { token, zone: 'top', kind: 'agent-secrets' })).ciphertextB64, agentSecretsCiphertext);
+
+    const agentSource = 'await mosaic.runtime.waitUntilStopped();';
+    const agentManifest = {
+      protocol: AGENT_ARTIFACT_PROTOCOL, packageName: 'top', version: '1.0.0', sourceDigest: sha256Hex(agentSource),
+      capabilities: { required: [], optional: [] }, resourceSlots: [],
+      limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
+      minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+    };
+    const storedArtifact = await call(client, 'agent_artifact_put', { token, manifest: agentManifest, source: agentSource });
+    assert.equal(storedArtifact.artifactDigest, artifactDigest(agentManifest));
+    assert.equal((await call(client, 'agent_artifact_get', { token, artifactDigest: storedArtifact.artifactDigest })).source, agentSource);
+    assert.equal((await call(client, 'agent_artifact_list', { token, packageName: 'top' })).artifacts.length, 1);
+    const runnerCertificateDigest = 'c'.repeat(64);
+    const ticket = await call(client, 'agent_artifact_ticket_create', { token, artifactDigest: storedArtifact.artifactDigest, runnerCertificateDigest });
+    assert.equal(ticket.maxReads, 3);
+    for (let read = 0; read < 3; read += 1) {
+      const download = await call(client, 'agent_artifact_download', { ticket: ticket.ticket });
+      assert.equal(download.source, agentSource);
+      assert.equal(download.runnerCertificateDigest, runnerCertificateDigest);
+    }
+    await assert.rejects(() => call(client, 'agent_artifact_download', { ticket: ticket.ticket }), /expired, exhausted, or invalid/);
+    await assert.rejects(
+      () => call(client, 'agent_artifact_put', { token, manifest: { ...agentManifest, sourceDigest: '0'.repeat(64) }, source: agentSource }),
+      /source digest mismatch/,
+    );
+
     // oversized blob rejected
     await assert.rejects(
       () =>
@@ -515,7 +754,11 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     // zone_get reflects blob
     const zone = await call(client, 'zone_get', { token, zone: 'top' });
     assert.equal(zone.exists, true);
-    assert.deepEqual(zone.blobs, [{ kind: 'sig', version: 1 }]);
+    assert.deepEqual(zone.blobs, [
+      { kind: 'sig', version: 1 },
+      { kind: 'data', version: 1 },
+      { kind: 'agent-secrets', version: 1 },
+    ]);
     assert.equal(zone.lastUnlockedAt, unlocked.lastUnlockedAt);
 
     // A session for another root wallet cannot list or update this wallet's zones.
@@ -652,15 +895,16 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     assert.deepEqual(updated.map(({ id, enabled }) => [id, enabled]).sort(), [['xrpl-mainnet', false], ['xrpl-testnet', false]]);
     await assert.rejects(() => store.setChainEnabled({ chain: 'evm', address: ownerAddress }, 'base', false), /cannot disable every evm chain/);
 
-    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 3 });
-    await store.setWalletSettings({ chain: 'evm', address: ownerAddress.toUpperCase() }, { lockReminderMinutes: 30 });
-    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 30 });
-    await assert.rejects(() => store.setWalletSettings({ chain: 'evm', address: ownerAddress }, { lockReminderMinutes: 7 }), /invalid lockReminderMinutes/);
+    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 3, chainSetupCompleted: false });
+    await store.setWalletSettings({ chain: 'evm', address: ownerAddress.toUpperCase() }, { lockReminderMinutes: 30, chainSetupCompleted: true });
+    assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 30, chainSetupCompleted: true });
+    await assert.rejects(() => store.setWalletSettings({ chain: 'evm', address: ownerAddress }, { lockReminderMinutes: 7, chainSetupCompleted: true }), /invalid lockReminderMinutes/);
 
+    await store.setChainEnabled({ chain: 'evm', address: ownerAddress }, 'xrpl', true);
     const zoneName = `top-${id}`;
     const zone = await store.createZone({
       rootChain: 'evm',
-      rootAddress: '0xabc',
+      rootAddress: ownerAddress,
       zone: zoneName,
       network: 'testnet',
       commitment: 'ee'.repeat(32),
@@ -675,7 +919,7 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
       () =>
         store.createZone({
           rootChain: 'evm',
-          rootAddress: '0xabc',
+          rootAddress: ownerAddress,
           zone: zoneName,
           network: 'testnet',
           commitment: 'ff'.repeat(32),
@@ -696,16 +940,61 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     const vaultToggled = await store.setZoneChainEnabled(zone.id, 'xrpl', false);
     assert.equal(vaultToggled.find(({ chainId }) => chainId === 'xrpl-testnet')?.enabled, false);
     assert.equal(
-      (await store.listCatalog({ chain: 'evm', address: '0xabc' })).chains.find(({ id }) => id === 'xrpl-testnet')?.enabled,
+      (await store.listCatalog({ chain: 'evm', address: ownerAddress })).chains.find(({ id }) => id === 'xrpl-testnet')?.enabled,
       true,
     );
 
     const data = new Uint8Array(48).fill(3);
     assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'sig', ciphertext: data, header: { v: 1 } }), { version: 1 });
     assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'sig', ciphertext: data, header: { v: 1 } }), { version: 2 });
+    assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'data', ciphertext: data, header: { v: 1 }, expectedVersion: 0 }), { version: 1 });
+    await assert.rejects(
+      () => store.putBlob({ zoneId: zone.id, kind: 'data', ciphertext: data, header: { v: 1 }, expectedVersion: 0 }),
+      /version conflict/,
+    );
+    assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'data', ciphertext: data, header: { v: 1 }, expectedVersion: 1 }), { version: 2 });
+    assert.deepEqual(await store.putBlob({ zoneId: zone.id, kind: 'agent-secrets', ciphertext: data, header: { v: 1 }, expectedVersion: 0 }), { version: 1 });
     const blob = await store.getBlob(zone.id, 'sig');
     assert.equal(blob?.version, 2);
     assert.deepEqual(blob?.ciphertext, data);
+
+    const artifactSource = 'await mosaic.runtime.waitUntilStopped();';
+    const artifactManifest = {
+      protocol: AGENT_ARTIFACT_PROTOCOL, packageName: zoneName, version: '1.0.0', sourceDigest: sha256Hex(artifactSource),
+      capabilities: { required: [], optional: [] }, resourceSlots: [],
+      limits: { memoryBytes: 1024 * 1024, stackBytes: 64 * 1024, wallTimeMs: 60_000, maxPendingJobs: 8, maxHookConcurrency: 1, maxHookResponseBytes: 4096 },
+      minimumRuntimeVersion: AGENT_RUNTIME_VERSION,
+    };
+    const artifactAddress = artifactDigest(artifactManifest);
+    const artifactOwner = { chain: 'evm', address: ownerAddress };
+    assert.deepEqual(await store.putAgentArtifact({ owner: artifactOwner, network: 'testnet', artifactDigest: artifactAddress, manifest: artifactManifest, source: Buffer.from(artifactSource) }), { created: true });
+    assert.equal((await store.getAgentArtifact(artifactOwner, 'testnet', artifactAddress))?.artifactDigest, artifactAddress);
+    assert.equal((await store.listAgentArtifacts(artifactOwner, 'testnet', zoneName)).length, 1);
+  } finally {
+    await store.close();
+  }
+});
+
+test('PostgresStore serializes concurrent activity updates for one order', { skip: !pgUrl }, async () => {
+  const store = new PostgresStore(pgUrl);
+  await store.init();
+  try {
+    const id = crypto.randomUUID();
+    const owner = { chain: 'evm', address: `0xactivity-${id}` };
+    const now = new Date().toISOString();
+    await store.createDexOrder({
+      id, orderId: id, owner, network: 'testnet', chain: 'stellar', sourceAddress: stellarAddress, sourceKind: 'root',
+      side: 'sell', action: 'sell', base: { kind: 'native' }, quote: { kind: 'issued', code: 'USDC', issuer: stellarAddress },
+      baseSymbol: 'XLM', quoteSymbol: 'USDC', amount: '2', limitPrice: '3', quoteTotal: '6',
+      fee: '0.00001', feeSymbol: 'XLM', reserveImpact: null, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: 'awaiting_signature', filledAmount: '0', remainingAmount: '2', createdAt: now, updatedAt: now,
+      signingRequest: { kind: 'stellar', unsignedXdr: 'AAAA', networkPassphrase: 'test' },
+    });
+
+    const updates = await Promise.all(Array.from({ length: 24 }, (_, index) =>
+      store.updateDexOrder(owner, 'testnet', id, { status: 'submitted', error: `update-${index}` })));
+    assert.equal(new Set(updates.map(({ cursor }) => cursor)).size, updates.length);
+    assert.equal((await store.getDexOrder(owner, 'testnet', id))?.status, 'submitted');
   } finally {
     await store.close();
   }

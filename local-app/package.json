@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
-    "build": "pnpm --filter frontend build && pnpm --filter @mosaic/local-signer build && pnpm --filter @mosaic/agent-runner build && tsc -b",
+    "build": "pnpm --filter frontend build && pnpm --filter @mosaic/guardian build && pnpm --filter @mosaic/agent-runner build && tsc -b",
     "clean": "tsc -b --clean",
     "dev": "pnpm build && electron .",
     "start": "pnpm build && electron .",
@@ -15,7 +15,7 @@
   "dependencies": {
     "@mosaic/agent-runner": "workspace:*",
     "@mosaic/local-runtime": "workspace:*",
-    "@mosaic/local-signer": "workspace:*"
+    "@mosaic/guardian": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.12.3",

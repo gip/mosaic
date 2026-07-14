@@ -1,0 +1,17 @@
+{
+  "name": "@mosaic/agent-sdk",
+  "version": "0.0.0",
+  "description": "Typed, inert authoring API for Mosaic agent packages.",
+  "type": "module",
+  "license": "MIT",
+  "files": ["dist"],
+  "exports": { ".": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2"
+  }
+}

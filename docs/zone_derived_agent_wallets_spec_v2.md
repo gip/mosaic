@@ -205,6 +205,28 @@ Loss of both blobs → root wallet signs sweep transactions directly on XRPL/Ste
 | Both blobs lost | Layer 3: root sweeps XRPL/Stellar; **EVM funds lost** |
 | Root wallet lost | Total loss — out of scope; floor is the wallet's own seed backup |
 
+### 4.6 Mutable encrypted vault data
+
+Recovery blobs remain frozen and contain exactly the 32-byte
+`zoneRootSecret`. Mutable JSON configuration is stored in a separate `data`
+ciphertext so a metadata update never requires another `backup-wrap`
+signature or passphrase re-wrap.
+
+```text
+dataKey = HKDF-SHA256(
+  ikm  = zoneRootSecret,
+  salt = SHA256(zoneRootSecret),
+  info = "MOSAIC_VAULT_DATA_V1" || rootAddress || zone || network
+)
+```
+
+`MOSAIC_VAULT_DATA_V1` is frozen. Plaintext is canonical, recursively
+key-sorted JSON with `v: 1`, limited to 64 KiB. XChaCha20-Poly1305 AAD is the
+canonical object containing protocol, root chain/address, zone, network,
+schema version, and positive revision. MCP uses optimistic blob versions and
+stores ciphertext only. A backup export may include the latest `data` blob;
+losing it does not change or lose derived wallet keys.
+
 ## 5. Local Signer
 
 Desktop daemon/app (Rust or Go daemon preferred; Tauri acceptable). Binds `127.0.0.1` only.
@@ -286,7 +308,7 @@ decode → chain/network → source account → §6.1 denylist → destination/c
 ```text
 @mosaic/zone-keys      HKDF zone binding, BIP44/SLIP-0010 derivation,
                        canonical messages, test vectors, address generation
-@mosaic/local-signer   daemon, QR/WalletConnect flows, signature verification,
+@mosaic/guardian       Mosaic Guardian daemon, QR/WalletConnect flows, signature verification,
                        storage, policy engine, provisioning, backup/recovery
 @mosaic/agent-client   signature-request client for agents
 @mosaic/web-connector  browser helpers, wallet login, signer discovery/pairing

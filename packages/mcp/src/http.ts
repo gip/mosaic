@@ -5,7 +5,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { AuthService } from './auth.js';
 import { envNumber, envString } from './env.js';
 import { classifyMcpError, errorMessage, MosaicMcpError } from './errors.js';
-import { createMosaicMcpServer, type MosaicMcpOptions } from './server.js';
+import { createMosaicMcpServer, resolveXrplSourceTag, type MosaicMcpOptions } from './server.js';
 import { openMosaicStore } from './store.js';
 import { xamanServiceFromEnv } from './xaman.js';
 import { xrplRpcUrl } from './xrplLedger.js';
@@ -125,6 +125,7 @@ async function readiness(store: NonNullable<MosaicMcpOptions['store']>, xamanCon
 }
 
 export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ close(): Promise<void>; url: string }> {
+  const xrplSourceTag = resolveXrplSourceTag(opts.xrplSourceTag);
   const bind = opts.bind ?? envString('MOSAIC_BIND') ?? `127.0.0.1:${envNumber('MOSAIC_MCP_PORT', 8788)}`;
   const { host, port } = parseBind(bind);
   const corsOrigins = parseOrigins(
@@ -141,6 +142,7 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ c
     store,
     xaman,
     auth,
+    xrplSourceTag,
     testnetVaultKey: opts.testnetVaultKey ?? parseTestnetServerKey(envString('MOSAIC_TESTNET_VAULT_KEY')),
   };
 

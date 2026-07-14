@@ -32,6 +32,8 @@ interface SessionValue {
    * XRPL signs via server-created Xaman payloads).
    */
   signZoneMessage: (message: ZoneMessage) => Promise<SignedZoneMessage>;
+  /** Sign a prepared Stellar transaction with the authenticated root wallet. */
+  signRootStellarTransaction: (xdr: string) => Promise<string>;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);
@@ -153,9 +155,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [session],
   );
 
+  const signRootStellarTransaction = useCallback(async (xdr: string): Promise<string> => {
+    if (!session || session.chain !== 'stellar') throw new Error('The authenticated root wallet is not a Stellar account.');
+    let signer = signerRef.current;
+    if (!signer) {
+      signer = { kind: 'stellar-freighter' };
+      signerRef.current = signer;
+    }
+    if (signer.kind === 'stellar-freighter') {
+      const { signStellarTransactionWithFreighter } = await import('@mosaic/web-connector/stellar');
+      return signStellarTransactionWithFreighter(session.address, xdr, session.network);
+    }
+    if (signer.kind === 'stellar-wc') return signer.wcSession.signTransaction(xdr);
+    throw new Error('Reconnect the Stellar root wallet before signing this order.');
+  }, [session]);
+
   const value = useMemo(
-    () => ({ session, login, logout, networkSwitching, networkSwitchError, signZoneMessage }),
-    [session, login, logout, networkSwitching, networkSwitchError, signZoneMessage],
+    () => ({ session, login, logout, networkSwitching, networkSwitchError, signZoneMessage, signRootStellarTransaction }),
+    [session, login, logout, networkSwitching, networkSwitchError, signZoneMessage, signRootStellarTransaction],
   );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

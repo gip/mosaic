@@ -20,6 +20,8 @@ export const HORIZON_ENDPOINTS: Record<Network, string> = {
   testnet: 'https://horizon-testnet.stellar.org',
 };
 
+const HORIZON_MAX_ORDER_BOOK_DEPTH = 200;
+
 interface HorizonLevel {
   price_r: { n: number; d: number };
   price: string;
@@ -49,7 +51,9 @@ function orderBookUrl(req: OrderBookRequest, depth: number, endpoint: string | u
   const params = new URLSearchParams([
     ...assetParams('selling', req.base),
     ...assetParams('buying', req.quote),
-    ['limit', String(depth)],
+    // Horizon rejects limits above 200. Other adapters can honor the shared
+    // 500-level default, but Stellar must stay within Horizon's hard cap.
+    ['limit', String(Math.min(depth, HORIZON_MAX_ORDER_BOOK_DEPTH))],
   ]);
   return `${base}/order_book?${params.toString()}`;
 }

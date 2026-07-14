@@ -20,7 +20,14 @@ export type Network = 'mainnet' | 'testnet';
  */
 export type Asset =
   | { kind: 'native' }
-  | { kind: 'issued'; code: string; issuer: string };
+  | {
+      kind: 'issued';
+      /** Human-readable asset code. */
+      code: string;
+      issuer: string;
+      /** Chain-native encoded currency value, when distinct from `code`. */
+      currencyCode?: string;
+    };
 
 /**
  * One price level. Values are decimal strings: Horizon and XRPL both return
@@ -67,7 +74,7 @@ export interface OrderBookSnapshot {
 }
 
 export interface OrderBookFeedOptions {
-  /** Max levels per side. Default 200. */
+  /** Max levels per side. Default 500. */
   depth?: number;
   /** Override the HTTP endpoint (Horizon base URL / XRPL JSON-RPC URL). */
   httpEndpoint?: string;

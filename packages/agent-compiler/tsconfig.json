@@ -7,5 +7,8 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../local-runtime" }]
+  "references": [
+    { "path": "../agent-sdk" },
+    { "path": "../local-runtime" }
+  ]
 }

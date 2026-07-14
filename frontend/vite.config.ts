@@ -26,7 +26,7 @@ export default defineConfig(({ mode }) => {
       // HTTPS tunnel for Freighter mobile testing: its origin check rejects
       // http/localhost dapps, so the page must be served from a real https
       // hostname (e.g. `zrok share public localhost:5173`).
-      allowedHosts: ['.share.zrok.io'],
+      allowedHosts: ['.shares.zrok.io'],
     },
     build: {
       rolldownOptions: {

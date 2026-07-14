@@ -5,5 +5,9 @@ packages:
 allowBuilds:
   '@reown/appkit': false
   bufferutil: false
+  esbuild: true
   es5-ext: false
   utf-8-validate: false
+overrides:
+  '@xmtp/content-type-primitives': 3.0.1
+  '@xmtp/node-bindings': 1.11.0-dev.57a7203

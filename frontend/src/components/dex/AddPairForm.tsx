@@ -17,7 +17,12 @@ interface SelectableAsset {
 function toDexAsset(entry: SelectableAsset): Asset {
   if (entry.deployment.kind === 'native') return { kind: 'native' };
   if (!entry.deployment.address) throw new Error(`${entry.asset.name} has no issuer or contract address`);
-  return { kind: 'issued', code: entry.deployment.symbol, issuer: entry.deployment.address };
+  return {
+    kind: 'issued',
+    code: entry.deployment.symbol,
+    issuer: entry.deployment.address,
+    currencyCode: entry.deployment.currencyCode,
+  };
 }
 
 function dexCapable(chain: ChainWithEnabled): chain is ChainWithEnabled & { family: DexChain } {

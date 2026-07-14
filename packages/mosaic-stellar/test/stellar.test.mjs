@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createAdapter } from '../dist/index.js';
+import { Operation } from '@stellar/stellar-sdk';
+import { buildStellarOfferOperation, createAdapter } from '../dist/index.js';
 
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 
@@ -11,6 +12,26 @@ const REQ = {
   quote: { kind: 'issued', code: 'USDC', issuer: USDC_ISSUER },
   fundedAccounts: { base: null, quote: null },
 };
+
+test('limit orders use manageSellOffer for sell and manageBuyOffer for exact buy', () => {
+  const intent = {
+    chain: 'stellar', network: 'mainnet', sourceAddress: 'GSource', sourceKind: 'vault', side: 'sell',
+    base: { kind: 'native' }, quote: { kind: 'issued', code: 'USDC', issuer: USDC_ISSUER },
+    baseSymbol: 'XLM', quoteSymbol: 'USDC', amount: '2', limitPrice: '3',
+  };
+  const sell = Operation.fromXDRObject(buildStellarOfferOperation(intent));
+  const buy = Operation.fromXDRObject(buildStellarOfferOperation({ ...intent, side: 'buy' }));
+  assert.equal(sell.type, 'manageSellOffer');
+  assert.equal(sell.selling.code, 'XLM');
+  assert.equal(sell.buying.code, 'USDC');
+  assert.equal(sell.amount, '2.0000000');
+  assert.equal(sell.price, '3');
+  assert.equal(buy.type, 'manageBuyOffer');
+  assert.equal(buy.selling.code, 'USDC');
+  assert.equal(buy.buying.code, 'XLM');
+  assert.equal(buy.buyAmount, '2.0000000');
+  assert.equal(buy.price, '3');
+});
 
 // Trimmed live capture of GET /order_book (XLM/USDC, July 2026).
 const HORIZON_BOOK = {
@@ -33,10 +54,10 @@ function jsonFetch(body, capture) {
   };
 }
 
-test('fetchOrderBook builds the Horizon URL for native/issued pairs', async () => {
+test('fetchOrderBook builds the Horizon URL and caps depth at Horizon\'s limit', async () => {
   const calls = [];
   const adapter = createAdapter();
-  await adapter.fetchOrderBook(REQ, { depth: 20, fetch: jsonFetch(HORIZON_BOOK, calls) });
+  await adapter.fetchOrderBook(REQ, { depth: 500, fetch: jsonFetch(HORIZON_BOOK, calls) });
   const url = new URL(calls[0].url);
   assert.equal(url.origin, 'https://horizon.stellar.org');
   assert.equal(url.pathname, '/order_book');
@@ -44,7 +65,7 @@ test('fetchOrderBook builds the Horizon URL for native/issued pairs', async () =
   assert.equal(url.searchParams.get('buying_asset_type'), 'credit_alphanum4');
   assert.equal(url.searchParams.get('buying_asset_code'), 'USDC');
   assert.equal(url.searchParams.get('buying_asset_issuer'), USDC_ISSUER);
-  assert.equal(url.searchParams.get('limit'), '20');
+  assert.equal(url.searchParams.get('limit'), '200');
 });
 
 test('long asset codes map to credit_alphanum12; testnet and overrides apply', async () => {
@@ -119,7 +140,7 @@ test('openStream: parses SSE snapshots, skips hello, signals closed at stream en
   const adapter = createAdapter();
   const events = [];
   const done = new Promise((resolve) => {
-    adapter.openStream(REQ, { depth: 20, fetch: sseFetch(chunks, calls), webSocket: WebSocket }, (e) => {
+    adapter.openStream(REQ, { depth: 500, fetch: sseFetch(chunks, calls), webSocket: WebSocket }, (e) => {
       events.push(e);
       if (e.type === 'closed') resolve();
     });
@@ -128,6 +149,7 @@ test('openStream: parses SSE snapshots, skips hello, signals closed at stream en
 
   const url = new URL(calls[0].url);
   assert.equal(url.searchParams.get('cursor'), 'now');
+  assert.equal(url.searchParams.get('limit'), '200');
   assert.equal(calls[0].init.headers.accept, 'text/event-stream');
   assert.deepEqual(
     events.map((e) => e.type),

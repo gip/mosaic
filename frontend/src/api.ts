@@ -1,6 +1,8 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainFamily, ChainWithEnabled, NetworkTag } from '@mosaic/catalog';
 import type { AgentChain, Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
+import type { AgentArtifactManifest } from '@mosaic/local-runtime/contracts';
+import type { ActivityRecord, Asset, OrderSide, OrderStatus, TradingChain } from '@mosaic/chain-core';
 import { MCP_URL } from './config';
 
 export type SignatureEnvelope =
@@ -51,7 +53,7 @@ export interface ZoneGetResult {
   layer1Enabled?: boolean;
   createdAt?: string;
   lastUnlockedAt?: string;
-  blobs?: { kind: 'sig' | 'pass' | 'device'; version: number }[];
+  blobs?: { kind: 'sig' | 'pass' | 'device' | 'server' | 'data'; version: number }[];
   chains?: ZoneChainSetting[];
 }
 
@@ -72,11 +74,35 @@ export interface ZoneAddressItem {
   chain: AgentChain;
   index: number;
   name: string;
+  address?: string;
   createdAt: string;
 }
 
+export type DexSigningRequest =
+  | { kind: 'xrpl'; unsignedTransaction: Record<string, unknown> }
+  | { kind: 'stellar'; unsignedXdr: string; networkPassphrase: string }
+  | ({ kind: 'xaman' } & XamanRefs);
+
+export interface DexOrderPrepareArgs {
+  token: string;
+  chain: TradingChain;
+  side: OrderSide;
+  source: { kind: 'root' | 'vault'; address: string; zone?: string; addressId?: string; name?: string };
+  base: Asset;
+  quote: Asset;
+  baseSymbol: string;
+  quoteSymbol: string;
+  amount: string;
+  limitPrice: string;
+}
+
+export interface DexOrderPrepareResult {
+  order: ActivityRecord;
+  signingRequest: DexSigningRequest;
+}
+
 export interface BlobGetResult {
-  kind: 'sig' | 'pass' | 'device' | 'server';
+  kind: 'sig' | 'pass' | 'device' | 'server' | 'data';
   version: number;
   header: Record<string, unknown>;
   ciphertextB64: string;
@@ -86,6 +112,20 @@ export interface BlobGetResult {
 export interface WalletSettingsResult {
   /** 0 disables the Mainnet lock reminder. */
   lockReminderMinutes: number;
+  chainSetupCompleted: boolean;
+}
+
+export interface ZoneChainAddResult {
+  chains: ZoneChainSetting[];
+  address: ZoneAddressItem;
+  created: boolean;
+}
+
+export interface AgentArtifactRecord {
+  artifactDigest: string;
+  manifest: AgentArtifactManifest;
+  source?: string;
+  createdAt: string;
 }
 
 export class ApiError extends Error {
@@ -154,6 +194,10 @@ class MosaicApi {
     return this.call('chain_enabled_set', { token, chainKey, enabled });
   }
 
+  chainSetupComplete(token: string, enabledChainKeys: string[]): Promise<{ settings: WalletSettingsResult; chains: ChainWithEnabled[] }> {
+    return this.call('chain_setup_complete', { token, enabledChainKeys });
+  }
+
   assetTrustSet(token: string, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
     return this.call('asset_trust_set', { token, assetId, state });
   }
@@ -200,8 +244,8 @@ class MosaicApi {
     return this.call('zone_list', { token });
   }
 
-  zoneUnlocked(token: string, zone: string): Promise<{ lastUnlockedAt: string }> {
-    return this.call('zone_unlocked', { token, zone });
+  zoneUnlocked(token: string, zone: string, addresses?: { id: string; address: string }[]): Promise<{ lastUnlockedAt: string }> {
+    return this.call('zone_unlocked', { token, zone, ...(addresses ? { addresses } : {}) });
   }
 
   zoneAddressCreate(token: string, zone: string, chain: AgentChain, name?: string): Promise<ZoneAddressItem> {
@@ -213,18 +257,36 @@ class MosaicApi {
     return this.call('zone_chain_set', { token, zone, chainKey, enabled });
   }
 
+  zoneChainAdd(token: string, zone: string, chainKey: string): Promise<ZoneChainAddResult> {
+    return this.call('zone_chain_add', { token, zone, chainKey });
+  }
+
   blobPut(args: {
     token: string;
     zone: string;
-    kind: 'sig' | 'pass' | 'device';
+    kind: 'sig' | 'pass' | 'device' | 'data';
     ciphertextB64: string;
     header: Record<string, unknown>;
+    expectedVersion?: number;
   }): Promise<{ version: number }> {
     return this.call('blob_put', args);
   }
 
-  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device' | 'server'): Promise<BlobGetResult> {
+  blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'device' | 'server' | 'data'): Promise<BlobGetResult> {
     return this.call('blob_get', { token, zone, kind });
+  }
+
+  agentArtifactPut(token: string, manifest: AgentArtifactManifest, source: string): Promise<{ artifactDigest: string; created: boolean }> {
+    return this.call('agent_artifact_put', { token, manifest, source });
+  }
+
+  agentArtifactGet(token: string, artifactDigest: string): Promise<AgentArtifactRecord & { source: string }> {
+    return this.call('agent_artifact_get', { token, artifactDigest });
+  }
+
+  async agentArtifactList(token: string, packageName?: string): Promise<AgentArtifactRecord[]> {
+    const result = await this.call<{ artifacts: AgentArtifactRecord[] }>('agent_artifact_list', { token, ...(packageName ? { packageName } : {}) });
+    return result.artifacts;
   }
 
   xamanSignCreate(args: {
@@ -241,6 +303,26 @@ class MosaicApi {
 
   xamanPayloadResult(token: string, uuid: string): Promise<{ signed: boolean; resolved: boolean; hex?: string; account?: string }> {
     return this.call('xaman_payload_result', { token, uuid });
+  }
+
+  dexOrderPrepare(args: DexOrderPrepareArgs): Promise<DexOrderPrepareResult> {
+    return this.call('dex_order_prepare', { ...args });
+  }
+
+  dexOrderSubmit(token: string, orderId: string, signed: { kind: 'xrpl'; txBlob: string } | { kind: 'stellar'; signedXdr: string } | { kind: 'xaman'; payloadUuid: string }): Promise<{ order: ActivityRecord }> {
+    return this.call('dex_order_submit', { token, orderId, signed });
+  }
+
+  dexOrderCancelPrepare(token: string, orderId: string): Promise<DexOrderPrepareResult> {
+    return this.call('dex_order_cancel_prepare', { token, orderId });
+  }
+
+  activityList(token: string, query: { after?: number; limit?: number; chain?: TradingChain; status?: OrderStatus; sourceAddress?: string } = {}): Promise<{ activities: ActivityRecord[] }> {
+    return this.call('activity_list', { token, ...query });
+  }
+
+  activityGet(token: string, id: string): Promise<{ activity: ActivityRecord }> {
+    return this.call('activity_get', { token, id });
   }
 }
 

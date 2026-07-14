@@ -1,3 +1,5 @@
+import { MAX_AGENT_MANIFEST_BYTES, MAX_AGENT_SOURCE_BYTES } from '@mosaic/local-runtime';
+
 /**
  * Ordered SQL migrations. Append-only: never edit an entry that has shipped —
  * add a new one. Applied inside per-migration transactions by PostgresStore.init().
@@ -152,5 +154,95 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
   ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server'));
+  `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server','data'));
+  `,
+  `
+  ALTER TABLE blobs DROP CONSTRAINT blobs_kind_check;
+  ALTER TABLE blobs ADD CONSTRAINT blobs_kind_check CHECK (kind IN ('sig','pass','device','server','data','agent-secrets'));
+
+  CREATE TABLE agent_artifacts (
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    artifact_digest TEXT NOT NULL CHECK (artifact_digest ~ '^[0-9a-f]{64}$'),
+    package_name TEXT NOT NULL CHECK (length(package_name) <= 64 AND package_name ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    manifest JSONB NOT NULL CHECK (octet_length(manifest::text) <= ${MAX_AGENT_MANIFEST_BYTES}),
+    source BYTEA NOT NULL CHECK (octet_length(source) BETWEEN 1 AND ${MAX_AGENT_SOURCE_BYTES}),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (root_chain, root_address, network, artifact_digest)
+  );
+  CREATE INDEX agent_artifacts_owner_package_idx
+    ON agent_artifacts (root_chain, root_address, network, package_name, created_at);
+  `,
+  `
+  CREATE TABLE agent_artifact_tickets (
+    ticket_hash TEXT PRIMARY KEY CHECK (ticket_hash ~ '^[0-9a-f]{64}$'),
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    artifact_digest TEXT NOT NULL CHECK (artifact_digest ~ '^[0-9a-f]{64}$'),
+    runner_certificate_digest TEXT NOT NULL CHECK (runner_certificate_digest ~ '^[0-9a-f]{64}$'),
+    expires_at TIMESTAMPTZ NOT NULL,
+    max_reads INTEGER NOT NULL CHECK (max_reads BETWEEN 1 AND 3),
+    reads INTEGER NOT NULL DEFAULT 0 CHECK (reads >= 0)
+  );
+  CREATE INDEX agent_artifact_tickets_expiry_idx ON agent_artifact_tickets (expires_at);
+  `,
+  `
+  ALTER TABLE zone_addresses ADD COLUMN address TEXT;
+  CREATE UNIQUE INDEX zone_addresses_public_address_idx
+    ON zone_addresses (chain, address) WHERE address IS NOT NULL;
+
+  CREATE TABLE dex_orders (
+    id UUID PRIMARY KEY,
+    cursor BIGSERIAL UNIQUE NOT NULL,
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    chain TEXT NOT NULL CHECK (chain IN ('xrpl','stellar')),
+    source_address TEXT NOT NULL,
+    status TEXT NOT NULL,
+    record JSONB NOT NULL,
+    signed_payload TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE INDEX dex_orders_owner_cursor_idx
+    ON dex_orders (root_chain, root_address, network, cursor DESC);
+  CREATE INDEX dex_orders_nonterminal_idx
+    ON dex_orders (status, updated_at) WHERE status IN ('submitted','confirmed','open','partially_filled','unknown');
+  `,
+  `
+  CREATE TABLE dex_activity_events (
+    cursor BIGSERIAL PRIMARY KEY,
+    order_id UUID NOT NULL REFERENCES dex_orders(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    record JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX dex_activity_events_order_idx ON dex_activity_events (order_id, cursor DESC);
+
+  ALTER TABLE dex_orders ADD COLUMN activity_cursor BIGINT;
+  INSERT INTO dex_activity_events (order_id, status, record, created_at)
+    SELECT id, status, record, updated_at FROM dex_orders ORDER BY cursor;
+  UPDATE dex_orders orders SET activity_cursor = event.cursor
+    FROM dex_activity_events event WHERE event.order_id = orders.id;
+  ALTER TABLE dex_orders ALTER COLUMN activity_cursor SET NOT NULL;
+  CREATE UNIQUE INDEX dex_orders_activity_cursor_idx ON dex_orders (activity_cursor);
+  `,
+  `
+  ALTER TABLE wallet_settings
+    ADD COLUMN chain_setup_completed BOOLEAN NOT NULL DEFAULT FALSE;
+
+  -- Wallets that already had catalog preferences predate chain onboarding.
+  -- Preserve their existing choices and do not force them through setup.
+  UPDATE wallet_settings SET chain_setup_completed = TRUE;
+  INSERT INTO wallet_settings (root_chain, root_address, lock_reminder_minutes, chain_setup_completed)
+    SELECT DISTINCT root_chain, root_address, 3, TRUE FROM chain_preferences
+    ON CONFLICT (root_chain, root_address)
+    DO UPDATE SET chain_setup_completed = TRUE;
   `,
 ];

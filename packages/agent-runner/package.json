@@ -14,9 +14,21 @@
     "test": "tsc -b && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@mosaic/local-runtime": "workspace:*"
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@mosaic/local-runtime": "workspace:*",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.0.1",
+    "@xmtp/content-type-primitives": "3.0.1",
+    "@xmtp/node-bindings": "1.11.0-dev.57a7203",
+    "@xmtp/node-sdk": "6.0.0",
+    "quickjs-emscripten": "0.32.0"
   },
   "devDependencies": {
+    "@mosaic/agent-compiler": "workspace:*",
+    "@mosaic/agent-sdk": "workspace:*",
+    "@mosaic/guardian": "workspace:*",
+    "@mosaic/mcp": "workspace:*",
+    "@mosaic/zone-keys": "workspace:*",
     "@types/node": "^24.12.3",
     "typescript": "~6.0.2"
   }

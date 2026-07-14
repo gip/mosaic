@@ -65,6 +65,11 @@ export default function AssetsPage() {
                       {shortAddress(deployment.address)}
                     </span>
                   )}
+                  {deployment.currencyCode && (
+                    <span className="mono" title={deployment.currencyCode}>
+                      Currency {shortAddress(deployment.currencyCode)}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

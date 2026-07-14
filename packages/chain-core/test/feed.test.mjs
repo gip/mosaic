@@ -21,12 +21,14 @@ function makeSnapshot(tag) {
 
 function makeFakeAdapter() {
   const streams = [];
+  const fetchOptions = [];
   const adapter = {
-    async fetchOrderBook() {
+    async fetchOrderBook(_req, opts) {
+      fetchOptions.push(opts);
       return makeSnapshot('refresh');
     },
-    openStream(_req, _opts, emit) {
-      const stream = { emit, closed: false };
+    openStream(_req, opts, emit) {
+      const stream = { emit, opts, closed: false };
       streams.push(stream);
       return {
         close() {
@@ -35,8 +37,20 @@ function makeFakeAdapter() {
       };
     },
   };
-  return { adapter, streams };
+  return { adapter, streams, fetchOptions };
 }
+
+test('uses a default retrieval depth of 500 offers per side', async () => {
+  const { adapter, streams, fetchOptions } = makeFakeAdapter();
+  const feed = new StreamingFeed(adapter, REQ);
+
+  feed.start();
+  assert.equal(streams[0].opts.depth, 500);
+
+  await feed.refresh();
+  assert.equal(fetchOptions[0].depth, 500);
+  feed.stop();
+});
 
 test('start(): connecting → live on first snapshot; latest tracks snapshots', () => {
   const { adapter, streams } = makeFakeAdapter();

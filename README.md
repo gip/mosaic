@@ -24,9 +24,9 @@ Conventions and custody boundary: [`CLAUDE.md`](CLAUDE.md).
 | `packages/mcp` | `@mosaic/mcp` | MCP server (Streamable HTTP) with Postgres: per-chain session auth, zone registry, encrypted blob storage, Xaman payload proxy, XRPL authoritative-key checks. |
 | `packages/ui-theme` | `@mosaic/ui-theme` | Shared Web/Local design tokens: palette, spacing, typography scale, radii, and dark/light themes. |
 | `packages/local-runtime` | `@mosaic/local-runtime` | Shared Electron/Node utility-process lifecycle and IPC contract. |
-| `packages/local-signer` | `@mosaic/local-signer` | Local Signer and Policy Manager process boundary. Currently a lifecycle-only scaffold; it does not unlock or sign. |
-| `packages/agent-runner` | `@mosaic/agent-runner` | Independently supervised Agent Runner process. Execution and state are intentionally deferred. |
-| `local-app` | `@mosaic/local-app` | Electron host for the shared frontend plus Signer/Policy Manager and Agent Runner processes. It adds a narrow preload bridge, not a second UI. |
+| `packages/guardian` | `@mosaic/guardian` | Mosaic Guardian: local MCP session, vault unlock, encrypted vault data, XMTP control identity, and networkless lease/policy core. |
+| `packages/agent-runner` | `@mosaic/agent-runner` | Independently supervised Agent Runner that verifies Guardian grants and spawns isolated QuickJS agents. |
+| `local-app` | `@mosaic/local-app` | Electron host for the shared frontend plus Mosaic Guardian and Agent Runner processes. It adds a narrow preload bridge, not a second UI. |
 | `frontend` | — | The shared Vite + React 19 application rendered by both Web and Local. Local exposes an additional `/agents` navigation item through its Electron bridge. |
 
 ## Quick start
@@ -76,6 +76,31 @@ SLIP-0010/SEP-0005/BIP44 cross-checks, blob round-trips + tamper cases, and a
 determinism-regression test that re-verifies recorded backup-wrap signatures
 against current library versions — if that one fails, an encoding drift would
 strand existing layer-1 blobs; never update the recorded values.
+
+## Recover a Mainnet backup file
+
+The local recovery CLI reads an exported `mosaic-vault-backup-*.json`, prompts
+for its backup passphrase without echoing it, verifies the recovered vault
+secret against the commitment, decrypts optional vault data, and prints the
+index-0 addresses for all three chains:
+
+```sh
+pnpm vault:recover ./mosaic-vault-backup-default-mainnet.json
+```
+
+The backup does not contain the backend address registry. Derive additional
+known indexes with repeated or comma-separated `--index` options:
+
+```sh
+pnpm vault:recover ./backup.json --index 0,1,2
+```
+
+Private key output is deliberately opt-in. It writes secrets to standard
+output, so do not paste, log, or redirect the result to an unprotected file:
+
+```sh
+pnpm vault:recover ./backup.json --index 0 --show-private-keys
+```
 
 ## Custody model (browser zones)
 

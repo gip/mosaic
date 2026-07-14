@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { qrSvg } from '../dist/qr.js';
 import { evmSignTypedDataPayload } from '../dist/evm/index.js';
 import { freighterWcLink } from '../dist/stellar/index.js';
+import { watchXamanPayload } from '../dist/xrpl/index.js';
 import { backupWrapMessage } from '@mosaic/zone-keys';
 
 test('qrSvg renders an inline SVG', () => {
@@ -18,6 +19,39 @@ test('freighterWcLink carries the wc-redirect prefix and an encoded uri param', 
   assert.ok(link.startsWith('freighterwallet://wc-redirect/wc?uri='));
   const encoded = link.split('uri=')[1];
   assert.equal(decodeURIComponent(encoded), 'wc:topic@2?relay-protocol=irn&symKey=abc');
+});
+
+test('watchXamanPayload rejects an already-cancelled prompt without opening a socket', async () => {
+  const abort = new AbortController();
+  abort.abort();
+  await assert.rejects(
+    watchXamanPayload('wss://xaman.example.test/status', { signal: abort.signal }),
+    /cancelled/,
+  );
+});
+
+test('watchXamanPayload closes its active socket when the prompt is cancelled', async () => {
+  const OriginalWebSocket = globalThis.WebSocket;
+  let socket;
+  class FakeWebSocket {
+    constructor() {
+      this.closed = false;
+      socket = this;
+    }
+    close() {
+      this.closed = true;
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const abort = new AbortController();
+    const pending = watchXamanPayload('wss://xaman.example.test/status', { signal: abort.signal });
+    abort.abort();
+    await assert.rejects(pending, /cancelled/);
+    assert.equal(socket.closed, true);
+  } finally {
+    globalThis.WebSocket = OriginalWebSocket;
+  }
 });
 
 test('eth_signTypedData_v4 payload includes EIP712Domain and pinned domain', () => {

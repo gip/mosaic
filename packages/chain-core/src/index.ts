@@ -38,6 +38,19 @@ export { StreamingFeed } from './feed.js';
 export { SurfaceFeed } from './surfaceFeed.js';
 export { PollingBalancesFeed } from './balancesFeed.js';
 export {
+  assertPositiveDecimal,
+  multiplyDecimals,
+  quantizeDecimal,
+  type ActivityRecord,
+  type DecimalRounding,
+  type DexOrderIntent,
+  type OrderAction,
+  type OrderPreview,
+  type OrderSide,
+  type OrderStatus,
+  type TradingChain,
+} from './trading.js';
+export {
   PRICE_DECIMALS,
   addDecimals,
   cmpDecimals,

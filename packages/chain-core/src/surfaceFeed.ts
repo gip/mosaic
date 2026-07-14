@@ -17,7 +17,7 @@ const DEFAULT_SAMPLE_COUNT = 5;
  * default display depth so the largest sample stays within the book a viewer
  * sees (charts overlay the surface on the depth view).
  */
-const DERIVE_BOOK_DEPTH = 200;
+const DERIVE_BOOK_DEPTH = 500;
 const DEFAULT_INTERVAL_MS = 12_000;
 const BACKOFF_INITIAL_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;

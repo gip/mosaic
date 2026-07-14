@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Network } from '@mosaic/zone-keys';
+import type { Network, RootChain } from '@mosaic/zone-keys';
 import Modal from './ui/Modal';
 import Banner from './ui/Banner';
 import { api, type AuthChallengeResult, type AuthVerifyResult } from '../api';
@@ -17,6 +17,8 @@ import { useSession, type RootSigner } from '../contexts/SessionContext';
  */
 export default function LoginModal({ onClose }: { onClose: () => void }) {
   const { session } = useSession();
+  const [preferred] = useState(loadPreferredWallet);
+  const [showAll, setShowAll] = useState(!preferred);
 
   // Close once any tile completes the login.
   useEffect(() => {
@@ -24,18 +26,42 @@ export default function LoginModal({ onClose }: { onClose: () => void }) {
   }, [session, onClose]);
 
   return (
-    <Modal title="Log in with your root wallet" onClose={onClose}>
+    <Modal title="Log in with your root wallet" onClose={onClose} closeButtonOnly>
       <p className="login-intro">
-        Your root wallet authorizes vaults and recovers agent keys. Pick the chain it lives on and
-        scan with your wallet&rsquo;s mobile app.
+        Your root wallet authorizes vaults, enables agents, and recovers agent keys. Mosaic uses mobile
+        wallets so those approvals remain available beyond a browser-extension-only session.
       </p>
-      <div className="login-tiles">
-        <XamanTile />
-        <StellarTile />
-        <EvmTile />
+      {preferred && !showAll && (
+        <p className="tile-note">Welcome back. Scan the fresh {WALLET_LABELS[preferred]} QR to continue.</p>
+      )}
+      <div className={`login-tiles${preferred && !showAll ? ' focused' : ''}`}>
+        {(showAll || preferred === 'xrpl') && <XamanTile />}
+        {(showAll || preferred === 'stellar') && <StellarTile />}
+        {(showAll || preferred === 'evm') && <EvmTile />}
       </div>
+      {preferred && !showAll && (
+        <button type="button" className="btn-ghost login-other-methods" onClick={() => setShowAll(true)}>
+          Use another login method
+        </button>
+      )}
     </Modal>
   );
+}
+
+const PREFERRED_WALLET_KEY = 'mosaic.preferred-root-wallet-v1';
+const WALLET_LABELS: Record<RootChain, string> = { xrpl: 'Xaman', evm: 'MetaMask', stellar: 'Freighter' };
+
+function loadPreferredWallet(): RootChain | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PREFERRED_WALLET_KEY) ?? 'null') as { chain?: unknown } | null;
+    return parsed && (parsed.chain === 'xrpl' || parsed.chain === 'evm' || parsed.chain === 'stellar') ? parsed.chain : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberPreferredWallet(chain: RootChain): void {
+  try { localStorage.setItem(PREFERRED_WALLET_KEY, JSON.stringify({ chain })); } catch { /* preference remains memory-only */ }
 }
 
 function useLogin() {
@@ -45,6 +71,7 @@ function useLogin() {
     network,
     finish: useCallback(
       (result: AuthVerifyResult, signer: RootSigner) => {
+        rememberPreferredWallet(result.chain);
         login(result, signer);
       },
       [login],
@@ -64,21 +91,36 @@ function TileError({ error }: { error: string | null }) {
 /** WalletConnect pairing lifecycle for the QR-first tiles. */
 type PairingStatus = 'pairing' | 'waiting' | 'signing' | 'error';
 
-function PairingBox({ qr, status, onRetry }: { qr: string | null; status: PairingStatus; onRetry: () => void }) {
-  if (qr && status === 'waiting') {
-    return <div className="qr-box qr-svg" dangerouslySetInnerHTML={{ __html: qr }} />;
+function WalletQr({
+  svg,
+  image,
+  status,
+  onRetry,
+}: {
+  svg?: string | null;
+  image?: string | null;
+  status: 'loading' | 'pairing' | 'waiting' | 'signing' | 'verifying' | 'error';
+  onRetry?: () => void;
+}) {
+  if ((svg || image) && status === 'waiting') {
+    return svg
+      ? <div className="qr-box qr-svg" dangerouslySetInnerHTML={{ __html: svg }} />
+      : <div className="qr-box"><img src={image!} alt="Wallet login QR code" /></div>;
   }
+  const label = status === 'signing' ? 'approve on your phone…'
+    : status === 'verifying' ? 'verifying…'
+      : status === 'loading' ? 'loading…' : 'pairing…';
   return (
-    <div className="qr-box">
-      {status === 'error' ? (
-        <button type="button" className="btn-sm" onClick={onRetry}>
-          retry QR
-        </button>
-      ) : (
-        <span className="tile-note">{status === 'signing' ? 'approve on your phone…' : 'pairing…'}</span>
-      )}
+    <div className="qr-box qr-placeholder">
+      {status === 'error' && onRetry ? (
+        <button type="button" className="btn-sm" onClick={onRetry}>retry QR</button>
+      ) : <span className="tile-note">{status === 'error' ? 'unavailable' : label}</span>}
     </div>
   );
+}
+
+function PairingBox({ qr, status, onRetry }: { qr: string | null; status: PairingStatus; onRetry: () => void }) {
+  return <WalletQr svg={qr} status={status} onRetry={onRetry} />;
 }
 
 const EXTENSION_CAVEAT = 'Extension logins are locked to this browser — they can’t authorize agents.';
@@ -123,6 +165,7 @@ function XamanTile() {
   const [deeplink, setDeeplink] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'waiting' | 'verifying' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -148,19 +191,22 @@ function XamanTile() {
       }
     })();
     return () => abort.abort();
-  }, [network, finish]);
+  }, [network, finish, attempt]);
+
+  function retry() {
+    pendingXamanChallenge = null;
+    setQrPng(null);
+    setDeeplink(null);
+    setError(null);
+    setStatus('loading');
+    setAttempt((current) => current + 1);
+  }
 
   return (
     <div className="login-tile">
       <h4>XRPL</h4>
       <p className="tile-sub">Xaman — scan with your phone</p>
-      <div className="qr-box">
-        {qrPng ? (
-          <img src={qrPng} alt="Xaman sign-in QR code" />
-        ) : (
-          <span className="tile-note">{status === 'error' ? 'unavailable' : 'loading…'}</span>
-        )}
-      </div>
+      <WalletQr image={qrPng} status={status} onRetry={retry} />
       {deeplink && (
         <a className="tile-note" href={deeplink} target="_blank" rel="noreferrer">
           open in Xaman instead
