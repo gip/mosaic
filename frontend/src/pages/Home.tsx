@@ -21,12 +21,7 @@ function Hero() {
   return (
     <section className="intro">
       <span className="intro-logo" role="img" aria-label="Mosaic logo" />
-      <h2 className="intro-title">Vault-derived agent wallets</h2>
-      <p className="intro-sub">
-        Log in with your root wallet — Xaman, Freighter, or MetaMask — and derive deterministic agent
-        addresses on XRPL, Stellar, and EVM from one locally generated vault secret. The platform stores only
-        ciphertext it cannot decrypt.
-      </p>
+      <h2 className="intro-title">Personal and Agentic Finance Built by Onchain Specialists</h2>
       <button type="button" className="btn-primary" onClick={() => setLoginOpen(true)}>
         Log in
       </button>

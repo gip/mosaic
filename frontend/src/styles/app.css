@@ -678,6 +678,18 @@
   text-align: center;
 }
 
+.intro-title {
+  max-width: 800px;
+  margin: var(--sp-4) 0;
+  color: color-mix(in srgb, var(--fg) 78%, transparent);
+  font-size: clamp(2rem, 5vw, 4rem);
+  font-style: italic;
+  font-weight: 300;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  text-transform: none;
+}
+
 .intro-sub {
   max-width: 560px;
   color: var(--fg-muted);
