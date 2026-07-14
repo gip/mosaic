@@ -1,5 +1,7 @@
 /* Shared palette, spacing, typography scale, radii, and themes. */
 @import "@mosaic/ui-theme/theme.css";
+@import "@fontsource/cormorant-garamond/latin-300.css";
+@import "@fontsource/cormorant-garamond/latin-300-italic.css";
 
 /* Zed Sans / Zed Mono — © Zed Industries, SIL OFL 1.1.
    Font files remain web-surface assets; the token names are shared. */

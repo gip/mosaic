@@ -681,22 +681,8 @@
   max-width: 1120px;
   margin: var(--sp-5) auto;
   padding: clamp(48px, 6vw, 72px) clamp(24px, 5vw, 64px);
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: clamp(var(--r-3), 2vw, 22px);
   background: transparent;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--fg) 5%, transparent), var(--shadow-1);
   text-align: center;
-}
-
-.intro::after {
-  position: absolute;
-  inset: 14px;
-  z-index: -1;
-  content: '';
-  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
-  border-radius: calc(clamp(var(--r-3), 2vw, 22px) - 6px);
-  pointer-events: none;
 }
 
 .intro-mark {
@@ -738,45 +724,20 @@
 .intro-title {
   max-width: 1000px;
   margin: 0 0 clamp(40px, 5vw, 64px);
-  color: color-mix(in srgb, var(--fg) 78%, transparent);
+  color: var(--fg-bright);
+  font-family: "Cormorant Garamond", Georgia, serif;
   font-size: clamp(2.5rem, 6vw, 5rem);
-  font-style: italic;
+  font-style: normal;
   font-weight: 300;
   line-height: 0.98;
-  letter-spacing: -0.045em;
+  letter-spacing: -0.025em;
   text-wrap: balance;
   text-transform: none;
 }
 
-.intro-cta {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-3);
-  min-width: 132px;
-  padding: 11px 20px;
-  border-radius: var(--r-pill);
-  box-shadow: 0 10px 30px color-mix(in srgb, var(--accent) 16%, transparent);
-  transition:
-    transform var(--t),
-    background var(--t-fast),
-    border-color var(--t-fast),
-    box-shadow var(--t);
-}
-
-.intro-cta:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 14px 34px color-mix(in srgb, var(--accent) 24%, transparent);
-}
-
-.intro-cta span:last-child {
-  font-size: 1.15em;
-  line-height: 1;
-  transition: transform var(--t);
-}
-
-.intro-cta:hover span:last-child {
-  transform: translateX(3px);
+.intro-title em {
+  font-style: italic;
+  font-weight: inherit;
 }
 
 @media (max-width: 600px) {
@@ -784,10 +745,6 @@
     min-height: min(600px, calc(100svh - var(--header-h) - var(--sp-4) * 2));
     margin: var(--sp-4) auto;
     padding: 48px var(--sp-5);
-  }
-
-  .intro::after {
-    inset: 9px;
   }
 
   .intro-mark {
@@ -805,13 +762,6 @@
     margin-bottom: var(--sp-8);
     font-size: clamp(2.35rem, 11vw, 3.5rem);
     line-height: 1.02;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .intro-cta,
-  .intro-cta span:last-child {
-    transition: none;
   }
 }
 

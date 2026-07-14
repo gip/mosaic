@@ -23,10 +23,11 @@ function Hero() {
       <div className="intro-mark">
         <span className="intro-logo" role="img" aria-label="Mosaic logo" />
       </div>
-      <h2 className="intro-title">Personal and Agentic Finance Built by Onchain Specialists</h2>
-      <button type="button" className="btn-primary intro-cta" onClick={() => setLoginOpen(true)}>
-        <span>Log in</span>
-        <span aria-hidden="true">→</span>
+      <h2 className="intro-title">
+        Personal and Agentic Finance Built by <em>Onchain Specialists</em>
+      </h2>
+      <button type="button" className="btn-primary" onClick={() => setLoginOpen(true)}>
+        Log in
       </button>
       {loginOpen && (
         <Suspense fallback={null}>
