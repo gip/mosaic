@@ -490,14 +490,23 @@ export class PostgresStore implements MosaicStore {
   }
 
   async updateDexOrder(ownerValue: CatalogOwner, network: Network, id: string, patch: Partial<DexOrderRecord>): Promise<DexOrderRecord> {
-    const current = await this.getDexOrder(ownerValue, network, id);
-    if (!current) throw new MosaicMcpError('NOT_FOUND', `order not found: ${id}`);
-    const next: DexOrderRecord = {
-      ...current, ...patch, id: current.id, cursor: current.cursor, owner: current.owner, network: current.network,
-      updatedAt: patch.updatedAt ?? new Date().toISOString(),
-    };
-    const json = { ...next, signedPayload: undefined };
-    const cursor = await this.sql.begin(async (tx) => {
+    const owner = normalizeCatalogOwner(ownerValue);
+    return this.sql.begin(async (tx) => {
+      // Lock the parent before inserting its activity event. The event's foreign
+      // key takes a KEY SHARE lock on dex_orders; inserting first in concurrent
+      // transactions lets both writers hold that lock and then deadlock while
+      // trying to update the same parent row.
+      const [row] = await tx`
+        SELECT activity_cursor AS cursor, record, signed_payload FROM dex_orders
+        WHERE id = ${id} AND root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}
+        FOR UPDATE`;
+      if (!row) throw new MosaicMcpError('NOT_FOUND', `order not found: ${id}`);
+      const current = rowToDexOrder(row);
+      const next: DexOrderRecord = {
+        ...current, ...patch, id: current.id, cursor: current.cursor, owner: current.owner, network: current.network,
+        updatedAt: patch.updatedAt ?? new Date().toISOString(),
+      };
+      const json = { ...next, signedPayload: undefined };
       const [event] = await tx`
         INSERT INTO dex_activity_events (order_id, status, record, created_at)
         VALUES (${id}, ${next.status}, ${tx.json(json as unknown as postgres.JSONValue)}, ${next.updatedAt}) RETURNING cursor`;
@@ -505,9 +514,8 @@ export class PostgresStore implements MosaicStore {
         UPDATE dex_orders SET status = ${next.status}, record = ${tx.json(json as unknown as postgres.JSONValue)},
           signed_payload = ${next.signedPayload ?? null}, updated_at = ${next.updatedAt}, activity_cursor = ${event!.cursor}
         WHERE id = ${id}`;
-      return Number(event!.cursor);
+      return { ...next, cursor: Number(event!.cursor) };
     });
-    return { ...next, cursor };
   }
 
   async listActivity(ownerValue: CatalogOwner, network: Network, query: ActivityQuery = {}): Promise<DexOrderRecord[]> {

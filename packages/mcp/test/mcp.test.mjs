@@ -919,3 +919,28 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     await store.close();
   }
 });
+
+test('PostgresStore serializes concurrent activity updates for one order', { skip: !pgUrl }, async () => {
+  const store = new PostgresStore(pgUrl);
+  await store.init();
+  try {
+    const id = crypto.randomUUID();
+    const owner = { chain: 'evm', address: `0xactivity-${id}` };
+    const now = new Date().toISOString();
+    await store.createDexOrder({
+      id, orderId: id, owner, network: 'testnet', chain: 'stellar', sourceAddress: stellarAddress, sourceKind: 'root',
+      side: 'sell', action: 'sell', base: { kind: 'native' }, quote: { kind: 'issued', code: 'USDC', issuer: stellarAddress },
+      baseSymbol: 'XLM', quoteSymbol: 'USDC', amount: '2', limitPrice: '3', quoteTotal: '6',
+      fee: '0.00001', feeSymbol: 'XLM', reserveImpact: null, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      status: 'awaiting_signature', filledAmount: '0', remainingAmount: '2', createdAt: now, updatedAt: now,
+      signingRequest: { kind: 'stellar', unsignedXdr: 'AAAA', networkPassphrase: 'test' },
+    });
+
+    const updates = await Promise.all(Array.from({ length: 24 }, (_, index) =>
+      store.updateDexOrder(owner, 'testnet', id, { status: 'submitted', error: `update-${index}` })));
+    assert.equal(new Set(updates.map(({ cursor }) => cursor)).size, updates.length);
+    assert.equal((await store.getDexOrder(owner, 'testnet', id))?.status, 'submitted');
+  } finally {
+    await store.close();
+  }
+});
