@@ -145,8 +145,8 @@ header.topbar {
 }
 /* Oversized masked logo for the logged-out Home hero (same mask/tint as .brand-logo). */
 .intro-logo {
-  width: 120px;
-  height: 120px;
+  width: 104px;
+  height: 104px;
   background-color: var(--logo-fill);
   -webkit-mask: url(/mosaic-logo.png) center / contain no-repeat;
   mask: url(/mosaic-logo.png) center / contain no-repeat;

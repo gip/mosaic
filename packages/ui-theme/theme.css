@@ -31,7 +31,9 @@
   --content-max: 1440px;
   --reading-max: 920px;
 
-  --bg: #0b0906;
+  /* Keep the page canvas and panels on one continuous surface; borders and inset
+     tokens provide hierarchy without a visible color break below short pages. */
+  --bg: #100d09;
   --bg-panel: #100d09;
   --bg-elevated: #17120c;
   --bg-inset: #0d0a07;
@@ -78,7 +80,7 @@
 }
 
 [data-theme="light"] {
-  --bg: #f6f7f9;
+  --bg: #ffffff;
   --bg-panel: #ffffff;
   --bg-elevated: #ffffff;
   --bg-inset: #eef0f3;

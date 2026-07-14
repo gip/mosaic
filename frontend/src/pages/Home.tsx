@@ -20,10 +20,13 @@ function Hero() {
   const [loginOpen, setLoginOpen] = useState(false);
   return (
     <section className="intro">
-      <span className="intro-logo" role="img" aria-label="Mosaic logo" />
+      <div className="intro-mark">
+        <span className="intro-logo" role="img" aria-label="Mosaic logo" />
+      </div>
       <h2 className="intro-title">Personal and Agentic Finance Built by Onchain Specialists</h2>
-      <button type="button" className="btn-primary" onClick={() => setLoginOpen(true)}>
-        Log in
+      <button type="button" className="btn-primary intro-cta" onClick={() => setLoginOpen(true)}>
+        <span>Log in</span>
+        <span aria-hidden="true">→</span>
       </button>
       {loginOpen && (
         <Suspense fallback={null}>
