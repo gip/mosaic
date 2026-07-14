@@ -900,10 +900,11 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     assert.deepEqual(await store.getWalletSettings({ chain: 'evm', address: ownerAddress }), { lockReminderMinutes: 30, chainSetupCompleted: true });
     await assert.rejects(() => store.setWalletSettings({ chain: 'evm', address: ownerAddress }, { lockReminderMinutes: 7, chainSetupCompleted: true }), /invalid lockReminderMinutes/);
 
+    await store.setChainEnabled({ chain: 'evm', address: ownerAddress }, 'xrpl', true);
     const zoneName = `top-${id}`;
     const zone = await store.createZone({
       rootChain: 'evm',
-      rootAddress: '0xabc',
+      rootAddress: ownerAddress,
       zone: zoneName,
       network: 'testnet',
       commitment: 'ee'.repeat(32),
@@ -918,7 +919,7 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
       () =>
         store.createZone({
           rootChain: 'evm',
-          rootAddress: '0xabc',
+          rootAddress: ownerAddress,
           zone: zoneName,
           network: 'testnet',
           commitment: 'ff'.repeat(32),
@@ -939,7 +940,7 @@ test('PostgresStore: challenge consume-once, session hashing, zone conflict, blo
     const vaultToggled = await store.setZoneChainEnabled(zone.id, 'xrpl', false);
     assert.equal(vaultToggled.find(({ chainId }) => chainId === 'xrpl-testnet')?.enabled, false);
     assert.equal(
-      (await store.listCatalog({ chain: 'evm', address: '0xabc' })).chains.find(({ id }) => id === 'xrpl-testnet')?.enabled,
+      (await store.listCatalog({ chain: 'evm', address: ownerAddress })).chains.find(({ id }) => id === 'xrpl-testnet')?.enabled,
       true,
     );
 
