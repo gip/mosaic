@@ -42,6 +42,7 @@ declare global {
       }): Promise<AgentInstallationPolicy>;
       agentInstallationGet(agentIdOrParams: string | { agentId: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<AgentInstallationPolicy | undefined>;
       agentInstallationDelete(agentId: string, expectedRevision: number, auth?: { network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<void>;
+      clearBrowserData(): Promise<void>;
       stopService(name: ServiceName): Promise<void>;
       onStatus(listener: (statuses: ServiceStatus[]) => void): () => void;
     };

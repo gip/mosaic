@@ -443,6 +443,15 @@ ipcMain.handle('agent:package-open', () => openAgentPackage());
 ipcMain.handle('agent:install', (_event, args) => installAgent(args));
 ipcMain.handle('agent:installation-get', (_event, args) => getAgentInstallation(args));
 ipcMain.handle('agent:installation-delete', (_event, agentId: string, expectedRevision: number, auth) => deleteAgentInstallation(agentId, expectedRevision, auth));
+ipcMain.handle('browser-data:clear', async (event) => {
+  const storage = event.sender.session;
+  const origin = new URL(event.sender.getURL()).origin;
+  await storage.clearStorageData({ origin });
+  await storage.clearCache();
+  await storage.clearAuthCache();
+  await storage.clearHostResolverCache();
+  storage.flushStorageData();
+});
 ipcMain.handle('services:stop', (_event, name: ServiceName) => stopService(name));
 
 app.whenReady().then(() => {

@@ -2,11 +2,14 @@ import { useMemo, useState } from 'react';
 import type { Network } from '@mosaic/zone-keys';
 import Banner from '../components/ui/Banner';
 import ChainSettingsModal from '../components/ChainSettingsModal';
+import Modal from '../components/ui/Modal';
+import Button from '../components/ui/Button';
 import { useSettings } from '../contexts/SettingsContext';
 import { useSession } from '../contexts/SessionContext';
 import { useCatalog } from '../contexts/CatalogContext';
 import { useWalletSettings } from '../contexts/WalletSettingsContext';
 import { LOCK_REMINDER_OPTIONS } from '../lockReminderOptions';
+import { clearBrowserData } from '../browserData';
 
 const NETWORKS: { id: Network; label: string; sub: string }[] = [
   { id: 'mainnet', label: 'Mainnet', sub: 'XRPL · Stellar pubnet · Base' },
@@ -15,11 +18,14 @@ const NETWORKS: { id: Network; label: string; sub: string }[] = [
 
 export default function SettingsPage() {
   const { network, setNetwork } = useSettings();
-  const { session } = useSession();
+  const { session, logout } = useSession();
   const { chains, error, loading, readOnly, setChainEnabled } = useCatalog();
   const { lockReminderMinutes, setLockReminderMinutes, readOnly: lockReadOnly } = useWalletSettings();
   const [chainsOpen, setChainsOpen] = useState(false);
   const [lockError, setLockError] = useState<string | null>(null);
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [wipeBusy, setWipeBusy] = useState(false);
+  const [wipeError, setWipeError] = useState<string | null>(null);
 
   // One row per logical chain: the network variants share a chainKey and
   // always carry the same enabled flag; custom chains are single-network.
@@ -61,6 +67,19 @@ export default function SettingsPage() {
       await setLockReminderMinutes(minutes);
     } catch (cause) {
       setLockError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function wipeBrowserData() {
+    setWipeBusy(true);
+    setWipeError(null);
+    try {
+      await logout();
+      await clearBrowserData();
+      window.location.replace('/');
+    } catch (cause) {
+      setWipeError(cause instanceof Error ? cause.message : String(cause));
+      setWipeBusy(false);
     }
   }
 
@@ -128,6 +147,18 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+      <div className="zone-card browser-data-settings">
+        <h3>Browser data</h3>
+        <p>
+          Log out and remove all Mosaic data stored by this browser, including cookies, preferences,
+          cached vault secrets, Testnet device keys, local databases, and cached files.
+        </p>
+        <div className="browser-data-action">
+          <Button variant="danger" size="sm" onClick={() => setWipeOpen(true)}>
+            Log out and delete browser data
+          </Button>
+        </div>
+      </div>
       {chainsOpen && (
         <ChainSettingsModal
           title="Supported chains"
@@ -136,6 +167,24 @@ export default function SettingsPage() {
           onToggle={setChainEnabled}
           onClose={() => setChainsOpen(false)}
         />
+      )}
+      {wipeOpen && (
+        <Modal title="Delete all browser data?" onClose={() => setWipeOpen(false)} dismissible={!wipeBusy}>
+          <p>
+            This logs you out and permanently removes every Mosaic record stored by this browser.
+            Any unlocked vault will need a wallet signature or passphrase to unlock again.
+          </p>
+          <p className="tile-note">
+            Vault records and encrypted recovery blobs stored by Mosaic are not deleted.
+          </p>
+          {wipeError && <Banner tone="err">Could not delete all browser data: {wipeError}</Banner>}
+          <div className="modal-actions">
+            <Button variant="ghost" disabled={wipeBusy} onClick={() => setWipeOpen(false)}>Cancel</Button>
+            <Button variant="danger" disabled={wipeBusy} onClick={() => void wipeBrowserData()}>
+              {wipeBusy ? 'Deleting…' : 'Delete all data'}
+            </Button>
+          </div>
+        </Modal>
       )}
     </div>
   );

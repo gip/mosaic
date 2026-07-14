@@ -1514,6 +1514,13 @@ tbody tr:hover {
   padding: var(--sp-4);
 }
 
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
 /* Definition-list grid used by the note details modal. */
 .detail-grid {
   margin: 0;

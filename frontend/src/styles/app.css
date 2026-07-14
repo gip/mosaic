@@ -460,6 +460,11 @@
   margin-top: var(--sp-4);
 }
 
+.browser-data-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ------------------------------------------------------- local agents page */
 
 .agents-page {
