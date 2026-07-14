@@ -5,11 +5,18 @@
   "type": "module",
   "license": "MIT",
   "files": ["dist"],
-  "exports": { ".": "./dist/index.js", "./contracts": "./dist/contracts.js", "./capabilities": "./dist/capabilityCatalog.js" },
+  "exports": { ".": "./dist/index.js", "./contracts": "./dist/contracts.js", "./capabilities": "./dist/capabilityCatalog.js", "./control": "./dist/xmtpControl.js" },
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "tsc -b && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.0.1",
+    "@xmtp/content-type-primitives": "3.0.1",
+    "@xmtp/node-bindings": "1.11.0-dev.57a7203",
+    "@xmtp/node-sdk": "6.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.12.3",

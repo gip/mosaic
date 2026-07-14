@@ -63,7 +63,7 @@ async function run(message: StartMessage): Promise<void> {
       stopRuntime = () => {
         const result = vm.evalCode('__mosaicStop()', 'mosaic-stop.js');
         vm.unwrapResult(result).dispose();
-        void vm.runtime.executePendingJobs(message.limits.maxPendingJobs);
+        vm.runtime.executePendingJobs(message.limits.maxPendingJobs).unwrap();
       };
       if (stopRequested) stopRuntime();
       dispatchRuntimeEvent = async (event) => {
@@ -84,7 +84,13 @@ async function run(message: StartMessage): Promise<void> {
       process.send?.({ type: 'event-ready', eventType: 'runtime.stopping' });
       const evaluation = vm.evalCode(`(async () => {\n${message.source}\n})()`, 'agent.mjs');
       const promiseHandle = vm.unwrapResult(evaluation);
-      const settled = await vm.resolvePromise(promiseHandle);
+      const pendingResult = vm.resolvePromise(promiseHandle);
+      // A stop can arrive while QuickJS is still initializing. In that case
+      // waitUntilStopped() is already resolved when agent code first awaits it,
+      // so explicitly drain the resulting continuation instead of waiting for
+      // a later host hook to wake the VM.
+      vm.runtime.executePendingJobs(message.limits.maxPendingJobs).unwrap();
+      const settled = await pendingResult;
       promiseHandle.dispose();
       vm.unwrapResult(settled).dispose();
       sendTerminal({ type: 'complete' }, 0);

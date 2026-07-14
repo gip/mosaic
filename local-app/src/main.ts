@@ -12,13 +12,13 @@ import {
   MAX_AGENT_PACKAGE_BYTES,
   assertArtifactPackage,
   canonicalJson,
-  callGuardianControl,
   type AgentArtifactPackage,
   type AgentInstallationPolicy,
   type AgentResourceLimits,
   type CapabilityAllowance,
   type LocalMcpSession,
   type MosaicNetwork,
+  type PairingOffer,
   type ServiceName,
   type ServiceStatus,
   type XmtpResourceDescriptor,
@@ -33,6 +33,9 @@ let rendererServer: Server | null = null;
 let quitting = false;
 let supervisorEnrolled = false;
 const supervisorPending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
+const guardianPending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
+const guardianApprovalEvents: Array<{ requestId: string; operation: string; agentId?: string }> = [];
+const guardianApprovalWaiters = new Set<() => void>();
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -66,6 +69,22 @@ function startService(name: ServiceName, packageName: string, args: string[] = [
 
   child.on('spawn', () => publish({ name, phase: 'starting', pid: child.pid }));
   child.on('message', (message: unknown) => {
+    if (isGuardianResponse(message)) {
+      const pending = guardianPending.get(message.requestId);
+      if (pending) {
+        guardianPending.delete(message.requestId);
+        clearTimeout(pending.timeout);
+        if (message.ok) pending.resolve(message.result); else pending.reject(new Error(message.error || 'Guardian request failed'));
+      }
+      return;
+    }
+    if (isGuardianEvent(message)) {
+      if (message.event.type === 'approval-required' && typeof message.event.requestId === 'string' && typeof message.event.operation === 'string') {
+        guardianApprovalEvents.push({ requestId: message.event.requestId, operation: message.event.operation, ...(typeof message.event.agentId === 'string' ? { agentId: message.event.agentId } : {}) });
+        for (const wake of guardianApprovalWaiters) wake();
+      }
+      return;
+    }
     if (isSupervisorResponse(message)) {
       const pending = supervisorPending.get(message.requestId);
       if (pending) {
@@ -87,9 +106,15 @@ function startService(name: ServiceName, packageName: string, args: string[] = [
   });
   child.on('exit', (code) => {
     children.delete(name);
-    // Either side of the enrollment dying invalidates it: the runner loses
-    // its session credential, and a restarted Guardian forgets the runner.
+    // A restarted process requires a new attended certificate pairing. There
+    // is no reusable bearer/session credential.
     if (name === 'agent-runner' || name === 'mosaic-guardian') supervisorEnrolled = false;
+    const pendingRequests = name === 'mosaic-guardian' ? guardianPending : supervisorPending;
+    for (const [requestId, pending] of pendingRequests) {
+      pendingRequests.delete(requestId);
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(`${name} exited`));
+    }
     const expected = quitting || statuses.get(name)?.phase === 'stopping';
     publish({
       name,
@@ -104,7 +129,17 @@ function isSupervisorResponse(message: unknown): message is { type: 'supervisor-
     'requestId' in message && typeof message.requestId === 'string' && 'ok' in message && typeof message.ok === 'boolean';
 }
 
-function supervisorRequest<T>(type: 'supervisor.start' | 'agent.start' | 'agent.stop' | 'agent.list' | 'agent.status', params: Record<string, unknown> = {}, timeoutMs = 120_000): Promise<T> {
+function isGuardianResponse(message: unknown): message is { type: 'guardian-response'; requestId: string; ok: boolean; result?: unknown; error?: string } {
+  return typeof message === 'object' && message !== null && 'type' in message && message.type === 'guardian-response' &&
+    'requestId' in message && typeof message.requestId === 'string' && 'ok' in message && typeof message.ok === 'boolean';
+}
+
+function isGuardianEvent(message: unknown): message is { type: 'guardian-event'; event: Record<string, unknown> } {
+  return typeof message === 'object' && message !== null && 'type' in message && message.type === 'guardian-event' &&
+    'event' in message && typeof message.event === 'object' && message.event !== null;
+}
+
+function supervisorRequest<T>(type: 'supervisor.pairing-offer' | 'supervisor.start' | 'agent.start' | 'agent.list' | 'agent.status', params: Record<string, unknown> = {}, timeoutMs = 120_000): Promise<T> {
   const child = children.get('agent-runner');
   if (!child) throw new Error('Mosaic Supervisor is not running');
   const requestId = randomUUID();
@@ -115,16 +150,15 @@ function supervisorRequest<T>(type: 'supervisor.start' | 'agent.start' | 'agent.
   });
 }
 
-async function waitForGuardianControl(): Promise<void> {
-  // Generous budget: a cold Guardian start loads the WalletConnect/MCP module
-  // graph before its control socket opens.
-  const deadline = Date.now() + 30_000;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try { await callGuardianControl<ServiceStatus>('status', undefined, 1_000); return; }
-    catch (error) { lastError = error; await new Promise((resolve) => setTimeout(resolve, 200)); }
-  }
-  throw lastError instanceof Error ? lastError : new Error('Mosaic Guardian control endpoint did not start');
+function guardianRequest<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = 180_000): Promise<T> {
+  const child = children.get('mosaic-guardian');
+  if (!child) throw new Error('Mosaic Guardian is not running');
+  const requestId = randomUUID();
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => { guardianPending.delete(requestId); reject(new Error(`Guardian ${method} timed out`)); }, timeoutMs);
+    guardianPending.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout });
+    child.postMessage({ type: 'guardian-request', requestId, method, params });
+  });
 }
 
 async function startGuardian(args: {
@@ -136,31 +170,35 @@ async function startGuardian(args: {
 }): Promise<ServiceStatus> {
   const vault = args.vault?.trim() || DEFAULT_GUARDIAN_VAULT;
   const network = args.network ?? 'testnet';
-  try {
-    await callGuardianControl<ServiceStatus>('status', undefined, 500);
-  } catch {
+  if (!children.has('mosaic-guardian')) {
     startService('mosaic-guardian', '@mosaic/guardian', [vault, '--network', network]);
-    try {
-      await waitForGuardianControl();
-    } catch (error) {
-      // Kill the half-started child so a retry is not wedged on "already running".
-      children.get('mosaic-guardian')?.kill();
-      throw error;
-    }
+    await waitForService('mosaic-guardian');
   }
-  await callGuardianControl('session.attach', args.session as unknown as Record<string, unknown>);
-  await callGuardianControl('guardian.start', {
+  await guardianRequest('session.attach', args.session as unknown as Record<string, unknown>);
+  await guardianRequest('guardian.start', {
     vault,
     network,
     ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
     ...(args.passphrase ? { passphrase: args.passphrase } : {}),
-  }, 180_000);
-  const status = await callGuardianControl<ServiceStatus>('status');
-  publish(status);
+  });
+  const current = await guardianRequest<ServiceStatus & { phase: ServiceStatus['phase'] }>('status');
+  const nextStatus: ServiceStatus = { name: 'mosaic-guardian', phase: current.phase, pid: current.pid, detail: current.detail, vault: current.vault, network: current.network, evmAddress: current.evmAddress };
+  publish(nextStatus);
   // One idle Supervisor service is shared by every agent for this Local
   // session. Enrollment remains deferred until the first explicit agent start.
   if (!children.has('agent-runner')) startService('agent-runner', '@mosaic/agent-runner', ['--network', network]);
-  return status;
+  return nextStatus;
+}
+
+async function waitForService(name: ServiceName, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const phase = statuses.get(name)?.phase;
+    if ((name === 'agent-runner' && phase === 'running') || (name === 'mosaic-guardian' && phase === 'awaiting-wallet')) return;
+    if (!children.has(name) || phase === 'failed' || phase === 'stopped') throw new Error(`${name} exited during startup`);
+    if (Date.now() >= deadline) throw new Error(`${name} did not become ready in time`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 async function waitForRunner(timeoutMs = 30_000): Promise<void> {
@@ -179,31 +217,47 @@ async function waitForRunner(timeoutMs = 30_000): Promise<void> {
 async function startAgent(args: { agentId?: string; vault?: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<unknown> {
   const vault = args.agentId?.trim() || args.vault?.trim() || DEFAULT_RUNNER_VAULT;
   const network = args.network ?? 'testnet';
-  const guardian = await callGuardianControl<ServiceStatus>('status');
+  const guardian = await guardianRequest<ServiceStatus>('status');
   if (guardian.phase !== 'running') throw new Error('Unlock Mosaic Guardian before starting an agent');
-  await callGuardianControl('agent.unlock', {
-    agentId: vault, network,
-    ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
-    ...(args.passphrase ? { passphrase: args.passphrase } : {}),
-  }, 180_000);
-  // Everything after the unlock must lock the vault back on failure; the
-  // secrets are already live in Guardian memory.
   try {
     if (!children.has('agent-runner')) startService('agent-runner', '@mosaic/agent-runner', ['--network', network]);
     await waitForRunner();
     if (!supervisorEnrolled) {
-      const approved = await callGuardianControl<{ pairingCredential: string }>('runner.approve', { runnerId: 'local-supervisor' });
-      await supervisorRequest('supervisor.start', { pairingCredential: approved.pairingCredential });
+      const offer = await supervisorRequest<PairingOffer>('supervisor.pairing-offer');
+      await guardianRequest('pairing.approve', { offer: offer as unknown as Record<string, unknown> });
+      await supervisorRequest('supervisor.start', {}, 15 * 60_000);
       supervisorEnrolled = true;
     }
-    return await supervisorRequest('agent.start', { agentId: vault });
+    const start = supervisorRequest('agent.start', { agentId: vault }, 15 * 60_000);
+    const approval = await waitForGuardianApproval('agent-start', vault);
+    await guardianRequest('agent-start.approve', {
+      requestId: approval.requestId,
+      ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
+      ...(args.passphrase ? { passphrase: args.passphrase } : {}),
+    });
+    return await start;
   } catch (error) {
-    await callGuardianControl('agent.lock', { agentId: vault }).catch(() => {});
+    await guardianRequest('agent.lock', { agentId: vault }).catch(() => {});
     throw error;
   }
 }
 
-async function stopAgent(agentId: string): Promise<void> { await supervisorRequest('agent.stop', { agentId }); }
+async function waitForGuardianApproval(operation: string, agentId: string, timeoutMs = 15 * 60_000): Promise<{ requestId: string }> {
+  const take = () => {
+    const index = guardianApprovalEvents.findIndex((event) => event.operation === operation && event.agentId === agentId);
+    return index >= 0 ? guardianApprovalEvents.splice(index, 1)[0] : undefined;
+  };
+  const available = take();
+  if (available) return available;
+  return new Promise((resolve, reject) => {
+    const wake = () => { const found = take(); if (found) { clearTimeout(timeout); guardianApprovalWaiters.delete(wake); resolve(found); } };
+    const timeout = setTimeout(() => { guardianApprovalWaiters.delete(wake); reject(new Error(`Guardian ${operation} approval notification timed out`)); }, timeoutMs);
+    guardianApprovalWaiters.add(wake);
+  });
+}
+
+async function stopAgent(agentId: string): Promise<void> { await guardianRequest('agent.stop', { agentId }); }
+async function killAgent(agentId: string): Promise<void> { await guardianRequest('agent.kill', { agentId }); }
 
 async function openAgentPackage(): Promise<AgentArtifactPackage | undefined> {
   const options: OpenDialogOptions = {
@@ -239,14 +293,14 @@ async function installAgent(args: {
 }): Promise<AgentInstallationPolicy> {
   const agentId = args.agentId.trim();
   const network = args.network ?? 'testnet';
-  await callGuardianControl('agent.unlock', {
+  await guardianRequest('agent.unlock', {
     agentId,
     network,
     ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
     ...(args.passphrase ? { passphrase: args.passphrase } : {}),
-  }, 180_000);
+  });
   try {
-    return await callGuardianControl<AgentInstallationPolicy>('agent.install', {
+    return await guardianRequest<AgentInstallationPolicy>('agent.install', {
       agentId,
       artifactDigest: args.artifactDigest,
       capabilities: args.capabilities,
@@ -254,35 +308,35 @@ async function installAgent(args: {
       limits: args.limits,
       enabled: args.enabled,
       expectedRevision: args.expectedRevision,
-    }, 180_000);
+    });
   } finally {
-    await callGuardianControl('agent.lock', { agentId }).catch(() => {});
+    await guardianRequest('agent.lock', { agentId }).catch(() => {});
   }
 }
 
 async function getAgentInstallation(args: string | { agentId: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<AgentInstallationPolicy | undefined> {
-  if (typeof args === 'string') return callGuardianControl('agent.installation.get', { agentId: args });
+  if (typeof args === 'string') return guardianRequest('agent.installation.get', { agentId: args });
   const agentId = args.agentId.trim();
-  await callGuardianControl('agent.unlock', {
+  await guardianRequest('agent.unlock', {
     agentId,
     network: args.network ?? 'testnet',
     ...(args.signatureB64 ? { signatureB64: args.signatureB64 } : {}),
     ...(args.passphrase ? { passphrase: args.passphrase } : {}),
-  }, 180_000);
-  try { return await callGuardianControl('agent.installation.get', { agentId }); }
-  finally { await callGuardianControl('agent.lock', { agentId }).catch(() => {}); }
+  });
+  try { return await guardianRequest('agent.installation.get', { agentId }); }
+  finally { await guardianRequest('agent.lock', { agentId }).catch(() => {}); }
 }
 
 async function deleteAgentInstallation(agentId: string, expectedRevision: number, auth?: { network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<void> {
-  if (!auth) return callGuardianControl('agent.installation.delete', { agentId, expectedRevision });
-  await callGuardianControl('agent.unlock', {
+  if (!auth) return guardianRequest('agent.installation.delete', { agentId, expectedRevision });
+  await guardianRequest('agent.unlock', {
     agentId,
     network: auth.network ?? 'testnet',
     ...(auth.signatureB64 ? { signatureB64: auth.signatureB64 } : {}),
     ...(auth.passphrase ? { passphrase: auth.passphrase } : {}),
-  }, 180_000);
-  try { await callGuardianControl('agent.installation.delete', { agentId, expectedRevision }); }
-  finally { await callGuardianControl('agent.lock', { agentId }).catch(() => {}); }
+  });
+  try { await guardianRequest('agent.installation.delete', { agentId, expectedRevision }); }
+  finally { await guardianRequest('agent.lock', { agentId }).catch(() => {}); }
 }
 
 async function stopService(name: ServiceName): Promise<void> {
@@ -291,7 +345,7 @@ async function stopService(name: ServiceName): Promise<void> {
     // 'stopping' (not 'stopped') so a spawned child's exit handler classifies
     // the shutdown as expected; the exit handler or status poll settles it.
     publish({ ...statuses.get(name), name, phase: 'stopping' });
-    await callGuardianControl('shutdown').catch(() => {});
+    await guardianRequest('shutdown').catch(() => {});
     if (!children.has(name)) publish({ name, phase: 'stopped' });
     return;
   }
@@ -362,12 +416,13 @@ async function stopChildren(): Promise<void> {
       const timeout = setTimeout(() => {
         child.kill();
         resolve();
-      }, 2_000);
+      }, 10_000);
       child.once('exit', () => {
         clearTimeout(timeout);
         resolve();
       });
-      child.postMessage({ type: 'shutdown' });
+      if (name === 'mosaic-guardian') child.postMessage({ type: 'guardian-request', requestId: randomUUID(), method: 'shutdown', params: {} });
+      else child.postMessage({ type: 'shutdown' });
     });
   });
   await Promise.all(exits);
@@ -381,6 +436,7 @@ ipcMain.handle('supervisor:start', async (_event, args: { network?: MosaicNetwor
 });
 ipcMain.handle('agent:start', (_event, args) => startAgent(args));
 ipcMain.handle('agent:stop', (_event, agentId: string) => stopAgent(agentId));
+ipcMain.handle('agent:kill', (_event, agentId: string) => killAgent(agentId));
 ipcMain.handle('agent:list', () => supervisorRequest('agent.list'));
 ipcMain.handle('agent:status', (_event, agentId: string) => supervisorRequest('agent.status', { agentId }));
 ipcMain.handle('agent:package-open', () => openAgentPackage());
@@ -397,13 +453,6 @@ app.whenReady().then(() => {
     createWindow(url);
     publish({ name: 'mosaic-guardian', phase: 'stopped', vault: DEFAULT_GUARDIAN_VAULT, network: 'testnet' });
     publish({ name: 'agent-runner', phase: 'stopped', vault: DEFAULT_RUNNER_VAULT, network: 'testnet' });
-    setInterval(() => {
-      void callGuardianControl<ServiceStatus>('status', undefined, 500).then(publish).catch(() => {
-        if (!children.has('mosaic-guardian') && statuses.get('mosaic-guardian')?.phase !== 'stopped') {
-          publish({ name: 'mosaic-guardian', phase: 'stopped', vault: DEFAULT_GUARDIAN_VAULT, network: 'testnet' });
-        }
-      });
-    }, 1_000).unref();
   });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -17,8 +17,6 @@ import {
   validateOperationArguments,
   type CapabilityAllowance,
   type CapabilityOperation,
-  type CapabilityRequest,
-  type CapabilityResult,
   type ExecutionGrant,
   type AgentRuntimeEvent,
   type RunnerCertificate,
@@ -66,11 +64,6 @@ export interface SupervisorResult {
  * audit chain are enforced by the Guardian rather than only by this
  * (untrusted) Runner process.
  */
-export interface CapabilityAuthorizer {
-  authorize(request: CapabilityRequest): Promise<void>;
-  record(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): Promise<void>;
-}
-
 export interface SupervisorExternalHooks {
   xmtpSend(resourceId: string, text: string): Promise<{ messageId: string }>;
   transactionPropose(argumentsValue: Record<string, unknown>): Promise<unknown>;
@@ -123,6 +116,10 @@ export function verifyExecutionAuthorization(params: {
   if (params.certificate.runnerId !== params.runnerId || params.grant.runnerId !== params.runnerId) throw new Error('Runner ID mismatch');
   if (params.certificate.runnerPublicKey !== params.runnerPublicKey || params.grant.runnerPublicKey !== params.runnerPublicKey) throw new Error('Runner public key mismatch');
   if (params.grant.guardianId !== params.certificate.guardianId || params.grant.network !== params.certificate.network) throw new Error('Guardian binding mismatch');
+  if (
+    params.grant.runnerControlInboxId !== params.certificate.runnerControlInboxId ||
+    params.grant.guardianControlInboxId !== params.certificate.guardianControlInboxId
+  ) throw new Error('control inbox binding mismatch');
   if (params.grant.certificateDigest !== contractDigest(params.certificate)) throw new Error('certificate digest mismatch');
   if (params.grant.sourceDigest !== sha256Hex(params.source)) throw new Error('agent source digest mismatch');
 }
@@ -131,24 +128,26 @@ export class AgentSupervisor {
   private readonly state = new Map<string, { revision: number; value: unknown }>();
   private readonly logs: Array<Record<string, unknown>> = [];
   private auditHead = '0'.repeat(64);
+  private auditEvents = 0;
   private sequence = 0;
-  private authorizeQueue: Promise<void> = Promise.resolve();
   private child?: ChildProcess;
   private killTimer?: NodeJS.Timeout;
   private killChildRef?: () => void;
   private wallDeadline = 0;
   private runActive = false;
+  private acceptingWork = false;
   private stopRequested = false;
   private readonly readyEventTypes = new Set<AgentRuntimeEvent['eventType']>();
   private readonly eventReadyWaiters = new Map<AgentRuntimeEvent['eventType'], Set<EventReadyWaiter>>();
   private readonly eventAcks = new Map<string, { resolve(): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
 
-  constructor(private readonly authorizer?: CapabilityAuthorizer, private readonly external?: SupervisorExternalHooks) {}
+  constructor(private readonly external?: SupervisorExternalHooks) {}
 
   async run(source: string, grant: ExecutionGrant): Promise<SupervisorResult> {
     if (sha256Hex(source) !== grant.sourceDigest) throw new Error('refusing source that does not match grant');
     if (this.runActive) throw new Error('agent supervisor is already running');
     this.runActive = true;
+    this.acceptingWork = true;
     this.stopRequested = false;
     this.readyEventTypes.clear();
     let workdir: string | undefined;
@@ -171,7 +170,7 @@ export class AgentSupervisor {
       process.once('exit', killChild);
       this.killChildRef = killChild;
       this.wallDeadline = Date.now() + grant.limits.wallTimeMs;
-      this.scheduleKill(Date.parse(grant.expiresAt) + grant.maxOfflineMs);
+      this.scheduleKill(Date.parse(grant.expiresAt));
       const completion = this.monitor(child, grant);
       child.send({
         type: 'start',
@@ -201,17 +200,9 @@ export class AgentSupervisor {
       this.eventAcks.clear();
       this.stopRequested = false;
       this.runActive = false;
+      this.acceptingWork = false;
       if (workdir) await rm(workdir, { recursive: true, force: true });
     }
-  }
-
-  /**
-   * A verified lease renewal moves the sandbox kill deadline to the renewed
-   * lease expiry (plus offline grace), never past the wall-time cap. Without
-   * this the deadline stays pinned to the initial grant's short TTL.
-   */
-  extendLease(expiresAt: string, maxOfflineMs: number): void {
-    this.scheduleKill(Date.parse(expiresAt) + maxOfflineMs);
   }
 
   private scheduleKill(leaseDeadline: number): void {
@@ -223,6 +214,7 @@ export class AgentSupervisor {
 
   async deliverEvent(event: AgentRuntimeEvent, timeoutMs = 10_000): Promise<void> {
     if (!this.runActive) throw new Error('agent sandbox is not running');
+    if (!this.acceptingWork && event.eventType !== 'runtime.stopping') throw new Error('agent is stopping');
     const startedAt = Date.now();
     await this.waitForEventReady(event.eventType, timeoutMs);
     const child = this.child;
@@ -235,14 +227,39 @@ export class AgentSupervisor {
     });
   }
 
-  stop(): void {
+  notifyStopping(event: AgentRuntimeEvent): void {
+    if (event.eventType !== 'runtime.stopping' || !this.runActive || !this.child?.connected) return;
+    this.child.send(event);
+  }
+
+  rejectNewWork(): void { this.acceptingWork = false; }
+
+  async stopGracefully(timeoutMs = 5_000): Promise<void> {
     if (!this.runActive) return;
     this.stopRequested = true;
     const child = this.child;
     if (!child?.connected) return;
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
     child.send({ type: 'stop' });
-    setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 1_000).unref();
+    const timer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, timeoutMs);
+    timer.unref();
+    await exited;
+    clearTimeout(timer);
   }
+
+  stop(): void { void this.stopGracefully(5_000); }
+
+  async killImmediately(): Promise<void> {
+    this.stopRequested = true;
+    const child = this.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    child.kill('SIGKILL');
+    await exited;
+  }
+
+  auditDigest(): string { return this.auditHead; }
+  auditEventCount(): number { return this.auditEvents; }
 
   private monitor(child: ChildProcess, grant: ExecutionGrant): Promise<number> {
     const allowances = new Map(grant.capabilities.map((item) => [item.operation, { ...item, calls: 0 }]));
@@ -335,57 +352,12 @@ export class AgentSupervisor {
     this.eventReadyWaiters.clear();
   }
 
-  /**
-   * Authorizations are serialized because Vault Core enforces a strict
-   * sequence; the local counter only advances once the Guardian accepts.
-   */
-  private authorizeSequenced(request: HookRequest, grant: ExecutionGrant): Promise<CapabilityRequest> {
-    const run = async (): Promise<CapabilityRequest> => {
-      const capabilityRequest: CapabilityRequest = {
-        protocol: AGENT_CONTROL_PROTOCOL,
-        kind: 'capability-request',
-        grantId: grant.grantId,
-        agentId: grant.agentId,
-        runnerId: grant.runnerId,
-        sequence: this.sequence + 1,
-        requestId: request.id,
-        operation: request.operation as CapabilityOperation,
-        arguments: request.arguments,
-        deadline: new Date(Date.now() + 10_000).toISOString(),
-        idempotencyKey: request.id,
-      };
-      await this.authorizer!.authorize(capabilityRequest);
-      this.sequence = capabilityRequest.sequence;
-      return capabilityRequest;
-    };
-    const result = this.authorizeQueue.then(run);
-    this.authorizeQueue = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
-  private recordSafe(capabilityRequest: CapabilityRequest, ok: boolean, responseBytes: number): Promise<void> {
-    return this.authorizer!.record(capabilityRequest, {
-      protocol: AGENT_CONTROL_PROTOCOL,
-      kind: 'capability-result',
-      grantId: capabilityRequest.grantId,
-      agentId: capabilityRequest.agentId,
-      requestId: capabilityRequest.requestId,
-      sequence: capabilityRequest.sequence,
-      ok,
-      usage: { calls: 1, responseBytes },
-    }).catch((error) => {
-      this.appendAudit('capability.record-failed', {
-        requestId: capabilityRequest.requestId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
-
   private async handleHook(
     request: HookRequest,
     allowances: Map<string, CapabilityAllowance & { calls: number }>,
     grant: ExecutionGrant,
   ): Promise<unknown> {
+    if (!this.acceptingWork) throw new Error('agent is stopping');
     const allowance = allowances.get(request.operation);
     if (!allowance) throw new Error(`hook ${request.operation} is not granted`);
     validateOperationArguments(
@@ -397,9 +369,7 @@ export class AgentSupervisor {
     );
     allowance.calls += 1;
     if (allowance.calls > allowance.maxCalls) throw new Error(`hook ${request.operation} quota exceeded`);
-    let capabilityRequest: CapabilityRequest | undefined;
-    if (this.authorizer) capabilityRequest = await this.authorizeSequenced(request, grant);
-    else this.sequence += 1;
+    this.sequence += 1;
     let value: unknown;
     let bytes: number;
     try {
@@ -407,11 +377,9 @@ export class AgentSupervisor {
       bytes = Buffer.byteLength(JSON.stringify(value));
       if (bytes > Math.min(allowance.maxResponseBytes, grant.limits.maxHookResponseBytes)) throw new Error(`hook ${request.operation} response too large`);
     } catch (error) {
-      if (capabilityRequest) await this.recordSafe(capabilityRequest, false, 0);
       throw error;
     }
     this.appendAudit('hook.result', { sequence: this.sequence, requestId: request.id, operation: request.operation, responseBytes: bytes });
-    if (capabilityRequest) await this.recordSafe(capabilityRequest, true, bytes);
     return value;
   }
 
@@ -482,6 +450,7 @@ export class AgentSupervisor {
 
   private appendAudit(type: string, body: Record<string, unknown>): void {
     this.auditHead = contractDigest({ previous: this.auditHead, type, at: new Date().toISOString(), body });
+    this.auditEvents += 1;
   }
 }
 

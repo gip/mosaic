@@ -49,6 +49,16 @@ test('MemoryStore isolates immutable agent artifacts and versions encrypted agen
   assert.equal(await store.getAgentArtifact({ chain: 'evm', address: '0x0000000000000000000000000000000000000001' }, 'testnet', digest), undefined);
   assert.equal((await store.listAgentArtifacts(owner, 'testnet', 'agent-one')).length, 1);
 
+  const rawTicket = 'ab'.repeat(32);
+  const ticketHash = sha256Hex(rawTicket);
+  await store.createAgentArtifactTicket({
+    ticketHash, owner, network: 'testnet', artifactDigest: digest,
+    runnerCertificateDigest: 'cd'.repeat(32), expiresAt: new Date(Date.now() + 300_000).toISOString(), maxReads: 3,
+  });
+  assert.equal(await store.consumeAgentArtifactTicket(rawTicket), undefined, 'only the ticket hash is stored');
+  for (let read = 1; read <= 3; read += 1) assert.equal((await store.consumeAgentArtifactTicket(ticketHash)).reads, read);
+  assert.equal(await store.consumeAgentArtifactTicket(ticketHash), undefined, 'ticket is exhausted after three reads');
+
   const zone = await store.createZone({
     rootChain: 'evm', rootAddress: evmAccount.address, zone: 'agent-one', network: 'testnet',
     commitment: 'aa'.repeat(32), policyHash: 'policy', localSignerPublicKey: 'public',
@@ -555,6 +565,15 @@ test('full zone lifecycle over HTTP: login → zone_begin → zone_create → bl
     assert.equal(storedArtifact.artifactDigest, artifactDigest(agentManifest));
     assert.equal((await call(client, 'agent_artifact_get', { token, artifactDigest: storedArtifact.artifactDigest })).source, agentSource);
     assert.equal((await call(client, 'agent_artifact_list', { token, packageName: 'top' })).artifacts.length, 1);
+    const runnerCertificateDigest = 'c'.repeat(64);
+    const ticket = await call(client, 'agent_artifact_ticket_create', { token, artifactDigest: storedArtifact.artifactDigest, runnerCertificateDigest });
+    assert.equal(ticket.maxReads, 3);
+    for (let read = 0; read < 3; read += 1) {
+      const download = await call(client, 'agent_artifact_download', { ticket: ticket.ticket });
+      assert.equal(download.source, agentSource);
+      assert.equal(download.runnerCertificateDigest, runnerCertificateDigest);
+    }
+    await assert.rejects(() => call(client, 'agent_artifact_download', { ticket: ticket.ticket }), /expired, exhausted, or invalid/);
     await assert.rejects(
       () => call(client, 'agent_artifact_put', { token, manifest: { ...agentManifest, sourceDigest: '0'.repeat(64) }, source: agentSource }),
       /source digest mismatch/,

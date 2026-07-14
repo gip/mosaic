@@ -177,4 +177,18 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX agent_artifacts_owner_package_idx
     ON agent_artifacts (root_chain, root_address, network, package_name, created_at);
   `,
+  `
+  CREATE TABLE agent_artifact_tickets (
+    ticket_hash TEXT PRIMARY KEY CHECK (ticket_hash ~ '^[0-9a-f]{64}$'),
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    artifact_digest TEXT NOT NULL CHECK (artifact_digest ~ '^[0-9a-f]{64}$'),
+    runner_certificate_digest TEXT NOT NULL CHECK (runner_certificate_digest ~ '^[0-9a-f]{64}$'),
+    expires_at TIMESTAMPTZ NOT NULL,
+    max_reads INTEGER NOT NULL CHECK (max_reads BETWEEN 1 AND 3),
+    reads INTEGER NOT NULL DEFAULT 0 CHECK (reads >= 0)
+  );
+  CREATE INDEX agent_artifact_tickets_expiry_idx ON agent_artifact_tickets (expires_at);
+  `,
 ];

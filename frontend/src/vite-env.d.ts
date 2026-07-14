@@ -24,6 +24,7 @@ declare global {
       startSupervisor(args?: { network?: MosaicNetwork }): Promise<void>;
       agentStart(args: { agentId: string; network?: MosaicNetwork; signatureB64?: string; passphrase?: string }): Promise<unknown>;
       agentStop(agentId: string): Promise<void>;
+      agentKill(agentId: string): Promise<void>;
       agentList(): Promise<unknown[]>;
       agentStatus(agentId: string): Promise<unknown>;
       agentPackageOpen(): Promise<AgentArtifactPackage | undefined>;

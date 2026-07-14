@@ -7,7 +7,6 @@ import test from 'node:test';
 import { buildAgentProject, inspectAgentPackage } from '@mosaic/agent-compiler';
 import { GuardianService } from '@mosaic/guardian';
 import {
-  AGENT_CONTROL_PROTOCOL,
   AGENT_RUNTIME_VERSION,
   generateKeyLeaseRecipient,
 } from '@mosaic/local-runtime';
@@ -69,6 +68,8 @@ test('compiled TypeScript package installs through Guardian and runs as the exac
     const certificate = guardian.enrollRunner({
       runnerId: 'compiled-e2e-runner',
       runnerPublicKey: runnerKeys.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+      runnerControlInboxId: 'runner-inbox',
+      guardianControlInboxId: 'guardian-inbox',
       network: 'testnet',
       environment: 'local',
     });
@@ -78,20 +79,15 @@ test('compiled TypeScript package installs through Guardian and runs as the exac
       certificate,
       supervisorKeyLeasePublicKeyB64: leaseRecipient.publicKeyB64,
     });
-    assert.equal(prepared.source, inspected.source, 'Guardian prepares the exact compiler output');
+    assert.equal(prepared.artifactTicket, 'f'.repeat(64));
+    assert.equal('source' in prepared, false, 'XMTP execution packages never contain agent source');
     assert.equal(prepared.manifest.sourceDigest, inspected.manifest.sourceDigest);
     assert.equal(prepared.grant.artifactDigest, inspected.artifactDigest);
     assert.equal(JSON.stringify(inspected).includes(Buffer.from(zoneSecret).toString('base64')), false);
     assert.equal(JSON.stringify(prepared).includes(Buffer.from(zoneSecret).toString('base64')), false);
 
-    const supervisor = new AgentSupervisor({
-      authorize: async (request) => {
-        const replay = guardian.authorizeCapability(request);
-        if (replay !== undefined) throw new Error('unexpected capability replay');
-      },
-      record: async (request, result) => { guardian.recordCapability(request, result); },
-    });
-    const result = await supervisor.run(prepared.source, prepared.grant);
+    const supervisor = new AgentSupervisor();
+    const result = await supervisor.run(inspected.source, prepared.grant);
     assert.equal(result.exitCode, 0);
     assert.deepEqual(result.logs, [{
       message: 'compiled TypeScript ran in QuickJS',
@@ -100,20 +96,6 @@ test('compiled TypeScript package installs through Guardian and runs as the exac
       stateGranted: true,
       unknownResourceBound: false,
     }]);
-
-    assert.throws(() => guardian.authorizeCapability({
-      protocol: AGENT_CONTROL_PROTOCOL,
-      kind: 'capability-request',
-      grantId: prepared.grant.grantId,
-      agentId: prepared.agentId,
-      runnerId: prepared.grant.runnerId,
-      sequence: 4,
-      requestId: 'quota-after-execution',
-      operation: 'log.emit',
-      arguments: { entry: { message: 'must not run' } },
-      deadline: new Date(Date.now() + 10_000).toISOString(),
-      idempotencyKey: 'quota-after-execution',
-    }), /quota exhausted/, 'Guardian recorded and retained the compiled agent call quota');
 
     guardian.lockAgent(prepared.agentId, prepared.grant.grantId);
     assert.deepEqual(guardian.status().unlockedVaults, ['mosaic-agent-guardian']);
@@ -186,6 +168,10 @@ class InMemoryGuardianApi {
       manifest: record.manifest,
       source: Buffer.from(record.source).toString('utf8'),
     };
+  }
+
+  async agentArtifactTicketCreate() {
+    return { ticket: 'f'.repeat(64), expiresAt: new Date(Date.now() + 300_000).toISOString(), maxReads: 3 };
   }
 
   dataCiphertext(zoneName) {

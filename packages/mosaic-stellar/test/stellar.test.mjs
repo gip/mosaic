@@ -33,10 +33,10 @@ function jsonFetch(body, capture) {
   };
 }
 
-test('fetchOrderBook builds the Horizon URL for native/issued pairs', async () => {
+test('fetchOrderBook builds the Horizon URL and caps depth at Horizon\'s limit', async () => {
   const calls = [];
   const adapter = createAdapter();
-  await adapter.fetchOrderBook(REQ, { depth: 20, fetch: jsonFetch(HORIZON_BOOK, calls) });
+  await adapter.fetchOrderBook(REQ, { depth: 500, fetch: jsonFetch(HORIZON_BOOK, calls) });
   const url = new URL(calls[0].url);
   assert.equal(url.origin, 'https://horizon.stellar.org');
   assert.equal(url.pathname, '/order_book');
@@ -44,7 +44,7 @@ test('fetchOrderBook builds the Horizon URL for native/issued pairs', async () =
   assert.equal(url.searchParams.get('buying_asset_type'), 'credit_alphanum4');
   assert.equal(url.searchParams.get('buying_asset_code'), 'USDC');
   assert.equal(url.searchParams.get('buying_asset_issuer'), USDC_ISSUER);
-  assert.equal(url.searchParams.get('limit'), '20');
+  assert.equal(url.searchParams.get('limit'), '200');
 });
 
 test('long asset codes map to credit_alphanum12; testnet and overrides apply', async () => {
@@ -119,7 +119,7 @@ test('openStream: parses SSE snapshots, skips hello, signals closed at stream en
   const adapter = createAdapter();
   const events = [];
   const done = new Promise((resolve) => {
-    adapter.openStream(REQ, { depth: 20, fetch: sseFetch(chunks, calls), webSocket: WebSocket }, (e) => {
+    adapter.openStream(REQ, { depth: 500, fetch: sseFetch(chunks, calls), webSocket: WebSocket }, (e) => {
       events.push(e);
       if (e.type === 'closed') resolve();
     });
@@ -128,6 +128,7 @@ test('openStream: parses SSE snapshots, skips hello, signals closed at stream en
 
   const url = new URL(calls[0].url);
   assert.equal(url.searchParams.get('cursor'), 'now');
+  assert.equal(url.searchParams.get('limit'), '200');
   assert.equal(calls[0].init.headers.accept, 'text/event-stream');
   assert.deepEqual(
     events.map((e) => e.type),

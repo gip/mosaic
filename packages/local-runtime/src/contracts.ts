@@ -53,12 +53,15 @@ export function parseLocalCli(argv: string[], defaultVault: string): LocalCliOpt
 }
 
 /** Versioned application protocol. XMTP is transport, never lease authority. */
-export const AGENT_CONTROL_PROTOCOL = 'MOSAIC_AGENT_CONTROL_V2' as const;
+export const AGENT_CONTROL_PROTOCOL = 'MOSAIC_AGENT_CONTROL_V3' as const;
 export const AGENT_RUNTIME_VERSION = '2.0.0' as const;
 export const AGENT_ARTIFACT_PROTOCOL = 'MOSAIC_AGENT_ARTIFACT_V2' as const;
 export const AGENT_PACKAGE_PROTOCOL = 'MOSAIC_AGENT_PACKAGE_V1' as const;
-export const DEFAULT_GRANT_TTL_MS = 60_000;
-export const DEFAULT_OFFLINE_GRACE_MS = 15_000;
+export const DEFAULT_GRANT_TTL_MS = 24 * 60 * 60_000;
+export const DEFAULT_OFFLINE_GRACE_MS = 0;
+export const ATTENDED_REQUEST_TTL_MS = 15 * 60_000;
+export const PAIRING_TTL_MS = 5 * 60_000;
+export const MAX_CONTROL_MESSAGE_BYTES = 256 * 1024;
 export const MAX_AGENT_SOURCE_BYTES = 2 * 1024 * 1024;
 export const MAX_AGENT_MANIFEST_BYTES = 256 * 1024;
 export const MAX_HOOK_ARGUMENT_BYTES = 128 * 1024;
@@ -172,8 +175,10 @@ export interface RunnerCertificate {
   kind: 'runner-certificate';
   runnerId: string;
   runnerPublicKey: string;
+  runnerControlInboxId: string;
   guardianId: string;
   guardianAddress: string;
+  guardianControlInboxId: string;
   network: MosaicNetwork;
   environment: 'local' | 'remote';
   trustTier: 'software-local';
@@ -189,8 +194,10 @@ export interface ExecutionGrant {
   grantId: string;
   runnerId: string;
   runnerPublicKey: string;
+  runnerControlInboxId: string;
   guardianId: string;
   guardianAddress: string;
+  guardianControlInboxId: string;
   network: MosaicNetwork;
   agentId: string;
   trustTier: 'software-local';
@@ -212,52 +219,6 @@ export interface ExecutionGrant {
   signatureB64: string;
 }
 
-export interface CapabilityRequest {
-  protocol: typeof AGENT_CONTROL_PROTOCOL;
-  kind: 'capability-request';
-  grantId: string;
-  agentId: string;
-  runnerId: string;
-  sequence: number;
-  requestId: string;
-  operation: CapabilityOperation;
-  arguments: Record<string, unknown>;
-  deadline: string;
-  idempotencyKey: string;
-}
-
-export interface CapabilityUsage {
-  calls: number;
-  responseBytes: number;
-}
-
-export interface CapabilityResult {
-  protocol: typeof AGENT_CONTROL_PROTOCOL;
-  kind: 'capability-result';
-  grantId: string;
-  agentId: string;
-  requestId: string;
-  sequence: number;
-  ok: boolean;
-  value?: unknown;
-  error?: { code: string; message: string };
-  usage: CapabilityUsage;
-  auditEventDigest: DigestHex;
-}
-
-export interface LeaseRenewal {
-  protocol: typeof AGENT_CONTROL_PROTOCOL;
-  kind: 'lease-renewal';
-  grantId: string;
-  agentId: string;
-  sequence: number;
-  capabilities: CapabilityAllowance[];
-  resources: AgentResourceDescriptor[];
-  expiresAt: string;
-  maxOfflineMs: number;
-  signatureB64: string;
-}
-
 export interface Revocation {
   protocol: typeof AGENT_CONTROL_PROTOCOL;
   kind: 'revocation';
@@ -269,12 +230,12 @@ export interface Revocation {
   signatureB64: string;
 }
 
-export type SignedAgentControlMessage = RunnerCertificate | ExecutionGrant | LeaseRenewal | Revocation;
+export type SignedAgentControlMessage = RunnerCertificate | ExecutionGrant | Revocation;
 
 export interface AgentExecutionPackage {
   agentId: string;
   manifest: AgentArtifactManifest;
-  source: string;
+  artifactTicket: string;
   grant: ExecutionGrant;
   sealedKeyLease: SealedAgentKeyLease;
 }
@@ -356,9 +317,113 @@ export interface SealedAgentKeyLease {
   expiresAt: string;
 }
 
-export interface AgentLeaseRenewalPackage {
-  renewal: LeaseRenewal;
-  sealedKeyLease: SealedAgentKeyLease;
+
+export type ControlMessageKind =
+  | 'runner-enrollment'
+  | 'agent-start-request'
+  | 'agent-start-result'
+  | 'privileged-request'
+  | 'privileged-result'
+  | 'agent-termination-command'
+  | 'agent-termination-result'
+  | 'runtime-audit-checkpoint'
+  | 'control-error';
+
+export interface PairingOffer {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  kind: 'pairing-offer';
+  runnerId: string;
+  runnerDevicePublicKey: string;
+  runnerControlAddress: string;
+  runnerControlInboxId: string;
+  network: MosaicNetwork;
+  nonce: string;
+  issuedAt: string;
+  expiresAt: string;
+  signatureB64: string;
+}
+
+export interface ControlEnvelope<T = unknown> {
+  protocol: typeof AGENT_CONTROL_PROTOCOL;
+  kind: ControlMessageKind;
+  requestId: string;
+  replyTo?: string;
+  guardianId: string;
+  guardianControlInboxId: string;
+  runnerId: string;
+  runnerDevicePublicKey: string;
+  runnerControlInboxId: string;
+  agentId?: string;
+  grantId?: string;
+  sequence: number;
+  issuedAt: string;
+  expiresAt: string;
+  idempotencyKey: string;
+  payloadDigest: DigestHex;
+  payload: T;
+  signatureB64: string;
+}
+
+export interface RunnerEnrollmentPayload {
+  network: MosaicNetwork;
+  environment: 'local' | 'remote';
+  pairingNonce: string;
+}
+
+export interface AgentStartRequestPayload {
+  network: MosaicNetwork;
+  supervisorKeyLeasePublicKeyB64: string;
+}
+
+export interface AgentStartResultPayload {
+  ok: boolean;
+  execution?: AgentExecutionPackage;
+  error?: { code: string; message: string };
+}
+
+export interface PrivilegedRequestPayload {
+  operation: 'transaction.propose';
+  proposal: TransactionProposal;
+}
+
+export interface PrivilegedResultPayload {
+  operation: 'runner.enroll' | 'transaction.propose';
+  certificate?: RunnerCertificate;
+  result?: TransactionResult;
+}
+
+export type AgentTerminationMode = 'graceful' | 'immediate';
+
+export interface AgentTerminationCommandPayload {
+  commandId: string;
+  mode: AgentTerminationMode;
+  reason: string;
+  revoke: true;
+}
+
+export interface AgentTerminationResultPayload {
+  commandId: string;
+  mode: AgentTerminationMode;
+  outcome: 'stopped' | 'killed' | 'already-stopped' | 'rejected';
+  exitStatus?: number | string;
+  stoppedAt: string;
+  finalAuditDigest: DigestHex;
+  forced: boolean;
+}
+
+export interface RuntimeAuditCheckpointPayload {
+  checkpointId: string;
+  auditDigest: DigestHex;
+  eventCount: number;
+  outcome: 'completed' | 'stopped' | 'killed' | 'expired' | 'crashed';
+  forced: boolean;
+  incomplete: boolean;
+  stoppedAt: string;
+}
+
+export interface ControlErrorPayload {
+  code: string;
+  message: string;
 }
 
 export function canonicalJson(value: unknown): string {
@@ -435,7 +500,7 @@ export function assertResourceLimits(limits: AgentResourceLimits): void {
   if (integers.some((value) => !Number.isSafeInteger(value) || value <= 0)) throw new Error('resource limits must be positive integers');
   if (limits.memoryBytes > 256 * 1024 * 1024) throw new Error('agent memory limit exceeds maximum');
   if (limits.stackBytes > 16 * 1024 * 1024) throw new Error('agent stack limit exceeds maximum');
-  if (limits.wallTimeMs > 60 * 60_000) throw new Error('agent wall-time limit exceeds maximum');
+  if (limits.wallTimeMs > 24 * 60 * 60_000) throw new Error('agent wall-time limit exceeds maximum');
   if (limits.maxPendingJobs > 4096) throw new Error('pending-job limit exceeds maximum');
   if (limits.maxHookConcurrency > 32) throw new Error('hook concurrency exceeds maximum');
   if (limits.maxHookResponseBytes > MAX_HOOK_ARGUMENT_BYTES) throw new Error('hook response limit exceeds maximum');
@@ -523,19 +588,6 @@ export function assertInstallationPolicy(
   }
   for (const slot of manifest.resourceSlots) if (slot.required && !resources.has(slot.slotId)) throw new Error(`missing required resource: ${slot.slotId}`);
   assertResourceLimitsSubset(installation.limits, manifest.limits);
-}
-
-export function assertCapabilitySubset(next: CapabilityAllowance[], previous: CapabilityAllowance[]): void {
-  const allowed = new Map(previous.map((item) => [item.operation, item]));
-  for (const item of next) {
-    const prior = allowed.get(item.operation);
-    if (!prior || item.maxCalls > prior.maxCalls || item.maxResponseBytes > prior.maxResponseBytes) {
-      throw new Error(`lease renewal expands ${item.operation}`);
-    }
-    if (canonicalJson(item.constraints ?? {}) !== canonicalJson(prior.constraints ?? {})) {
-      throw new Error(`lease renewal changes ${item.operation} constraints`);
-    }
-  }
 }
 
 export function isGrantableCapability(operation: CapabilityOperation): operation is GrantableCapabilityOperation {

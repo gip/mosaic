@@ -67,7 +67,7 @@ export interface OrderBookSnapshot {
 }
 
 export interface OrderBookFeedOptions {
-  /** Max levels per side. Default 200. */
+  /** Max levels per side. Default 500. */
   depth?: number;
   /** Override the HTTP endpoint (Horizon base URL / XRPL JSON-RPC URL). */
   httpEndpoint?: string;

@@ -29,5 +29,5 @@ test('agent key lease sealing vector is frozen', () => {
     ephemeralPrivateKey: Buffer.from('MC4CAQAwBQYDK2VuBCIEIPjrY9sD4vVjAYF7srY8pCMDLxKxcicImrcooy7JDBRB', 'base64'),
     nonce: new Uint8Array(12).fill(5),
   });
-  assert.equal(sha256Hex(canonicalJson(sealed)), 'f2f5c3172c1ad9f83d1bc7ec7b911de42a02874dedfec417e92357cf0048d5bf');
+  assert.equal(sha256Hex(canonicalJson(sealed)), 'da5dbcd548d6104ea9eeb8204c7d916b3b4b5de1d46f0a34cbb7ccd4e2c96845');
 });

@@ -96,6 +96,17 @@ export interface AgentArtifactRecord {
   createdAt: string;
 }
 
+export interface AgentArtifactTicketRecord {
+  ticketHash: string;
+  owner: CatalogOwner;
+  network: Network;
+  artifactDigest: string;
+  runnerCertificateDigest: string;
+  expiresAt: string;
+  maxReads: number;
+  reads: number;
+}
+
 /** Per-wallet UX settings. `lockReminderMinutes: 0` disables the Mainnet lock reminder. */
 export interface WalletSettings {
   lockReminderMinutes: number;
@@ -154,6 +165,8 @@ export interface MosaicStore {
   putAgentArtifact(record: Omit<AgentArtifactRecord, 'createdAt'>): Promise<{ created: boolean }>;
   getAgentArtifact(owner: CatalogOwner, network: Network, artifactDigest: string): Promise<AgentArtifactRecord | undefined>;
   listAgentArtifacts(owner: CatalogOwner, network: Network, packageName?: string): Promise<Omit<AgentArtifactRecord, 'source'>[]>;
+  createAgentArtifactTicket(record: Omit<AgentArtifactTicketRecord, 'reads'>): Promise<void>;
+  consumeAgentArtifactTicket(ticketHash: string): Promise<AgentArtifactTicketRecord | undefined>;
 
   ensureCatalogPreferences(owner: CatalogOwner): Promise<void>;
   listCatalog(owner: CatalogOwner): Promise<CatalogSnapshot>;
@@ -488,6 +501,34 @@ export class PostgresStore implements MosaicStore {
     }));
   }
 
+  async createAgentArtifactTicket(record: Omit<AgentArtifactTicketRecord, 'reads'>): Promise<void> {
+    const owner = normalizeCatalogOwner(record.owner);
+    await this.sql`
+      INSERT INTO agent_artifact_tickets
+        (ticket_hash, root_chain, root_address, network, artifact_digest, runner_certificate_digest, expires_at, max_reads)
+      VALUES (${record.ticketHash}, ${owner.chain}, ${owner.address}, ${record.network}, ${record.artifactDigest},
+        ${record.runnerCertificateDigest}, ${record.expiresAt}, ${record.maxReads})`;
+  }
+
+  async consumeAgentArtifactTicket(ticketHash: string): Promise<AgentArtifactTicketRecord | undefined> {
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx`
+        SELECT * FROM agent_artifact_tickets WHERE ticket_hash = ${ticketHash} FOR UPDATE`;
+      if (!row || Date.parse(String(row.expires_at)) <= Date.now() || Number(row.reads) >= Number(row.max_reads)) return undefined;
+      await tx`UPDATE agent_artifact_tickets SET reads = reads + 1 WHERE ticket_hash = ${ticketHash}`;
+      return {
+        ticketHash,
+        owner: normalizeCatalogOwner({ chain: row.root_chain as RootChain, address: row.root_address as string }),
+        network: row.network as Network,
+        artifactDigest: row.artifact_digest as string,
+        runnerCertificateDigest: row.runner_certificate_digest as string,
+        expiresAt: new Date(row.expires_at as string).toISOString(),
+        maxReads: Number(row.max_reads),
+        reads: Number(row.reads) + 1,
+      };
+    });
+  }
+
   async ensureCatalogPreferences(rawOwner: CatalogOwner): Promise<void> {
     const owner = normalizeCatalogOwner(rawOwner);
     for (const chain of BUILTIN_CHAINS) {
@@ -648,6 +689,7 @@ export class PostgresStore implements MosaicStore {
   async sweepExpired(): Promise<void> {
     await this.sql`DELETE FROM sessions WHERE expires_at < now()`;
     await this.sql`DELETE FROM auth_challenges WHERE expires_at < now() - interval '1 day'`;
+    await this.sql`DELETE FROM agent_artifact_tickets WHERE expires_at < now()`;
   }
 
   async close(): Promise<void> {
@@ -709,6 +751,7 @@ export class MemoryStore implements MosaicStore {
   private zones = new Map<string, ZoneRecord>();
   private blobs = new Map<string, BlobRecord[]>();
   private agentArtifacts = new Map<string, AgentArtifactRecord>();
+  private agentArtifactTickets = new Map<string, AgentArtifactTicketRecord>();
   private zoneAddresses = new Map<string, ZoneAddressRecord[]>();
   private nonces = new Set<string>();
   private customChains = new Map<string, CustomChainRecord>();
@@ -872,6 +915,18 @@ export class MemoryStore implements MosaicStore {
       .map(({ source: _source, ...record }) => ({ ...record, owner: { ...record.owner }, manifest: structuredClone(record.manifest) }));
   }
 
+  async createAgentArtifactTicket(record: Omit<AgentArtifactTicketRecord, 'reads'>): Promise<void> {
+    if (this.agentArtifactTickets.has(record.ticketHash)) throw new MosaicMcpError('CONFLICT', 'artifact ticket collision');
+    this.agentArtifactTickets.set(record.ticketHash, { ...record, owner: normalizeCatalogOwner(record.owner), reads: 0 });
+  }
+
+  async consumeAgentArtifactTicket(ticketHash: string): Promise<AgentArtifactTicketRecord | undefined> {
+    const record = this.agentArtifactTickets.get(ticketHash);
+    if (!record || Date.parse(record.expiresAt) <= Date.now() || record.reads >= record.maxReads) return undefined;
+    record.reads += 1;
+    return structuredClone(record);
+  }
+
   async ensureCatalogPreferences(rawOwner: CatalogOwner): Promise<void> {
     const owner = normalizeCatalogOwner(rawOwner);
     const key = `${owner.chain}|${owner.address}`;
@@ -978,6 +1033,7 @@ export class MemoryStore implements MosaicStore {
   async sweepExpired(): Promise<void> {
     const now = Date.now();
     for (const [key, session] of this.sessions) if (session.expiresAt < now) this.sessions.delete(key);
+    for (const [key, ticket] of this.agentArtifactTickets) if (Date.parse(ticket.expiresAt) < now) this.agentArtifactTickets.delete(key);
   }
 
   async close(): Promise<void> {}

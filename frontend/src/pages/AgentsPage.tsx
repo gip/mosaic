@@ -9,7 +9,7 @@ import {
   type CapabilityAllowance,
   type ServiceStatus,
 } from '@mosaic/local-runtime/contracts';
-import { Bot, Copy, PackageOpen, Play, ShieldCheck, Square } from 'lucide-react';
+import { Bot, Copy, PackageOpen, Play, ShieldCheck, Skull, Square } from 'lucide-react';
 import type { ZoneRef } from '@mosaic/zone-keys';
 import StatusDot, { type StatusTone } from '../components/ui/StatusDot';
 import Banner from '../components/ui/Banner';
@@ -461,6 +461,9 @@ export default function AgentsPage() {
             </button>
             <button type="button" className="btn-ghost" disabled={runner?.phase !== 'running' || !runnerVault.trim()} onClick={() => void bridge.agentStop(runnerVault.trim())}>
               <Square size={14} /> Stop agent
+            </button>
+            <button type="button" className="btn-danger" disabled={runner?.phase !== 'running' || !runnerVault.trim()} onClick={() => void bridge.agentKill(runnerVault.trim())}>
+              <Skull size={14} /> Kill agent
             </button>
           </div>
         </article>

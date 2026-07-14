@@ -153,6 +153,9 @@ importers:
 
   packages/agent-runner:
     dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.12.0
+        version: 1.29.0(zod@3.25.76)
       '@mosaic/local-runtime':
         specifier: workspace:*
         version: link:../local-runtime
@@ -262,6 +265,22 @@ importers:
         version: 6.0.3
 
   packages/local-runtime:
+    dependencies:
+      '@noble/curves':
+        specifier: ^2.2.0
+        version: 2.2.0
+      '@noble/hashes':
+        specifier: ^2.0.1
+        version: 2.2.0
+      '@xmtp/content-type-primitives':
+        specifier: 3.0.1
+        version: 3.0.1
+      '@xmtp/node-bindings':
+        specifier: 1.11.0-dev.57a7203
+        version: 1.11.0-dev.57a7203
+      '@xmtp/node-sdk':
+        specifier: 6.0.0
+        version: 6.0.0
     devDependencies:
       '@types/node':
         specifier: ^24.12.3

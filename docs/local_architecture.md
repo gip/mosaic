@@ -1,6 +1,6 @@
 # Local architecture
 
-The local Electron app controls two independently supervised processes:
+The Electron app controls two independently supervised processes:
 
 ```text
 Web ─────────────── MCP server
@@ -8,52 +8,57 @@ Web ─────────────── MCP server
                        ▼
 Local app (Electron)
   ├─ Mosaic Guardian process
-  │    MCP session, vault unlock, encrypted data, XMTP control, signed grants
+  │    vault unlock, attended approval, XMTP control, signed grants
   └─ Agent Runner process
-       verifies grants and starts clean QuickJS agent processes with typed hooks
+       verifies grants and starts clean QuickJS child processes
 ```
 
-Processes start explicitly from the shared UI or their CLI. The Electron host
-also discovers a CLI-started Guardian through its authenticated local control
-socket.
+Electron talks to the Guardian it spawned through typed utility-process IPC.
+Wallet signatures, passphrases, MCP session tokens, installation management,
+approval resolution, and local status never enter XMTP. Discovery of an
+independently CLI-started Guardian is deferred.
 
-The Electron window hosts the exact same Vite/React frontend as Web. It uses the
-same routes, MCP client, session providers, components, assets, and CSS. Local
-adds an Electron bridge and an `/agents` page; it does not have a separate
-renderer implementation. Its primary local flow is:
+Guardian–Supervisor communication uses XMTP only. Each has a persistent,
+network-specific transport identity distinct from Guardian authorization,
+transaction, and agent messaging keys. The wire protocol is documented in
+`agent_control_protocol_v3.md`.
+
+The Electron window renders the same Vite/React frontend as Web. Local behavior
+stays behind the optional preload bridge; there is no parallel renderer UI.
+
+## Agent lifecycle
+
+A running Supervisor service is not a running agent. The attended flow is:
 
 ```text
-select zone → unlock zone locally → start that zone's agent → monitor / stop
+pair Runner → request agent start → notify user → unlock and approve
+→ issue fixed grant → download scoped artifact → run QuickJS → checkpoint
 ```
 
-A running Agent Runner service is not the same thing as a running agent. The
-runner service may start with the app, but it must refuse to start an agent
-instance until Mosaic Guardian issues a short-lived execution grant bound to
-the Runner device key, agent source digest, manifest, policy, and capability
-limits. Zone secrets and derived keys never cross into the runner process.
+One approval creates one non-renewable 24-hour execution grant and matching
+communication-key lease. There is no renewal, polling, heartbeat, or routine
+Guardian hook traffic. Supervisor enforces signed routine quotas locally.
+Zone secrets and transaction keys never cross into Runner. The only leased
+secrets are the agent's separately generated XMTP messaging credentials.
 
-The Runner no longer receives XMTP signatures or a vault-derived XMTP database
-key. Guardian owns control XMTP. Strict agent-recipient policy will use
-Guardian-brokered XMTP hooks; transaction intents remain default-deny until the
-structured transaction policy broker is implemented.
+Agent source never travels in XMTP. Supervisor consumes a five-minute,
+three-read MCP ticket scoped to the owner, network, artifact digest, and Runner
+certificate, then independently verifies all digests before execution.
 
-Agent source runs in a clean QuickJS child process created by Runner, never by
-Guardian or Vault Core. The initial hook surface is namespaced state, structured
-logging, clock, and random bytes. See
-`docs/adr/0001-guardian-runner-trust-boundaries.md` for the frozen trust model.
+Guardian may gracefully stop or immediately kill one exact agent/grant. It
+revokes and zeroes custody state before sending the signed command. Supervisor
+remains alive and returns a signed result plus an untrusted audit checkpoint.
 
-Future signer work must preserve the custody and policy rules in
-`zone_derived_agent_wallets_spec_v2.md`, including localhost API hardening,
-separately scoped pairing tokens, default-deny account-control transactions,
-and the rule that the backend receives ciphertext only.
+Transactions remain attended and default-deny until Guardian's structured
+transaction policy, signer, and broadcaster exist. Supervisor never receives a
+transaction key, raw signed transaction, or generic signing oracle.
 
 ## Reuse boundaries
 
-- Web and Local render the same `frontend` application. Shared screens and
-  components must never be copied into `local-app`.
-- `@mosaic/ui-theme` is the single source for palette, typography scale,
-  spacing, radii, and dark/light theme tokens.
-- `@mosaic/local-runtime` owns the utility-process lifecycle and IPC contract
-  shared by the Electron host, Mosaic Guardian, and Agent Runner.
-- Platform-specific behavior belongs behind the optional Electron preload
-  bridge. React components stay in the shared frontend.
+- Web and Local render the same `frontend` application.
+- `@mosaic/ui-theme` owns shared visual tokens.
+- `@mosaic/local-runtime` owns lifecycle, V3 contracts, signatures, replay
+  state, and control transport interfaces.
+- Platform behavior belongs behind the Electron preload bridge.
+- Future signer work must preserve `zone_derived_agent_wallets_spec_v2.md`,
+  including ciphertext-only Mainnet custody and frozen derivation formats.

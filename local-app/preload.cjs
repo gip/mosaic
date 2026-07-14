@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('mosaicLocal', {
   startSupervisor: (args) => ipcRenderer.invoke('supervisor:start', args),
   agentStart: (args) => ipcRenderer.invoke('agent:start', args),
   agentStop: (agentId) => ipcRenderer.invoke('agent:stop', agentId),
+  agentKill: (agentId) => ipcRenderer.invoke('agent:kill', agentId),
   agentList: () => ipcRenderer.invoke('agent:list'),
   agentStatus: (agentId) => ipcRenderer.invoke('agent:status', agentId),
   agentPackageOpen: () => ipcRenderer.invoke('agent:package-open'),

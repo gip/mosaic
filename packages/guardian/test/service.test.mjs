@@ -66,6 +66,9 @@ class FakeApi {
     if (!artifact) throw new Error('artifact not found');
     return artifact;
   }
+  async agentArtifactTicketCreate(_token, artifactDigest, runnerCertificateDigest) {
+    return { ticket: 'f'.repeat(64), artifactDigest, runnerCertificateDigest, expiresAt: new Date(Date.now() + 300_000).toISOString(), maxReads: 3 };
+  }
 }
 
 function session() {
@@ -100,14 +103,14 @@ test('Guardian binds a signed manifest to a Runner certificate and execution gra
   const pair = generateKeyPairSync('ed25519');
   const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
   assert.throws(
-    () => guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, network: 'testnet', environment: 'local' }),
+    () => guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, runnerControlInboxId: 'runner-inbox', guardianControlInboxId: 'guardian-inbox', network: 'testnet', environment: 'local' }),
     /not approved/,
   );
   guardian.approveRunner('local:test');
-  const certificate = guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, network: 'testnet', environment: 'local' });
+  const certificate = guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, runnerControlInboxId: 'runner-inbox', guardianControlInboxId: 'guardian-inbox', network: 'testnet', environment: 'local' });
   // Approvals are single-use.
   assert.throws(
-    () => guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, network: 'testnet', environment: 'local' }),
+    () => guardian.enrollRunner({ runnerId: 'local:test', runnerPublicKey: publicKey, runnerControlInboxId: 'runner-inbox', guardianControlInboxId: 'guardian-inbox', network: 'testnet', environment: 'local' }),
     /not approved/,
   );
   assert.equal(certificate.guardianAddress, identity.address);
@@ -218,7 +221,7 @@ test('agent prepare persists encrypted communication keys, filters custody, and 
   guardian.approveRunner('local-supervisor');
   const certificate = guardian.enrollRunner({
     runnerId: 'local-supervisor', runnerPublicKey: pair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
-    network: 'testnet', environment: 'local',
+    runnerControlInboxId: 'runner-inbox', guardianControlInboxId: 'guardian-inbox', network: 'testnet', environment: 'local',
   });
   const recipient = generateKeyLeaseRecipient();
   const prepared = await guardian.prepareAgent({

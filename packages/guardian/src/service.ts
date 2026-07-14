@@ -34,20 +34,14 @@ import {
   assertCanonicalAgentSource,
   assertInstallationPolicy,
   assertResourceLimits,
-  canonicalJson,
   contractDigest,
-  DEFAULT_GRANT_TTL_MS,
-  DEFAULT_OFFLINE_GRACE_MS,
   sealAgentKeyLease,
   sha256Hex,
   type AgentArtifactManifest,
   type AgentExecutionPackage,
-  type AgentLeaseRenewalPackage,
   type AgentInstallationPolicy,
   type AgentResourceLimits,
   type CapabilityAllowance,
-  type CapabilityRequest,
-  type CapabilityResult,
   type ExecutionGrant,
   type MosaicNetwork,
   type RunnerCertificate,
@@ -101,6 +95,7 @@ export interface GuardianApi {
   blobGet(token: string, zone: string, kind: 'sig' | 'pass' | 'data' | 'agent-secrets'): Promise<BlobResult>;
   blobPut(args: { token: string; zone: string; kind: 'data' | 'agent-secrets'; ciphertextB64: string; header: Record<string, unknown>; expectedVersion: number }): Promise<{ version: number }>;
   agentArtifactGet(token: string, artifactDigest: string): Promise<{ artifactDigest: string; manifest: AgentArtifactManifest; source: string }>;
+  agentArtifactTicketCreate(token: string, artifactDigest: string, runnerCertificateDigest: string): Promise<{ ticket: string; expiresAt: string; maxReads: number }>;
 }
 
 export class McpGuardianApi implements GuardianApi {
@@ -172,6 +167,9 @@ export class McpGuardianApi implements GuardianApi {
   }
   agentArtifactGet(token: string, artifactDigestValue: string): Promise<{ artifactDigest: string; manifest: AgentArtifactManifest; source: string }> {
     return this.call('agent_artifact_get', { token, artifactDigest: artifactDigestValue });
+  }
+  agentArtifactTicketCreate(token: string, artifactDigestValue: string, runnerCertificateDigest: string): Promise<{ ticket: string; expiresAt: string; maxReads: number }> {
+    return this.call('agent_artifact_ticket_create', { token, artifactDigest: artifactDigestValue, runnerCertificateDigest });
   }
   authChallenge(args: { chain: RootChain; network: Network; address?: string }): Promise<{
     challengeId: string;
@@ -668,7 +666,8 @@ export class GuardianService {
       secrets,
     }, params.supervisorKeyLeasePublicKeyB64);
     for (const secret of secrets) secret.materialB64 = '';
-    return { agentId: params.agentId, manifest: artifact.manifest, source: artifact.source, grant, sealedKeyLease };
+    const ticket = await this.api.agentArtifactTicketCreate(session.token, policy.artifactDigest, grant.certificateDigest);
+    return { agentId: params.agentId, manifest: artifact.manifest, artifactTicket: ticket.ticket, grant, sealedKeyLease };
   }
 
   async startGuardian(vault: string, network: MosaicNetwork, credential?: UnlockCredential): Promise<UnlockedIdentity> {
@@ -685,11 +684,7 @@ export class GuardianService {
     return identity;
   }
 
-  /**
-   * Pairing approval (ADR 0001): enrollment must be preceded by an explicit
-   * approval — the UI start action or the Guardian terminal. Approvals are
-   * single-use and short-lived.
-   */
+  /** Pairing approval is explicit, single-use, and bound to the signed offer lifetime. */
   approveRunner(runnerId: string, ttlMs = 2 * 60_000): void {
     if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(runnerId)) throw new Error('invalid runner ID');
     this.runnerApprovals.set(runnerId, Date.now() + ttlMs);
@@ -700,7 +695,7 @@ export class GuardianService {
     return until !== undefined && until > Date.now();
   }
 
-  enrollRunner(params: { runnerId: string; runnerPublicKey: string; network: MosaicNetwork; environment: 'local' | 'remote' }): RunnerCertificate {
+  enrollRunner(params: { runnerId: string; runnerPublicKey: string; runnerControlInboxId: string; guardianControlInboxId: string; network: MosaicNetwork; environment: 'local' | 'remote' }): RunnerCertificate {
     if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
     if (!this.isRunnerApproved(params.runnerId)) {
       throw new Error(`runner ${params.runnerId} is not approved; start it from the Mosaic app or approve it in the Guardian terminal`);
@@ -726,46 +721,38 @@ export class GuardianService {
     return this.vaultCore.issueGrant(params);
   }
 
-  authorizeCapability(request: CapabilityRequest): CapabilityResult | undefined {
-    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
-    return this.vaultCore.authorizeCapability(request);
-  }
-
-  recordCapability(request: CapabilityRequest, result: Omit<CapabilityResult, 'auditEventDigest'>): CapabilityResult {
-    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
-    return this.vaultCore.recordCapability(request, result);
-  }
-
-  renewLease(agentId: string, grantId: string, supervisorKeyLeasePublicKeyB64: string): AgentLeaseRenewalPackage {
-    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
-    if (!this.vaults.has(agentId)) throw new Error('agent vault is locked');
-    const policy = this.getAgentInstallation(agentId);
-    if (!policy?.enabled) throw new Error('agent is disabled');
-    const grant = this.vaultCore.getGrant(grantId, agentId);
-    if (policy.artifactDigest !== grant.artifactDigest) throw new Error('fresh prepare required: artifact changed');
-    const grantedResources = new Map(grant.resources.map((resource) => [resource.resourceId, canonicalJson(resource)]));
-    if (policy.resources.some((resource) => grantedResources.get(resource.resourceId) !== canonicalJson(resource))) {
-      throw new Error('fresh prepare required: resources expanded or changed');
-    }
-    const expiresAt = new Date(Date.now() + DEFAULT_GRANT_TTL_MS).toISOString();
-    const renewal = this.vaultCore.renew(grantId, policy.capabilities, expiresAt, DEFAULT_OFFLINE_GRACE_MS, agentId, policy.resources);
-    const unlocked = this.requireVault(agentId);
-    const secrets = unlocked.secretRecords
-      .filter((record) => record.custody === 'supervisor-session')
-      .filter((record) => record.purpose === 'xmtp-owner' || record.purpose === 'xmtp-database')
-      .map(({ keyId, purpose, algorithm }) => ({ keyId, purpose, algorithm, materialB64: bytesToBase64(unlocked.secretBuffers.get(keyId)!) }));
-    const sealedKeyLease = sealAgentKeyLease({
-        protocol: grant.protocol, agentId, grantId, runnerId: grant.runnerId, certificateDigest: grant.certificateDigest,
-        network: grant.network, expiresAt, secrets,
-      }, supervisorKeyLeasePublicKeyB64);
-    for (const secret of secrets) secret.materialB64 = '';
-    return { renewal, sealedKeyLease };
-  }
-
   proposeTransaction(proposal: TransactionProposal): TransactionResult {
     if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
     if (!this.vaults.has(proposal.agentId)) throw new Error('transaction agent vault is locked');
     return this.vaultCore.rejectTransaction(proposal);
+  }
+
+  controlAuthority(): { guardianId: string; guardianAddress: string; sign(text: string): Uint8Array } {
+    if (!this.vaultCore || !this.guardianIdentity) throw new Error('Mosaic Guardian is not running');
+    return {
+      guardianId: `${this.guardianIdentity.vault}:${this.guardianIdentity.name}:${this.guardianIdentity.index}`,
+      guardianAddress: this.guardianIdentity.address,
+      sign: (text) => this.vaultCore!.signControlText(text),
+    };
+  }
+
+  terminateAgent(agentId: string, grantId: string, mode: 'graceful' | 'immediate', reason: string): string {
+    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    const auditDigest = this.vaultCore.recordTermination(agentId, grantId, mode, reason);
+    this.lockAgent(agentId, grantId);
+    return auditDigest;
+  }
+
+  finalizeAgent(agentId: string, grantId: string, outcome: string): string {
+    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    const auditDigest = this.vaultCore.recordCompletion(agentId, grantId, outcome);
+    this.lockAgent(agentId, grantId);
+    return auditDigest;
+  }
+
+  recordRunnerTelemetry(agentId: string, grantId: string, auditDigest: string, outcome: string): string {
+    if (!this.vaultCore) throw new Error('Mosaic Guardian is not running');
+    return this.vaultCore.recordRunnerTelemetry(agentId, grantId, auditDigest, outcome);
   }
 
   lockAgent(agentId: string, grantId?: string): void {

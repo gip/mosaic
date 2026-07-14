@@ -121,6 +121,41 @@ await mosaic.runtime.waitUntilStopped();
   assert.deepEqual(result.logs, [{ message: 'received', resourceId: 'frank', text: 'hello' }]);
 });
 
+test('graceful stop resolves waitUntilStopped and permits bounded cleanup', async () => {
+  const source = `
+try { await mosaic.runtime.waitUntilStopped(); }
+finally { await mosaic.log.emit({ message: 'cleanup-ran' }); }
+`;
+  const supervisor = new AgentSupervisor();
+  const authorization = grant(source, {
+    limits: { ...grant(source).limits, wallTimeMs: 10_000 },
+    capabilities: [{ operation: 'log.emit', maxCalls: 1, maxResponseBytes: 4096, constraints: { maxEntryBytes: 4096 } }],
+  });
+  const completion = supervisor.run(source, authorization);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await supervisor.stopGracefully(5_000);
+  const result = await completion;
+  assert.deepEqual(result.logs, [{ message: 'cleanup-ran' }]);
+});
+
+test('immediate kill does not execute waitUntilStopped cleanup', async () => {
+  const source = `
+try { await mosaic.runtime.waitUntilStopped(); }
+finally { await mosaic.log.emit({ message: 'must-not-run' }); }
+`;
+  const supervisor = new AgentSupervisor();
+  const authorization = grant(source, {
+    limits: { ...grant(source).limits, wallTimeMs: 10_000 },
+    capabilities: [{ operation: 'log.emit', maxCalls: 1, maxResponseBytes: 4096, constraints: { maxEntryBytes: 4096 } }],
+  });
+  const completion = supervisor.run(source, authorization);
+  void completion.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await supervisor.killImmediately();
+  await assert.rejects(completion);
+  assert.equal(supervisor.auditEventCount(), 0);
+});
+
 test('Runner pins Guardian identity and all authorization digests', () => {
   const keys = secp256k1.keygen();
   const publicKey = secp256k1.Point.fromBytes(keys.publicKey).toBytes(false);

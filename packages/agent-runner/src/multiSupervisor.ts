@@ -1,17 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import {
   AGENT_CONTROL_PROTOCOL,
-  DEFAULT_OFFLINE_GRACE_MS,
-  GuardianControlClient,
+  ATTENDED_REQUEST_TTL_MS,
   generateKeyLeaseRecipient,
   openAgentKeyLease,
   type AgentExecutionPackage,
-  type AgentLeaseRenewalPackage,
+  type AgentTerminationMode,
   type AgentRuntimeEvent,
   type RunnerCertificate,
   type TransactionProposal,
+  type TransactionResult,
 } from '@mosaic/local-runtime';
-import { AgentSupervisor, verifyExecutionAuthorization, verifyGuardianEnvelope } from './supervisor.js';
+import { AgentSupervisor, verifyExecutionAuthorization } from './supervisor.js';
 import { createAgentXmtpClient, type AgentXmtpClient, type XmtpInboundMessage } from './xmtp.js';
 
 interface AgentInstance {
@@ -20,12 +20,24 @@ interface AgentInstance {
   sandbox: AgentSupervisor;
   xmtp: AgentXmtpClient;
   secretBuffers: Map<string, Uint8Array>;
-  renewalTimer: NodeJS.Timeout;
-  graceTimer?: NodeJS.Timeout;
   eventQueue: XmtpInboundMessage[];
   delivering: boolean;
   deadLetters: number;
   stopped: boolean;
+}
+
+export interface SupervisorControl {
+  requestAgentStart(agentId: string, supervisorKeyLeasePublicKeyB64: string): Promise<AgentExecutionPackage>;
+  proposeTransaction(proposal: TransactionProposal): Promise<TransactionResult>;
+  sendAuditCheckpoint(checkpoint: {
+    agentId: string; grantId: string; auditDigest: string; eventCount: number;
+    outcome: 'completed' | 'stopped' | 'killed' | 'expired' | 'crashed'; forced: boolean; incomplete: boolean;
+  }): Promise<void>;
+  cancelAgentRequests(agentId: string, grantId: string): void;
+}
+
+export interface ArtifactDownloader {
+  download(ticket: string): Promise<{ artifactDigest: string; runnerCertificateDigest: string; manifest: AgentExecutionPackage['manifest']; source: string }>;
 }
 
 export interface AgentInstanceStatus {
@@ -45,30 +57,22 @@ export class MultiAgentSupervisor {
   private leaseRecipient = generateKeyLeaseRecipient();
 
   constructor(
-    private readonly control: GuardianControlClient,
+    private readonly control: SupervisorControl,
     private readonly certificate: RunnerCertificate,
-  ) {
-    // The control client reconnects on the next call, so the recipient key
-    // must be replaced, not just zeroed: leases sealed after the blip go to
-    // the fresh public key advertised by start()/renew().
-    control.onDisconnect(() => {
-      this.leaseRecipient.privateKey.fill(0);
-      this.leaseRecipient = generateKeyLeaseRecipient();
-      for (const instance of this.agents.values()) this.beginOfflineGrace(instance);
-    });
-  }
+    private readonly artifacts: ArtifactDownloader,
+  ) {}
 
   async start(agentId: string): Promise<AgentInstanceStatus> {
     if (this.agents.has(agentId)) throw new Error(`agent is already running: ${agentId}`);
-    const execution = await this.control.call<AgentExecutionPackage>('agent.prepare', {
-      agentId,
-      certificate: this.certificate as unknown as Record<string, unknown>,
-      supervisorKeyLeasePublicKeyB64: this.leaseRecipient.publicKeyB64,
-    }, 60_000);
+    const execution = await this.control.requestAgentStart(agentId, this.leaseRecipient.publicKeyB64);
+    const artifact = await this.artifacts.download(execution.artifactTicket);
+    if (artifact.artifactDigest !== execution.grant.artifactDigest || artifact.runnerCertificateDigest !== execution.grant.certificateDigest) {
+      throw new Error('artifact ticket binding mismatch');
+    }
     verifyExecutionAuthorization({
       certificate: this.certificate,
       grant: execution.grant,
-      source: execution.source,
+      source: artifact.source,
       runnerId: this.certificate.runnerId,
       runnerPublicKey: this.certificate.runnerPublicKey,
       expectedGuardianAddress: this.certificate.guardianAddress,
@@ -94,11 +98,6 @@ export class MultiAgentSupervisor {
     } catch (error) { this.zeroSecrets(secretBuffers); throw error; }
     let transactionSequence = 0;
     const sandbox = new AgentSupervisor({
-      authorize: async (request) => { await this.control.call('capability.authorize', { request: request as unknown as Record<string, unknown> }); },
-      record: async (request, result) => { await this.control.call('capability.record', {
-        request: request as unknown as Record<string, unknown>, result: result as unknown as Record<string, unknown>,
-      }); },
-    }, {
       xmtpSend: (resourceId, text) => xmtp.send(resourceId, text),
       transactionPropose: async (argumentsValue) => {
         const keyId = argumentsValue.keyId;
@@ -115,21 +114,19 @@ export class MultiAgentSupervisor {
           sequence: ++transactionSequence, requestId, keyId,
           chain: chain as TransactionProposal['chain'], network: execution.grant.network,
           intentType, intent: intent as Record<string, unknown>,
-          deadline: new Date(Date.now() + 10_000).toISOString(), idempotencyKey: requestId,
+          deadline: new Date(Date.now() + ATTENDED_REQUEST_TTL_MS).toISOString(), idempotencyKey: requestId,
         };
-        return this.control.call('transaction.propose', { proposal: proposal as unknown as Record<string, unknown> });
+        return this.control.proposeTransaction(proposal);
       },
     });
     const instance: AgentInstance = {
       agentId, execution, sandbox, xmtp, secretBuffers,
-      renewalTimer: setInterval(() => void this.renew(agentId), 30_000),
       eventQueue: [], delivering: false, deadLetters: 0, stopped: false,
     };
-    instance.renewalTimer.unref();
     this.agents.set(agentId, instance);
-    void sandbox.run(execution.source, execution.grant)
-      .catch(() => {})
-      .finally(() => { if (this.agents.get(agentId) === instance) void this.stop(agentId); });
+    void sandbox.run(artifact.source, execution.grant)
+      .then(() => this.finish(instance, 'completed', false, false))
+      .catch(() => this.finish(instance, Date.now() >= Date.parse(execution.grant.expiresAt) ? 'expired' : 'crashed', true, false));
     try {
       await xmtp.start((message) => this.enqueue(instance, message));
       const status = this.status(agentId);
@@ -138,21 +135,34 @@ export class MultiAgentSupervisor {
     } catch (error) { await this.stop(agentId); throw error; }
   }
 
-  async stop(agentId: string): Promise<void> {
+  async stop(agentId: string, mode: AgentTerminationMode = 'graceful'): Promise<{ outcome: 'stopped' | 'killed' | 'already-stopped'; auditDigest: string; forced: boolean }> {
     const instance = this.agents.get(agentId);
-    if (!instance || instance.stopped) return;
+    if (!instance || instance.stopped) return { outcome: 'already-stopped', auditDigest: '0'.repeat(64), forced: mode === 'immediate' };
     instance.stopped = true;
     this.agents.delete(agentId);
-    clearInterval(instance.renewalTimer);
-    if (instance.graceTimer) clearTimeout(instance.graceTimer);
-    instance.sandbox.stop();
+    instance.sandbox.rejectNewWork();
+    this.control.cancelAgentRequests(agentId, instance.execution.grant.grantId);
     await instance.xmtp.close().catch(() => {});
+    instance.eventQueue.length = 0;
+    if (mode === 'graceful') {
+      const stopping: AgentRuntimeEvent = {
+        protocol: AGENT_CONTROL_PROTOCOL, type: 'runtime-event', agentId, grantId: instance.execution.grant.grantId,
+        eventId: randomUUID(), eventType: 'runtime.stopping', sentAt: new Date().toISOString(), payload: { reason: 'guardian-stop' },
+      };
+      instance.sandbox.notifyStopping(stopping);
+      await instance.sandbox.stopGracefully(5_000);
+    } else await instance.sandbox.killImmediately();
     this.zeroSecrets(instance.secretBuffers);
-    await this.control.call('agent.stop', { agentId, grantId: instance.execution.grant.grantId }).catch(() => {});
+    await this.control.sendAuditCheckpoint({
+      agentId, grantId: instance.execution.grant.grantId, auditDigest: instance.sandbox.auditDigest(),
+      eventCount: instance.sandbox.auditEventCount(), outcome: mode === 'immediate' ? 'killed' : 'stopped',
+      forced: mode === 'immediate', incomplete: false,
+    }).catch(() => {});
+    return { outcome: mode === 'immediate' ? 'killed' : 'stopped', auditDigest: instance.sandbox.auditDigest(), forced: mode === 'immediate' };
   }
 
   async stopAll(): Promise<void> {
-    await Promise.all([...this.agents.keys()].map((agentId) => this.stop(agentId)));
+    await Promise.all([...this.agents.keys()].map((agentId) => this.stop(agentId, 'immediate')));
     this.leaseRecipient.privateKey.fill(0);
   }
 
@@ -185,36 +195,8 @@ export class MultiAgentSupervisor {
     return buffers;
   }
 
-  private async renew(agentId: string): Promise<void> {
-    const instance = this.agents.get(agentId);
-    if (!instance || instance.stopped) return;
-    try {
-      const renewed = await this.control.call<AgentLeaseRenewalPackage>('lease.renew', {
-        agentId,
-        grantId: instance.execution.grant.grantId,
-        supervisorKeyLeasePublicKeyB64: this.leaseRecipient.publicKeyB64,
-      }, 10_000);
-      if (renewed.renewal.agentId !== agentId || renewed.renewal.grantId !== instance.execution.grant.grantId) throw new Error('lease renewal binding mismatch');
-      verifyGuardianEnvelope(renewed.renewal, this.certificate.guardianAddress);
-      const replacement = this.openLease({ ...instance.execution, sealedKeyLease: renewed.sealedKeyLease });
-      for (const [keyId, current] of instance.secretBuffers) {
-        const next = replacement.get(keyId);
-        if (!next || !Buffer.from(current).equals(Buffer.from(next))) {
-          this.zeroSecrets(replacement);
-          throw new Error(`communication identity changed during renewal: ${keyId}`);
-        }
-      }
-      this.zeroSecrets(replacement);
-      await instance.xmtp.updateResources(renewed.renewal.resources.filter((resource) => resource.kind === 'xmtp-contact'));
-      instance.execution = { ...instance.execution, sealedKeyLease: renewed.sealedKeyLease };
-      instance.sandbox.extendLease(renewed.renewal.expiresAt, renewed.renewal.maxOfflineMs);
-      if (instance.graceTimer) { clearTimeout(instance.graceTimer); instance.graceTimer = undefined; }
-    } catch {
-      this.beginOfflineGrace(instance);
-    }
-  }
-
   private async enqueue(instance: AgentInstance, message: XmtpInboundMessage): Promise<void> {
+    if (instance.stopped) return;
     const maxQueue = instance.execution.grant.limits.maxEventQueue ?? 128;
     if (instance.eventQueue.length >= maxQueue) { instance.deadLetters += 1; return; }
     instance.eventQueue.push(message);
@@ -250,9 +232,16 @@ export class MultiAgentSupervisor {
     secrets.clear();
   }
 
-  private beginOfflineGrace(instance: AgentInstance): void {
-    if (instance.stopped || instance.graceTimer) return;
-    instance.graceTimer = setTimeout(() => void this.stop(instance.agentId), DEFAULT_OFFLINE_GRACE_MS);
-    instance.graceTimer.unref();
+  private async finish(instance: AgentInstance, outcome: 'completed' | 'expired' | 'crashed', incomplete: boolean, forced: boolean): Promise<void> {
+    if (this.agents.get(instance.agentId) !== instance) return;
+    instance.stopped = true;
+    this.agents.delete(instance.agentId);
+    await instance.xmtp.close().catch(() => {});
+    instance.eventQueue.length = 0;
+    this.zeroSecrets(instance.secretBuffers);
+    await this.control.sendAuditCheckpoint({
+      agentId: instance.agentId, grantId: instance.execution.grant.grantId,
+      auditDigest: instance.sandbox.auditDigest(), eventCount: instance.sandbox.auditEventCount(), outcome, incomplete, forced,
+    }).catch(() => {});
   }
 }

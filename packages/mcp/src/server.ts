@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import type { AssetTrustState } from '@mosaic/catalog';
 import {
@@ -609,6 +610,65 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         if (artifactDigest(record.manifest) !== record.artifactDigest) throw new MosaicMcpError('INTERNAL', 'stored agent artifact manifest failed integrity verification');
       }
       return ok({ artifacts: records.map(({ owner: _owner, network: _network, ...record }) => record) });
+    },
+  );
+
+  reg(
+    'agent_artifact_ticket_create',
+    {
+      description: 'Create a short-lived, Runner-certificate-scoped capability for downloading one immutable agent artifact.',
+      inputSchema: {
+        token: z.string(),
+        artifactDigest: z.string().regex(/^[0-9a-f]{64}$/),
+        runnerCertificateDigest: z.string().regex(/^[0-9a-f]{64}$/),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const digest = String(args.artifactDigest);
+      const owner = { chain: session.chain, address: session.address };
+      if (!await store.getAgentArtifact(owner, session.network, digest)) {
+        throw new MosaicMcpError('NOT_FOUND', `agent artifact not found: ${digest}`);
+      }
+      const ticket = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+      await store.createAgentArtifactTicket({
+        ticketHash: sha256Hex(ticket),
+        owner,
+        network: session.network,
+        artifactDigest: digest,
+        runnerCertificateDigest: String(args.runnerCertificateDigest),
+        expiresAt,
+        maxReads: 3,
+      });
+      return ok({ ticket, artifactDigest: digest, runnerCertificateDigest: String(args.runnerCertificateDigest), expiresAt, maxReads: 3 });
+    },
+  );
+
+  reg(
+    'agent_artifact_download',
+    {
+      description: 'Consume a scoped artifact capability. The raw ticket is never stored and may be read at most three times.',
+      inputSchema: { ticket: z.string().regex(/^[0-9a-f]{64}$/) },
+    },
+    async (args) => {
+      const ticket = await store.consumeAgentArtifactTicket(sha256Hex(String(args.ticket)));
+      if (!ticket) throw new MosaicMcpError('AUTH_INVALID', 'artifact ticket is expired, exhausted, or invalid');
+      const record = await store.getAgentArtifact(ticket.owner, ticket.network, ticket.artifactDigest);
+      if (!record) throw new MosaicMcpError('NOT_FOUND', 'ticketed artifact no longer exists');
+      const source = Buffer.from(record.source).toString('utf8');
+      try { assertArtifactManifest(record.manifest); assertCanonicalAgentSource(source); } catch {
+        throw new MosaicMcpError('INTERNAL', 'ticketed artifact failed structural verification');
+      }
+      if (artifactDigest(record.manifest) !== ticket.artifactDigest || sha256Hex(record.source) !== record.manifest.sourceDigest) {
+        throw new MosaicMcpError('INTERNAL', 'ticketed artifact failed integrity verification');
+      }
+      return ok({
+        artifactDigest: ticket.artifactDigest,
+        runnerCertificateDigest: ticket.runnerCertificateDigest,
+        manifest: record.manifest,
+        source,
+      });
     },
   );
 

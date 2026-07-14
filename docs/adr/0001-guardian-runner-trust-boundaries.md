@@ -9,7 +9,7 @@ Mosaic separates agent custody from agent execution into four boundaries:
 
 1. MCP is an untrusted control plane for discovery, desired state, immutable
    artifacts, ciphertext, and revocation distribution. MCP cannot issue grants.
-2. Guardian owns XMTP control transport, local approval, pairing, leases, and
+2. Guardian owns XMTP control transport, local approval, pairing, fixed grants, and
    lifecycle orchestration.
 3. Vault Core is networkless. It holds authorization state, evaluates policy,
    signs only canonical Mosaic control envelopes and structured transaction
@@ -24,7 +24,7 @@ key, Guardian identity key, or generic signing oracle. The one exception is the
 agent's dedicated XMTP messaging credentials (`xmtp-owner`, `xmtp-database`;
 custody `supervisor-session`): they are generated for the agent, never derived
 from the zone secret, cannot move funds, and are delivered to the Runner only
-inside short-lived sealed key leases so it can operate the agent's XMTP
+inside a sealed key lease matching a non-renewable 24-hour grant so it can operate the agent's XMTP
 endpoint. A compromised Runner can therefore impersonate the agent *on XMTP*
 (messaging) but can never sign transactions or recover zone key material.
 
@@ -33,12 +33,14 @@ endpoint. A compromised Runner can therefore impersonate the agent *on XMTP*
 XMTP is encrypted transport, not Mosaic authorization. Initial local Runner
 pairing is approved by the explicit UI start action. Vault Core issues a signed
 `RunnerCertificate`, then an `ExecutionGrant` bound to the Runner public key,
-Guardian, network, agent, source, manifest, configuration, policy, capability
-limits, expiry, and offline grace period.
+Guardian, both control inboxes, network, agent, source, manifest, configuration,
+policy, capability limits, and fixed expiry.
 
 All application messages are versioned and canonical. Expired, replayed,
 revoked, reordered, broadened, or digest-mismatched authorization fails closed.
-Lease renewal may only reduce capabilities, quotas, duration, or offline grace.
+There is no lease renewal, heartbeat, polling, or per-hook Guardian call.
+Supervisor enforces routine non-custodial quotas locally. Guardian retains the
+only transaction and authority-expanding signing boundary.
 
 ## Sandbox claim
 
@@ -52,21 +54,25 @@ attestation/TEE mode.
 
 ## Capability rollout
 
-The first implementation grants only namespaced state, structured logging,
-clock, and random hooks. LLM, XMTP, WebSocket, scheduling, and transaction
-operations remain default-deny until each has an external policy broker. Strict
-XMTP recipient enforcement requires Guardian-brokered XMTP; until that broker
-exists the Runner operates the agent's XMTP installation under leased
-`supervisor-session` credentials, so recipient allow-lists are enforced only by
-the (untrusted) Runner and the messaging identity is exposed to Runner
-compromise. Moving XMTP custody behind the Guardian removes that exposure
-without changing wire contracts.
+Namespaced state, structured logging, clock, random, and agent-XMTP hooks are
+enforced locally from the signed grant. LLM, WebSocket, scheduling, and
+transaction execution remain default-deny. Runner operates the agent's XMTP
+installation under leased `supervisor-session` credentials, so recipient
+allow-lists are software-local and the messaging identity is exposed to Runner
+compromise. Moving agent-XMTP custody behind Guardian would remove that
+exposure without changing the control protocol.
 
 ## Platform posture
 
 macOS is the first always-on Guardian. The TypeScript implementation uses a
 narrow logical Vault Core boundary; a hardened macOS release moves that API
 behind authenticated XPC and Keychain storage without changing wire contracts.
-iOS is an attended Guardian and approval/revocation companion. Agents must pause
-when an iOS-only Guardian is suspended or unreachable.
+iOS is a future attended Guardian and approval/revocation companion. Its
+persistent transport identity may receive while the vault is locked; attended
+requests wait for the user, while already-issued bounded grants run until fixed
+expiry. Native iOS and push integration are outside this desktop migration.
 
+Guardian may order an exact active agent/grant to stop gracefully or be killed
+immediately. It revokes and zeroes custody state before delivery. If Runner is
+offline, custody revocation is still immediate; process termination occurs on
+XMTP delivery or at fixed grant expiry.
