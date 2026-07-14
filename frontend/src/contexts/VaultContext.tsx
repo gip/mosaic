@@ -22,6 +22,7 @@ interface VaultValue {
   registerCreated: (zone: string) => Promise<void>;
   markUnlocked: (zone: string, addresses: DerivedVaultAddress[]) => Promise<void>;
   createAddress: (zone: string, chain: AgentChain, name?: string) => Promise<void>;
+  addVaultChain: (zone: string, chainKey: string) => Promise<void>;
   setVaultChainEnabled: (zone: string, chainKey: string, enabled: boolean) => Promise<void>;
   lockVault: (zone: string) => Promise<void>;
 }
@@ -145,10 +146,21 @@ export function VaultProvider({ children }: { children: ReactNode }) {
 
   const setVaultChainEnabled = useCallback(async (zone: string, chainKey: string, enabled: boolean) => {
     if (!session) throw new Error('Log in to change vault settings.');
+    if (enabled) {
+      await api.zoneChainAdd(session.token, zone, chainKey);
+      await refreshVaults();
+      return;
+    }
     // Patch from the response instead of a full refresh so the toggle feels instant.
     const chains = await api.zoneChainSet(session.token, zone, chainKey, enabled);
     setVaults((current) => current.map((vault) => (vault.zone === zone ? { ...vault, chains } : vault)));
-  }, [session]);
+  }, [refreshVaults, session]);
+
+  const addVaultChain = useCallback(async (zone: string, chainKey: string) => {
+    if (!session) throw new Error('Log in to add a vault chain.');
+    await api.zoneChainAdd(session.token, zone, chainKey);
+    await refreshVaults();
+  }, [refreshVaults, session]);
 
   const lockVault = useCallback(async (zone: string) => {
     if (!session) return;
@@ -162,8 +174,8 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const activeVault = vaults.find(({ zone }) => zone === activeName) ?? null;
   const value = useMemo(() => ({
     vaults, activeVault, loading, error, metadataWarning, selectVault, refreshVaults,
-    registerCreated, markUnlocked, createAddress, setVaultChainEnabled, lockVault,
-  }), [vaults, activeVault, loading, error, metadataWarning, selectVault, refreshVaults, registerCreated, markUnlocked, createAddress, setVaultChainEnabled, lockVault]);
+    registerCreated, markUnlocked, createAddress, addVaultChain, setVaultChainEnabled, lockVault,
+  }), [vaults, activeVault, loading, error, metadataWarning, selectVault, refreshVaults, registerCreated, markUnlocked, createAddress, addVaultChain, setVaultChainEnabled, lockVault]);
   return <VaultContext.Provider value={value}>{children}</VaultContext.Provider>;
 }
 

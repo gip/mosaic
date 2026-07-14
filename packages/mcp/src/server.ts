@@ -504,6 +504,26 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   );
 
   reg(
+    'chain_setup_complete',
+    {
+      description:
+        'Complete first-login chain setup for the authenticated root wallet. The root-wallet chain is required; '
+        + 'the selected built-in logical chains apply to both Mainnet and Testnet.',
+      inputSchema: {
+        token: z.string(),
+        enabledChainKeys: z.array(z.enum(['xrpl', 'stellar', 'base'])).min(1).max(3),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      return ok(await store.completeChainSetup(
+        { chain: session.chain, address: session.address },
+        args.enabledChainKeys as string[],
+      ));
+    },
+  );
+
+  reg(
     'asset_trust_set',
     {
       description: 'Set an asset to Hidden, Review, or Allowed for the authenticated root wallet.',
@@ -793,7 +813,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   reg(
     'settings_get',
     {
-      description: 'Read per-wallet settings (Mainnet vault lock reminder) for the authenticated root wallet.',
+      description: 'Read per-wallet settings and first-login chain-setup state for the authenticated root wallet.',
       inputSchema: { token: z.string() },
     },
     async (args) => {
@@ -819,6 +839,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       const current = await store.getWalletSettings(owner);
       return ok(await store.setWalletSettings(owner, {
         lockReminderMinutes: args.lockReminderMinutes === undefined ? current.lockReminderMinutes : Number(args.lockReminderMinutes),
+        chainSetupCompleted: current.chainSetupCompleted,
       }));
     },
   );
@@ -859,6 +880,20 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       const session = await requireSession(args);
       const zone = await requireZone(session, String(args.zone));
       return ok(await store.setZoneChainEnabled(zone.id, String(args.chainKey), Boolean(args.enabled)));
+    },
+  );
+
+  reg(
+    'zone_chain_add',
+    {
+      description:
+        'Enable one logical chain in an owned vault and atomically ensure that chain family has its #0 derived address.',
+      inputSchema: { token: z.string(), zone: z.string().min(1).max(64), chainKey: z.string().min(1) },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const zone = await requireZone(session, String(args.zone));
+      return ok(await store.addZoneChain(zone.id, String(args.chainKey)));
     },
   );
 
@@ -922,6 +957,9 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     },
     async (args) => {
       const session = await requireSession(args);
+      if (!(await store.getWalletSettings({ chain: session.chain, address: session.address })).chainSetupCompleted) {
+        throw new MosaicMcpError('VALIDATION_FAILED', 'complete chain setup before creating a vault');
+      }
       if (session.network !== 'testnet') throw new MosaicMcpError('VALIDATION_FAILED', 'server-managed vault creation is Testnet-only');
       if (!opts.testnetVaultKey) throw new MosaicMcpError('INTERNAL', 'Testnet server vault key is not configured');
       const secret = Buffer.from(String(args.zoneRootSecretB64), 'base64');
@@ -996,6 +1034,9 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     },
     async (args) => {
       const session = await requireSession(args);
+      if (!(await store.getWalletSettings({ chain: session.chain, address: session.address })).chainSetupCompleted) {
+        throw new MosaicMcpError('VALIDATION_FAILED', 'complete chain setup before creating a vault');
+      }
       const zone = String(args.zone);
       const { message } = await auth.verifyAuthorizeZone(session, {
         challengeId: String(args.challengeId),

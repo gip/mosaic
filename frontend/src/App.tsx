@@ -11,10 +11,12 @@ import { useSession } from './contexts/SessionContext';
 import { useSettings } from './contexts/SettingsContext';
 import { useTheme } from './contexts/ThemeContext';
 import { useVaults, type VaultState } from './contexts/VaultContext';
+import { useWalletSettings } from './contexts/WalletSettingsContext';
 import { isLocalApp } from './local/bridge';
 
 const LoginModal = lazy(() => import('./components/LoginModal'));
 const UnlockVaultModal = lazy(() => import('./components/ZonePanel').then((module) => ({ default: module.UnlockVaultModal })));
+const ChainOnboardingModal = lazy(() => import('./components/ChainOnboardingModal'));
 
 function short(addr: string): string {
   return addr.length > 12 ? `${addr.slice(0, 5)}…${addr.slice(-4)}` : addr;
@@ -27,6 +29,7 @@ export default function App() {
   const { network, setNetwork } = useSettings();
   const { cycleTheme } = useTheme();
   const { vaults, activeVault, selectVault } = useVaults();
+  const { chainSetupCompleted, loading: walletSettingsLoading } = useWalletSettings();
   const [loginOpen, setLoginOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [unlockVault, setUnlockVault] = useState<VaultState | null>(null);
@@ -237,6 +240,11 @@ export default function App() {
       {loginOpen && (
         <Suspense fallback={null}>
           <LoginModal onClose={() => setLoginOpen(false)} />
+        </Suspense>
+      )}
+      {session && !walletSettingsLoading && !chainSetupCompleted && (
+        <Suspense fallback={null}>
+          <ChainOnboardingModal />
         </Suspense>
       )}
       {unlockVault && (

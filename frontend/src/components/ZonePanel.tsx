@@ -8,6 +8,7 @@ import AgentAddressCards from './AgentAddresses';
 import XamanPromptModal, { type XamanPrompt } from './XamanPromptModal';
 import { errorMessage } from '../errors';
 import { useSession } from '../contexts/SessionContext';
+import { useCatalog } from '../contexts/CatalogContext';
 import { useVaults, type VaultState } from '../contexts/VaultContext';
 import {
   CEREMONY_STEP_LABELS,
@@ -92,6 +93,7 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
 
 export function CreateVaultModal({ onClose }: { onClose: () => void }) {
   const { session } = useSession();
+  const { chains } = useCatalog();
   const { vaults, registerCreated } = useVaults();
   const [name, setName] = useState(vaults.length === 0 ? 'default' : '');
   const [passphrase, setPassphrase] = useState('');
@@ -106,6 +108,12 @@ export function CreateVaultModal({ onClose }: { onClose: () => void }) {
   const nameValid = name.length <= 64 && VAULT_NAME.test(name);
   const duplicate = vaults.some((vault) => vault.zone === name);
   const testnet = session?.network === 'testnet';
+  const addressFamilies = [...new Set(chains
+    .filter((chain) => chain.enabled && chain.network === session?.network)
+    .map(({ family }) => family))];
+  const addressSummary = addressFamilies.map((family) => (
+    family === 'evm' ? 'EVM #0' : family === 'xrpl' ? 'XRPL #0' : 'Stellar #0'
+  )).join(' · ');
   const ready = nameValid && !duplicate && !step && (testnet || (passphrase.length >= 10 && passphrase === confirm));
 
   async function create() {
@@ -138,6 +146,7 @@ export function CreateVaultModal({ onClose }: { onClose: () => void }) {
             <Field id="vault-name" label="Vault name" error={duplicate ? 'A vault with this name already exists.' : (name && !nameValid ? 'Use lowercase letters, numbers, and single hyphens (64 characters maximum).' : undefined)}>
               <input value={name} maxLength={64} autoComplete="off" onChange={(event) => setName(event.target.value)} placeholder="trading" />
             </Field>
+            <Banner tone="info">This vault will create: {addressSummary || 'no addresses'}</Banner>
             {!testnet && <Field id="vault-passphrase" label="Backup passphrase" error={passphrase && passphrase.length < 10 ? 'Use at least 10 characters.' : undefined}>
               <input type="password" value={passphrase} autoComplete="new-password" onChange={(event) => setPassphrase(event.target.value)} />
             </Field>}

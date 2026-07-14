@@ -233,4 +233,16 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE dex_orders ALTER COLUMN activity_cursor SET NOT NULL;
   CREATE UNIQUE INDEX dex_orders_activity_cursor_idx ON dex_orders (activity_cursor);
   `,
+  `
+  ALTER TABLE wallet_settings
+    ADD COLUMN chain_setup_completed BOOLEAN NOT NULL DEFAULT FALSE;
+
+  -- Wallets that already had catalog preferences predate chain onboarding.
+  -- Preserve their existing choices and do not force them through setup.
+  UPDATE wallet_settings SET chain_setup_completed = TRUE;
+  INSERT INTO wallet_settings (root_chain, root_address, lock_reminder_minutes, chain_setup_completed)
+    SELECT DISTINCT root_chain, root_address, 3, TRUE FROM chain_preferences
+    ON CONFLICT (root_chain, root_address)
+    DO UPDATE SET chain_setup_completed = TRUE;
+  `,
 ];

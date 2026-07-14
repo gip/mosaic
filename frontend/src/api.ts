@@ -112,6 +112,13 @@ export interface BlobGetResult {
 export interface WalletSettingsResult {
   /** 0 disables the Mainnet lock reminder. */
   lockReminderMinutes: number;
+  chainSetupCompleted: boolean;
+}
+
+export interface ZoneChainAddResult {
+  chains: ZoneChainSetting[];
+  address: ZoneAddressItem;
+  created: boolean;
 }
 
 export interface AgentArtifactRecord {
@@ -187,6 +194,10 @@ class MosaicApi {
     return this.call('chain_enabled_set', { token, chainKey, enabled });
   }
 
+  chainSetupComplete(token: string, enabledChainKeys: string[]): Promise<{ settings: WalletSettingsResult; chains: ChainWithEnabled[] }> {
+    return this.call('chain_setup_complete', { token, enabledChainKeys });
+  }
+
   assetTrustSet(token: string, assetId: string, state: AssetTrustState): Promise<AssetWithTrust> {
     return this.call('asset_trust_set', { token, assetId, state });
   }
@@ -244,6 +255,10 @@ class MosaicApi {
   /** Returns the vault's full chain list after the toggle. */
   zoneChainSet(token: string, zone: string, chainKey: string, enabled: boolean): Promise<ZoneChainSetting[]> {
     return this.call('zone_chain_set', { token, zone, chainKey, enabled });
+  }
+
+  zoneChainAdd(token: string, zone: string, chainKey: string): Promise<ZoneChainAddResult> {
+    return this.call('zone_chain_add', { token, zone, chainKey });
   }
 
   blobPut(args: {

@@ -14,6 +14,16 @@
   gap: var(--sp-3);
 }
 
+.login-tiles.focused {
+  grid-template-columns: minmax(240px, 320px);
+  justify-content: center;
+}
+
+.login-other-methods {
+  display: block;
+  margin: var(--sp-3) auto 0;
+}
+
 @media (max-width: 640px) {
   .login-tiles {
     grid-template-columns: 1fr;
@@ -72,22 +82,24 @@
   aspect-ratio: 1;
   border: 1px solid var(--line);
   border-radius: var(--r-1);
-  background: var(--bg-panel);
+  background: #fff;
   overflow: hidden;
 }
 
 .qr-box img {
-  width: 100%;
-  height: 100%;
+  width: 90%;
+  height: 90%;
   object-fit: contain;
-  /* Xaman QR pngs are white-background; keep them readable in dark theme. */
-  background: #fff;
 }
 
 .qr-box.qr-svg svg {
   width: 90%;
   height: 90%;
-  color: var(--fg);
+  color: #111;
+}
+
+.qr-box.qr-placeholder {
+  background: var(--bg-panel);
 }
 
 .qr-box.qr-large {
