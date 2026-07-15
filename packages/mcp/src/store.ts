@@ -571,6 +571,7 @@ export class PostgresStore implements MosaicStore {
     const rows = await this.sql`
       SELECT activity_cursor AS cursor, record, signed_payload FROM dex_orders
       WHERE status IN ('submitted','confirmed','open','partially_filled','unknown')
+        OR (status = 'failed' AND record->>'resultCode' = 'unknown' AND record->>'transactionHash' IS NOT NULL)
       ORDER BY activity_cursor`;
     return rows.map(rowToDexOrder);
   }
@@ -1135,7 +1136,9 @@ export class MemoryStore implements MosaicStore {
 
   async listNonterminalDexOrders(): Promise<DexOrderRecord[]> {
     return [...this.dexOrders.values()]
-      .filter(({ status }) => ['submitted', 'confirmed', 'open', 'partially_filled', 'unknown'].includes(status))
+      .filter((record) =>
+        ['submitted', 'confirmed', 'open', 'partially_filled', 'unknown'].includes(record.status)
+        || (record.status === 'failed' && record.resultCode === 'unknown' && record.transactionHash !== undefined))
       .sort((left, right) => left.cursor - right.cursor)
       .map((record) => structuredClone(record));
   }

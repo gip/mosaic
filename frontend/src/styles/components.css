@@ -1124,7 +1124,7 @@ tbody tr:hover {
   box-shadow: var(--shadow-2);
 }
 .activity-panel {
-  width: min(560px, calc(100vw - 2 * var(--sp-4)));
+  width: min(900px, calc(100vw - 2 * var(--sp-4)));
   max-height: 65vh;
   overflow: auto;
   background: var(--bg-panel);

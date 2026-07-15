@@ -126,6 +126,24 @@ test('submission rejects missing or changed SourceTag before connecting', async 
   assert.equal(connections, 1);
 });
 
+test('submission decodes a binary XRPL metadata result', async () => {
+  const wallet = Wallet.generate();
+  const tagged = wallet.sign({
+    TransactionType: 'OfferCancel', Account: wallet.address, OfferSequence: 1,
+    Fee: '12', Sequence: 1, LastLedgerSequence: 100, SourceTag: 7,
+  }).tx_blob;
+  const metadata = encode({ AffectedNodes: [], TransactionIndex: 0, TransactionResult: 'tesSUCCESS' });
+  const clientFactory = () => ({
+    connect: async () => {},
+    disconnect: async () => {},
+    submitAndWait: async () => ({ result: { hash: 'ABC', ledger_index: 99, meta: metadata } }),
+  });
+
+  assert.deepEqual(await submitXrplTransaction('testnet', tagged, 7, clientFactory), {
+    hash: 'ABC', ledger: '99', resultCode: 'tesSUCCESS',
+  });
+});
+
 // Offers giving base (XRP) for quote → asks; the reverse → bids.
 const ASK_OFFER = {
   TakerGets: '2000000000',

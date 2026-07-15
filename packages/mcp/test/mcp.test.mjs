@@ -160,6 +160,11 @@ test('MemoryStore binds public vault addresses immutably and isolates paginated 
   assert.deepEqual((await store.listActivity(owner, 'testnet', { after: first.cursor })).map(({ id }) => id), [second.id]);
   assert.equal((await store.listActivity(owner, 'testnet', { status: 'open' })).length, 1);
   assert.equal((await store.listActivity({ chain: 'evm', address: '0x0000000000000000000000000000000000000001' }, 'testnet')).length, 0);
+  const legacyUnknown = await store.createDexOrder({
+    ...base, id: crypto.randomUUID(), orderId: crypto.randomUUID(), chain: 'xrpl',
+    status: 'failed', resultCode: 'unknown', transactionHash: 'ABC', error: 'Network rejected the transaction: unknown',
+  });
+  assert.deepEqual((await store.listNonterminalDexOrders()).map(({ id }) => id), [second.id, legacyUnknown.id]);
 });
 
 test('Xaman DEX payloads are explicitly sign-only', async () => {
