@@ -1,5 +1,5 @@
 import type { Asset } from '@mosaic/chain-core';
-import { loadChainModule } from '../../chains/load';
+import { loadChainModule, type ChainModule } from '../../chains/load';
 
 export type MarketChain = 'xrpl' | 'stellar';
 export type MarketAssetKind = 'native' | 'issued';
@@ -102,7 +102,7 @@ function sameAsset(left: Asset, right: Asset): boolean {
 
 export async function validateMarketDraft(chain: MarketChain, draft: MarketDraft): Promise<MarketValidation> {
   const errors: MarketDraftErrors = { base: {}, quote: {} };
-  let module;
+  let module: ChainModule;
   try {
     module = await loadChainModule(chain);
   } catch (cause) {
