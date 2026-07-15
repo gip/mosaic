@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Operation } from '@stellar/stellar-sdk';
-import { buildStellarOfferOperation, createAdapter } from '../dist/index.js';
+import { buildStellarOfferOperation, createAdapter, isValidStellarIssuer } from '../dist/index.js';
 
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 
@@ -12,6 +12,11 @@ const REQ = {
   quote: { kind: 'issued', code: 'USDC', issuer: USDC_ISSUER },
   fundedAccounts: { base: null, quote: null },
 };
+
+test('Stellar market URL helper validates classic-account issuers', () => {
+  assert.equal(isValidStellarIssuer(USDC_ISSUER), true);
+  assert.equal(isValidStellarIssuer('GNotAValidIssuer'), false);
+});
 
 test('limit orders use manageSellOffer for sell and manageBuyOffer for exact buy', () => {
   const intent = {

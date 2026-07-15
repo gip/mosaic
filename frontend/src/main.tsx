@@ -4,7 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import './index.css';
 import App from './App';
 import Home from './pages/Home';
-import DexPage, { DexOverviewPage } from './pages/DexPage';
+import DexPage, { DexCustomMarketPage, DexOverviewPage } from './pages/DexPage';
 import ActivityPage from './pages/ActivityPage';
 import SettingsPage from './pages/SettingsPage';
 import AssetsPage from './pages/AssetsPage';
@@ -58,6 +58,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'dex', element: <DexOverviewPage /> },
+      { path: 'dex/:chain/market', element: <DexCustomMarketPage /> },
       { path: 'dex/:chain/:pair', element: <DexPage /> },
       { path: 'activity', element: <ActivityPage /> },
       { path: 'assets', element: <AssetsPage /> },

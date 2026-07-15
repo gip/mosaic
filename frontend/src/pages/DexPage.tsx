@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Asset, OrderBookLevel } from '@mosaic/chain-core';
 import { deploymentFor } from '@mosaic/catalog';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ActivityTable from '../components/activity/ActivityTable';
 import BookChart from '../components/dex/charts';
 import ExecutionCostTable, { type CostOrderSelection } from '../components/dex/ExecutionCostTable';
+import CustomMarketBuilder from '../components/dex/CustomMarketBuilder';
+import { parseMarketQuery, validateMarketDraft, type MarketChain, type MarketValidation } from '../components/dex/marketUrl';
 import { EXECUTION_QUOTE_AMOUNTS } from '../components/dex/types';
 import OrderTicket, { type OrderTicketSelection, type TradingMarket } from '../components/dex/OrderTicket';
 import { signAndSubmitOrder } from '../components/dex/signing';
@@ -54,7 +56,12 @@ function format(value: number | string | undefined): string {
 }
 
 function assetMatches(left: Asset, right: Asset): boolean {
-  return left.kind === 'native' ? right.kind === 'native' : right.kind === 'issued' && left.code === right.code && left.issuer === right.issuer;
+  return left.kind === 'native'
+    ? right.kind === 'native'
+    : right.kind === 'issued'
+      && left.code === right.code
+      && left.issuer === right.issuer
+      && (left.currencyCode ?? left.code) === (right.currencyCode ?? right.code);
 }
 
 function buildMarkets(network: 'mainnet' | 'testnet', chains: ReturnType<typeof useCatalog>['chains'], assets: ReturnType<typeof useCatalog>['assets']): TradingMarket[] {
@@ -152,29 +159,25 @@ function BookRows({ levels, side, onPrice }: { levels: OrderBookLevel[]; side: '
   })}</>;
 }
 
-export default function DexPage() {
+function MarketWorkspace({ market, markets }: { market: TradingMarket; markets: TradingMarket[] }) {
   const { network } = useSettings();
-  const catalog = useCatalog();
   const navigate = useNavigate();
-  const { chain: routeChain, pair: routePair } = useParams();
   const { session, signRootStellarTransaction } = useSession();
   const { activities, refresh } = useActivity();
   const { accountBalances } = useBalances();
-  const markets = useMemo(() => buildMarkets(network, catalog.chains, catalog.assets), [catalog.assets, catalog.chains, network]);
-  const market = markets.find((item) => item.chain === routeChain && `${item.baseSymbol}-${item.quoteSymbol}`.toLowerCase() === routePair?.toLowerCase());
-  const accounts = useTradingAccounts(market?.chain ?? 'stellar');
-  const fundedFor = (asset: Asset) => market ? accounts.find((account) => {
+  const accounts = useTradingAccounts(market.chain);
+  const fundedFor = (asset: Asset) => accounts.find((account) => {
     const balances = accountBalances(market.chain, account.address);
     return balances?.funded && balances.balances.some((balance) => assetMatches(balance.asset, asset) && Number(balance.amount) > 0);
-  }) : undefined;
-  const baseFunded = market ? fundedFor(market.base) : undefined;
-  const quoteFunded = market ? fundedFor(market.quote) : undefined;
-  const request = market ? {
+  });
+  const baseFunded = fundedFor(market.base);
+  const quoteFunded = fundedFor(market.quote);
+  const request = {
     chain: market.chain, network: market.network, base: market.base, quote: market.quote,
     fundedAccounts: market.chain === 'xrpl' ? { base: baseFunded?.address ?? null, quote: quoteFunded?.address ?? null } : { base: null, quote: null },
-  } : { chain: 'stellar' as const, network, base: { kind: 'native' as const }, quote: { kind: 'native' as const }, fundedAccounts: { base: null, quote: null } };
-  const book = useOrderBookFeed(request, Boolean(market));
-  const pathAvailable = Boolean(market && (market.chain === 'stellar' || (baseFunded && quoteFunded)));
+  };
+  const book = useOrderBookFeed(request);
+  const pathAvailable = Boolean(market.chain === 'stellar' || (baseFunded && quoteFunded));
   const paths = useQuoteSurfaceFeed(request, pathAvailable, EXECUTION_QUOTE_AMOUNTS);
   const [sidePanel, setSidePanel] = useState<'cost' | 'book'>('cost');
   const [ticketSelection, setTicketSelection] = useState<OrderTicketSelection | null>(null);
@@ -183,7 +186,6 @@ export default function DexPage() {
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [xaman, setXaman] = useState<PendingXamanPrompt | null>(null);
 
-  if (!market) return <section className="dex-page"><h2>DEX</h2><DexTestnetNotice network={network} /><p>No XRPL or Stellar markets are enabled for {network}.</p></section>;
   const bestBid = book.snapshot?.bids[0]?.price;
   const bestAsk = book.snapshot?.asks[0]?.price;
   const midpoint = bestBid && bestAsk ? (Number(bestBid) + Number(bestAsk)) / 2 : undefined;
@@ -191,6 +193,7 @@ export default function DexPage() {
   const marketActivity = activities.filter((activity) => activity.chain === market.chain && activity.network === market.network && assetMatches(activity.base, market.base) && assetMatches(activity.quote, market.quote));
 
   function chooseMarket(id: string) {
+    if (id === market.id) return;
     const next = markets.find((item) => item.id === id);
     if (next) navigate(marketPath(next));
   }
@@ -223,10 +226,11 @@ export default function DexPage() {
 
   return <section className="dex-page dex-workspace">
     <header className="dex-market-header">
-      <div><div className="dex-market-title"><select aria-label="Market" value={market.id} onChange={(event) => chooseMarket(event.target.value)}>{markets.map((item) => <option value={item.id} key={item.id}>{item.baseSymbol} / {item.quoteSymbol} · {item.chain.toUpperCase()}</option>)}</select><span>{network}</span></div><Link className="dex-market-back" to="/dex">All markets</Link></div>
+      <div><div className="dex-market-title"><select aria-label="Market" value={market.id} onChange={(event) => chooseMarket(event.target.value)}>{!markets.some((item) => item.id === market.id) && <option value={market.id}>{market.baseSymbol} / {market.quoteSymbol} · {market.chain.toUpperCase()} · Custom</option>}{markets.map((item) => <option value={item.id} key={item.id}>{item.baseSymbol} / {item.quoteSymbol} · {item.chain.toUpperCase()}</option>)}</select><span>{network}</span></div><Link className="dex-market-back" to="/dex">All markets</Link></div>
       <dl className="dex-market-stats"><div><dt>Best bid</dt><dd>{format(bestBid)}</dd></div><div><dt>Best ask</dt><dd>{format(bestAsk)}</dd></div><div><dt>Midpoint</dt><dd>{format(midpoint)}</dd></div><div><dt>Spread</dt><dd>{format(spread)}</dd></div><div><dt>Feed</dt><dd><StatusDot tone={STATUS_TONES[book.status] ?? 'idle'}>{book.status}</StatusDot></dd></div></dl>
     </header>
     <DexTestnetNotice network={network} />
+    {(!market.baseAllowed || !market.quoteAllowed) && <Banner tone="info">This market is available for inspection only. Both assets must exactly match Allowed catalog deployments before Mosaic can prepare an order.</Banner>}
     {book.error && <p className="activity-summary-error">Market feed: {book.error.message}</p>}
     <div className="dex-trading-grid">
       <div className="dex-market-panel">
@@ -248,4 +252,88 @@ export default function DexPage() {
     {cancelReview && <Modal title="Review order cancellation" onClose={() => !cancelBusy && setCancelReview(null)}><dl className="order-review"><div><dt>Offer</dt><dd>{cancelReview.prepared.order.offerId}</dd></div><div><dt>Pair</dt><dd>{cancelReview.prepared.order.baseSymbol}/{cancelReview.prepared.order.quoteSymbol}</dd></div><div><dt>Source</dt><dd>{cancelReview.account.label}<small className="mono">{cancelReview.account.address}</small></dd></div><div><dt>Fee</dt><dd>{cancelReview.prepared.order.fee} {cancelReview.prepared.order.feeSymbol}</dd></div></dl>{cancelError && <p className="activity-summary-error">{cancelError}</p>}<button type="button" className="btn-primary" disabled={cancelBusy} onClick={() => void submitCancel()}>{cancelBusy ? 'Waiting for signature…' : 'Sign and cancel'}</button></Modal>}
     {xaman && <XamanPromptModal prompt={{ refs: xaman.refs, label: 'Sign the cancellation in Xaman' }} onClose={() => { xaman.cancel(); setXaman(null); }} />}
   </section>;
+}
+
+function allowedCatalogAsset(
+  catalog: ReturnType<typeof useCatalog>,
+  chain: MarketChain,
+  network: 'mainnet' | 'testnet',
+  asset: Asset,
+  symbol: string,
+): boolean {
+  const chainId = `${chain}-${network}`;
+  return catalog.assets.some((candidate) => {
+    if (candidate.trustState !== 'allowed') return false;
+    const deployment = deploymentFor(candidate, chainId);
+    if (!deployment || deployment.symbol !== symbol || deployment.kind !== asset.kind) return false;
+    if (asset.kind === 'native') return true;
+    if (deployment.address !== asset.issuer) return false;
+    return chain !== 'xrpl' || (deployment.currencyCode ?? deployment.symbol) === (asset.currencyCode ?? asset.code);
+  });
+}
+
+export default function DexPage() {
+  const { network } = useSettings();
+  const catalog = useCatalog();
+  const { chain: routeChain, pair: routePair } = useParams();
+  const markets = useMemo(() => buildMarkets(network, catalog.chains, catalog.assets), [catalog.assets, catalog.chains, network]);
+  const market = markets.find((item) => item.chain === routeChain && `${item.baseSymbol}-${item.quoteSymbol}`.toLowerCase() === routePair?.toLowerCase());
+  if (!market) return <section className="dex-page"><h2>DEX</h2><DexTestnetNotice network={network} /><p>No matching XRPL or Stellar market is enabled for {network}.</p></section>;
+  return <MarketWorkspace market={market} markets={markets} />;
+}
+
+export function DexCustomMarketPage() {
+  const { network } = useSettings();
+  const catalog = useCatalog();
+  const navigate = useNavigate();
+  const { chain: routeChain } = useParams();
+  const [searchParams] = useSearchParams();
+  const search = searchParams.toString();
+  const chain: MarketChain | null = routeChain === 'xrpl' || routeChain === 'stellar' ? routeChain : null;
+  const parsed = useMemo(() => chain ? parseMarketQuery(chain, search) : null, [chain, search]);
+  const validationKey = `${chain ?? 'unsupported'}?${search}`;
+  const [validation, setValidation] = useState<{ key: string; result: MarketValidation } | null>(null);
+
+  useEffect(() => {
+    if (!chain || !parsed) return;
+    let cancelled = false;
+    void validateMarketDraft(chain, parsed.draft).then((result) => {
+      if (!cancelled) setValidation({ key: validationKey, result });
+    });
+    return () => { cancelled = true; };
+  }, [chain, parsed, validationKey]);
+
+  if (!chain || !parsed) return <section className="dex-page"><h2>Unsupported market</h2><p>Custom markets are available for XRPL and Stellar.</p><Link to="/dex">View DEX markets</Link></section>;
+  const current = validation?.key === validationKey ? validation.result : null;
+  if (!current) return <section className="dex-page custom-market-loading"><h2>Checking market details…</h2></section>;
+
+  if (current.value && parsed.queryErrors.length === 0) {
+    const value = current.value;
+    const market: TradingMarket = {
+      id: `custom:${chain}:${search}`,
+      chain,
+      network,
+      base: value.base,
+      quote: value.quote,
+      baseSymbol: value.baseSymbol,
+      quoteSymbol: value.quoteSymbol,
+      baseAllowed: allowedCatalogAsset(catalog, chain, network, value.base, value.baseSymbol),
+      quoteAllowed: allowedCatalogAsset(catalog, chain, network, value.quote, value.quoteSymbol),
+    };
+    const markets = buildMarkets(network, catalog.chains, catalog.assets);
+    return <MarketWorkspace market={market} markets={markets} />;
+  }
+
+  const initialErrors = {
+    ...current.errors,
+    query: parsed.queryErrors.length > 0 ? parsed.queryErrors : undefined,
+  };
+  return <CustomMarketBuilder
+    key={validationKey}
+    chain={chain}
+    network={network}
+    initialDraft={parsed.draft}
+    initialErrors={initialErrors}
+    onOpen={(nextSearch) => navigate(`/dex/${chain}/market?${nextSearch}`)}
+  />;
 }

@@ -6,6 +6,7 @@ import {
   mulDecimals,
   xrpToDrops,
 } from '@mosaic/chain-core';
+import { isValidClassicAddress } from 'xrpl';
 import type {
   AdapterFetchOptions,
   AdapterStreamEvent,
@@ -66,6 +67,22 @@ export function normalizeCurrency(code: string): string {
   let hex = '';
   for (const b of bytes) hex += b.toString(16).padStart(2, '0');
   return hex.toUpperCase().padEnd(40, '0');
+}
+
+/** Decode Mosaic's printable, zero-padded 160-bit XRPL currency form. */
+export function decodeCurrency(code: string): string | null {
+  if (/^[!-~]{3}$/.test(code) && code.toUpperCase() !== 'XRP') return code;
+  if (!/^[0-9A-Fa-f]{40}$/.test(code)) return null;
+  const bytes = Uint8Array.from(code.match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end -= 1;
+  if (end === 0 || bytes.slice(0, end).some((byte) => byte < 0x21 || byte > 0x7e)) return null;
+  return new TextDecoder().decode(bytes.slice(0, end));
+}
+
+/** Validate a classic XRPL issuer account, including its Base58 checksum. */
+export function isValidXrplIssuer(address: string): boolean {
+  return isValidClassicAddress(address);
 }
 
 export function toXrplAmountSpec(asset: Asset): XrplAmountSpec {

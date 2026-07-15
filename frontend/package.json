@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "pnpm --filter @mosaic/zone-keys build && pnpm --filter @mosaic/web-connector build && pnpm --filter @mosaic/xrpl build && pnpm --filter @mosaic/stellar build && pnpm --filter @mosaic/evm build && tsc -b && vite build",
+    "build": "pnpm --filter 'frontend^...' build && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

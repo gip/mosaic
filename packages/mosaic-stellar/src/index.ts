@@ -12,7 +12,7 @@ import type {
 import { createAdapter } from './adapter.js';
 import { fetchBalances } from './balances.js';
 
-export { HORIZON_ENDPOINTS, createAdapter } from './adapter.js';
+export { HORIZON_ENDPOINTS, createAdapter, isValidStellarIssuer } from './adapter.js';
 export { readSseStream } from './sse.js';
 export type { SseMessage } from './sse.js';
 export { fetchBalances } from './balances.js';

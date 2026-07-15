@@ -1659,6 +1659,44 @@
   .dex-market-panel .dex-chart { height: 310px; }
 }
 
+/* ------------------------------------------------------------ custom DEX market */
+
+.custom-market-page { max-width: 1040px; }
+.custom-market-heading h2 { margin: 4px 0 var(--sp-2); }
+.custom-market-heading p { max-width: 680px; margin: 0; color: var(--fg-muted); }
+.custom-market-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+.custom-market-asset {
+  min-width: 0;
+  margin: 0;
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+}
+.custom-market-asset legend {
+  padding: 0 var(--sp-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.custom-market-form > .banner,
+.custom-market-actions { grid-column: 1 / -1; }
+.custom-market-actions { display: flex; justify-content: flex-end; }
+.custom-market-loading { min-height: 240px; justify-content: center; }
+
+@media (max-width: 720px) {
+  .custom-market-form { grid-template-columns: 1fr; }
+}
+
 /* ------------------------------------------------------------ DEX market directory */
 
 .dex-overview { max-width: 1440px; }
