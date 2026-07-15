@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react';
-import type { ActivityRecord } from '@mosaic/chain-core';
+import type { ActivityRecord, WalletActivityRecord } from '@mosaic/chain-core';
 import { activityExplorerUrl } from './activityPresentation';
+import AccountAddress from '../address/AccountAddress';
 
 const ACTIVE = new Set(['awaiting_signature', 'submitted', 'confirmed', 'open', 'partially_filled', 'unknown']);
 
@@ -12,7 +13,7 @@ function source(activity: ActivityRecord): string {
   return activity.sourceKind === 'root' ? 'Root' : `${activity.zone ?? 'Vault'} / ${activity.addressName ?? activity.sourceAddress}`;
 }
 
-export function ActivityStatus({ activity }: { activity: ActivityRecord }) {
+export function ActivityStatus({ activity }: { activity: WalletActivityRecord }) {
   const tone = ['failed', 'expired'].includes(activity.status) ? 'err' : ACTIVE.has(activity.status) ? 'busy' : 'ok';
   return <span className={`activity-status activity-status--${tone}`}>{activity.status.replaceAll('_', ' ')}</span>;
 }
@@ -49,7 +50,7 @@ export default function ActivityTable({ activities, compact = false, onCancel }:
                     <div><dt>Quote total</dt><dd>{activity.quoteTotal} {activity.quoteSymbol}</dd></div>
                     <div><dt>Average price</dt><dd>{activity.averagePrice ?? '—'}</dd></div>
                     <div><dt>Chain / network</dt><dd>{activity.chain} / {activity.network}</dd></div>
-                    <div><dt>Source address</dt><dd className="mono">{activity.sourceAddress}</dd></div>
+                    <div><dt>Source address</dt><dd><AccountAddress chain={activity.chain} network={activity.network} address={activity.sourceAddress} className="mono">{activity.sourceAddress}</AccountAddress></dd></div>
                     <div><dt>Fee</dt><dd>{activity.fee} {activity.feeSymbol}</dd></div>
                     <div><dt>Reserve</dt><dd>{activity.reserveImpact ?? 'None'}</dd></div>
                     <div><dt>Offer ID</dt><dd className="mono">{activity.offerId ?? '—'}</dd></div>

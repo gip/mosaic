@@ -9,7 +9,17 @@ import {
   quantizeDecimal,
   type DexOrderIntent,
   type OrderStatus,
+  type TransferIntent,
 } from '@mosaic/chain-core';
+import {
+  evmTransactionHash,
+  lookupEvmTransfer,
+  prepareEvmTransfer,
+  submitEvmTransfer,
+  verifyEvmTransfer,
+  verifyWalletEvmTransfer,
+  type EvmTransactionRequest,
+} from '@mosaic/evm';
 import {
   prepareStellarCancel,
   prepareStellarOrder,
@@ -18,6 +28,7 @@ import {
   stellarTransactionMatchesUnsigned,
   submitStellarTransaction,
   stellarTransactionHash,
+  prepareStellarTransfer,
 } from '@mosaic/stellar';
 import {
   prepareXrplCancel,
@@ -28,6 +39,7 @@ import {
   submitXrplTransaction,
   verifyXrplTransaction,
   xrplTransactionHash,
+  prepareXrplTransfer,
 } from '@mosaic/xrpl';
 import {
   AGENT_ARTIFACT_PROTOCOL,
@@ -45,7 +57,7 @@ import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, ty
 import { requireEnvUint32, validateUint32 } from './env.js';
 import { MosaicMcpError, mcpErrorContent } from './errors.js';
 import { createStderrLogger, type MosaicLogger } from './logging.js';
-import { MemoryStore, type BlobKind, type DexOrderRecord, type MosaicStore, type SigningRequest } from './store.js';
+import { MemoryStore, type BlobKind, type DexOrderRecord, type MosaicStore, type SigningRequest, type TransferRecord } from './store.js';
 import { openTestnetSecret, sealTestnetSecret, TESTNET_SERVER_POLICY } from './testnetVault.js';
 import type { XamanService } from './xaman.js';
 
@@ -95,14 +107,14 @@ const dexAssetSchema = z.union([
     currencyCode: z.string().min(1).max(40).optional(),
   }),
 ]);
-const orderStatusSchema = z.enum([
-  'awaiting_signature', 'submitted', 'confirmed', 'open', 'partially_filled',
-  'filled', 'cancelled', 'failed', 'expired', 'unknown',
-]);
-
 function publicActivity(record: DexOrderRecord): Record<string, unknown> {
   const { owner: _owner, signingRequest: _request, preparedTransaction: _prepared, signedPayload: _payload, ...activity } = record;
-  return activity;
+  return { ...activity, kind: 'order' };
+}
+
+function publicTransfer(record: TransferRecord): Record<string, unknown> {
+  const { owner: _owner, signingRequest: _request, preparedTransaction: _prepared, signedPayload: _payload, ...activity } = record;
+  return { ...activity, kind: 'transfer' };
 }
 
 export function jsonValuesEqual(left: unknown, right: unknown): boolean {
@@ -334,6 +346,78 @@ function assertStellarMatches(record: DexOrderRecord, signedXdr: string): void {
   }
 }
 
+function assertTransferXrplMatches(record: TransferRecord, txBlob: string, xrplSourceTag: number): void {
+  if (record.signingRequest.kind !== 'xrpl' && record.signingRequest.kind !== 'xaman') {
+    throw new MosaicMcpError('VALIDATION_FAILED', 'transfer does not expect an XRPL signature');
+  }
+  const signed = verifyXrplTransaction(txBlob) as unknown as Record<string, unknown>;
+  const expected = record.signingRequest.kind === 'xrpl'
+    ? record.signingRequest.unsignedTransaction
+    : record.preparedTransaction;
+  if (!expected) throw new MosaicMcpError('INTERNAL', 'prepared XRPL transfer is missing');
+  if (expected.SourceTag !== xrplSourceTag || signed.SourceTag !== xrplSourceTag) throw new XrplSourceTagMismatchError(xrplSourceTag);
+  const signatureFields = new Set(['SigningPubKey', 'TxnSignature']);
+  for (const field of Object.keys(signed)) {
+    if (!signatureFields.has(field) && !(field in expected)) throw new MosaicMcpError('VALIDATION_FAILED', `signed XRPL transfer added ${field}`);
+  }
+  for (const field of Object.keys(expected)) {
+    if (!xrplSignedFieldMatches(field, signed[field], expected[field], record.signingRequest.kind === 'xaman')) {
+      throw new MosaicMcpError('VALIDATION_FAILED', `signed XRPL transfer changed ${field}`);
+    }
+  }
+}
+
+function assertTransferStellarMatches(record: TransferRecord, signedXdr: string): void {
+  if (record.signingRequest.kind !== 'stellar') throw new MosaicMcpError('VALIDATION_FAILED', 'transfer does not expect a Stellar signature');
+  if (!stellarTransactionMatchesUnsigned(signedXdr, record.signingRequest.unsignedXdr, record.network, record.sourceAddress)) {
+    throw new MosaicMcpError('VALIDATION_FAILED', 'signed Stellar transaction differs from the prepared transfer');
+  }
+}
+
+async function reconcileTransfer(store: MosaicStore, record: TransferRecord, xrplSourceTag: number): Promise<TransferRecord> {
+  const known = record.transactionHash
+    ? record.chain === 'xrpl'
+      ? await lookupXrplTransaction(record.network, record.transactionHash)
+      : record.chain === 'stellar'
+        ? await lookupStellarTransaction(record.network, record.transactionHash)
+        : await lookupEvmTransfer(record.network, record.transactionHash)
+    : null;
+  if (known) {
+    const successful = isSuccessfulTransaction(known.resultCode);
+    const indeterminate = isUnknownTransactionResult(known.resultCode);
+    return store.updateTransfer(record.owner, record.network, record.id, {
+      status: successful ? 'confirmed' : indeterminate ? 'unknown' : 'failed',
+      ledger: known.ledger, resultCode: known.resultCode,
+      confirmedAt: indeterminate ? record.confirmedAt : new Date().toISOString(),
+      signedPayload: indeterminate ? record.signedPayload : undefined,
+      ...(successful || indeterminate
+        ? { error: undefined }
+        : { error: `Network rejected the transaction: ${known.resultCode}` }),
+    });
+  }
+  if (!record.signedPayload) return record;
+  if (record.chain === 'evm') {
+    const result = await submitEvmTransfer(record.network, record.signedPayload as `0x${string}`);
+    return store.updateTransfer(record.owner, record.network, record.id, {
+      status: 'submitted', transactionHash: result.hash, resultCode: result.resultCode, error: undefined,
+    });
+  }
+  const result = record.chain === 'xrpl'
+    ? await submitXrplTransaction(record.network, record.signedPayload, xrplSourceTag)
+    : await submitStellarTransaction(record.network, record.signedPayload);
+  const successful = isSuccessfulTransaction(result.resultCode);
+  const indeterminate = isUnknownTransactionResult(result.resultCode);
+  return store.updateTransfer(record.owner, record.network, record.id, {
+    status: successful ? 'confirmed' : indeterminate ? 'unknown' : 'failed',
+    transactionHash: result.hash, ledger: result.ledger, resultCode: result.resultCode,
+    confirmedAt: indeterminate ? record.confirmedAt : new Date().toISOString(),
+    signedPayload: indeterminate ? record.signedPayload : undefined,
+    ...(successful || indeterminate
+      ? { error: undefined }
+      : { error: `Network rejected the transaction: ${result.resultCode}` }),
+  });
+}
+
 export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   const xrplSourceTag = resolveXrplSourceTag(opts.xrplSourceTag);
   const store = opts.store ?? new MemoryStore();
@@ -346,6 +430,9 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       void store.listNonterminalDexOrders()
         .then((records) => Promise.allSettled(records.map((record) => reconcileDexOrder(store, record, xrplSourceTag))))
         .catch((error: unknown) => logger.warn?.(`DEX restart reconciliation failed: ${error instanceof Error ? error.message : String(error)}`));
+      void store.listNonterminalTransfers()
+        .then((records) => Promise.allSettled(records.map((record) => reconcileTransfer(store, record, xrplSourceTag))))
+        .catch((error: unknown) => logger.warn?.(`Transfer restart reconciliation failed: ${error instanceof Error ? error.message : String(error)}`));
     });
   }
 
@@ -384,7 +471,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
 
   const requireTradingSource = async (
     session: Session,
-    chain: 'xrpl' | 'stellar',
+    chain: AgentChain,
     source: { kind: 'root' | 'vault'; address: string; zone?: string; addressId?: string; name?: string },
   ): Promise<{ sourceKind: 'root' | 'vault'; zone?: string; addressId?: string; addressName?: string }> => {
     if (source.kind === 'root') {
@@ -404,11 +491,11 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
 
   const requireAllowedDeployment = async (
     session: Session,
-    chain: 'xrpl' | 'stellar',
+    chain: AgentChain,
     symbol: string,
     asset: { kind: 'native' } | { kind: 'issued'; code: string; issuer: string; currencyCode?: string },
   ): Promise<AssetDeployment> => {
-    const chainId = `${chain}-${session.network}`;
+    const chainId = chain === 'evm' ? (session.network === 'mainnet' ? 'base-mainnet' : 'base-sepolia') : `${chain}-${session.network}`;
     const catalog = await store.listCatalog({ chain: session.chain, address: session.address });
     const deployment = catalog.assets
       .filter((candidate) => candidate.trustState === 'allowed')
@@ -564,6 +651,179 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   );
 
   reg(
+    'transfer_prepare',
+    {
+      description: 'Prepare one owner-bound XRPL, Stellar, or Base asset transfer for local wallet/vault signing.',
+      inputSchema: {
+        token: z.string(), chain: z.enum(['xrpl', 'stellar', 'evm']),
+        source: z.object({
+          kind: z.enum(['root', 'vault']), address: z.string().min(1).max(128),
+          zone: z.string().max(64).optional(), addressId: z.string().uuid().optional(), name: z.string().max(64).optional(),
+        }),
+        destination: z.string().min(1).max(128), assetId: z.string().min(1).max(64), amount: z.string().min(1).max(80),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const chain = String(args.chain) as AgentChain;
+      const source = args.source as { kind: 'root' | 'vault'; address: string; zone?: string; addressId?: string; name?: string };
+      const destinationAddress = String(args.destination);
+      const assetId = String(args.assetId);
+      const ownership = await requireTradingSource(session, chain, source);
+      const catalog = await store.listCatalog({ chain: session.chain, address: session.address });
+      const catalogAsset = catalog.assets.find((candidate) => candidate.id === assetId && candidate.trustState === 'allowed');
+      const chainId = chain === 'evm' ? (session.network === 'mainnet' ? 'base-mainnet' : 'base-sepolia') : `${chain}-${session.network}`;
+      const deployment = catalogAsset?.deployments.find((candidate) => candidate.chainId === chainId);
+      if (!catalogAsset || !deployment) throw new MosaicMcpError('VALIDATION_FAILED', `${assetId} is not an allowed ${chain} asset`);
+      let amount: string;
+      try {
+        const requestedAmount = String(args.amount);
+        assertPositiveDecimal(requestedAmount, 'amount');
+        if ((requestedAmount.split('.')[1]?.length ?? 0) > deployment.decimals) {
+          throw new Error(`amount supports at most ${deployment.decimals} decimal places`);
+        }
+        amount = quantizeDecimal(requestedAmount, deployment.decimals);
+        assertPositiveDecimal(amount, 'amount at asset precision');
+        if (chain === 'xrpl') amount = normalizeXrplAssetAmount(
+          deployment.kind === 'native' ? { kind: 'native' } : {
+            kind: 'issued', code: deployment.symbol, issuer: deployment.address!, currencyCode: deployment.currencyCode,
+          }, amount,
+        );
+      } catch (error) {
+        throw new MosaicMcpError('VALIDATION_FAILED', error instanceof Error ? error.message : String(error));
+      }
+      if (source.address.toLowerCase() === destinationAddress.toLowerCase()) {
+        throw new MosaicMcpError('VALIDATION_FAILED', 'source and destination must differ');
+      }
+      const asset = deployment.kind === 'native'
+        ? { kind: 'native' as const }
+        : { kind: 'issued' as const, code: deployment.symbol, issuer: deployment.address!, currencyCode: deployment.currencyCode };
+      if (deployment.kind === 'issued' && !deployment.address) throw new MosaicMcpError('INTERNAL', `${assetId} deployment has no issuer or contract`);
+      const intent: TransferIntent = {
+        kind: 'transfer', chain, network: session.network, sourceAddress: source.address, ...ownership,
+        destinationAddress, assetId, asset, assetSymbol: deployment.symbol, amount,
+      };
+      const prepared = chain === 'xrpl'
+        ? await prepareXrplTransfer(intent, xrplSourceTag)
+        : chain === 'stellar'
+          ? await prepareStellarTransfer(intent)
+          : await prepareEvmTransfer(intent, deployment.decimals);
+      let signingRequest: SigningRequest;
+      let preparedTransaction: Record<string, unknown> | undefined;
+      if (prepared.kind === 'xrpl') {
+        preparedTransaction = prepared.unsignedTransaction as unknown as Record<string, unknown>;
+        if (source.kind === 'root') {
+          if (!opts.xaman?.createTransactionPayload) throw new MosaicMcpError('XAMAN_UNAVAILABLE', 'Xaman transaction signing is not configured');
+          const refs = await opts.xaman.createTransactionPayload(
+            xamanTransactionTemplate(preparedTransaction),
+            `Transfer ${amount} ${deployment.symbol} to ${destinationAddress}`,
+          );
+          signingRequest = { kind: 'xaman', ...refs };
+        } else signingRequest = { kind: 'xrpl', unsignedTransaction: preparedTransaction };
+      } else if (prepared.kind === 'stellar') {
+        signingRequest = { kind: 'stellar', unsignedXdr: prepared.unsignedXdr, networkPassphrase: prepared.networkPassphrase };
+      } else {
+        preparedTransaction = prepared.transaction as unknown as Record<string, unknown>;
+        signingRequest = { kind: 'evm', transaction: preparedTransaction };
+      }
+      const now = new Date().toISOString();
+      const transfer = await store.createTransfer({
+        id: randomUUID(), owner: { chain: session.chain, address: session.address }, signingRequest, preparedTransaction,
+        ...intent, fee: prepared.fee, feeSymbol: prepared.feeSymbol, reserveImpact: prepared.reserveImpact,
+        expiresAt: prepared.expiresAt, status: 'awaiting_signature', createdAt: now, updatedAt: now,
+      });
+      return ok({ transfer: publicTransfer(transfer), signingRequest });
+    },
+  );
+
+  reg(
+    'transfer_submit',
+    {
+      description: 'Verify the exact prepared transfer and submit or track it. Repeated calls are idempotent.',
+      inputSchema: {
+        token: z.string(), transferId: z.string().uuid(),
+        signed: z.union([
+          z.object({ kind: z.literal('xrpl'), txBlob: z.string().regex(/^[0-9A-Fa-f]+$/) }),
+          z.object({ kind: z.literal('stellar'), signedXdr: z.string().min(1) }),
+          z.object({ kind: z.literal('xaman'), payloadUuid: z.string().min(1) }),
+          z.object({ kind: z.literal('evm-raw'), serializedTransaction: z.string().regex(/^0x[0-9A-Fa-f]+$/) }),
+          z.object({ kind: z.literal('evm-wallet'), transactionHash: z.string().regex(/^0x[0-9A-Fa-f]{64}$/) }),
+        ]),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const owner = { chain: session.chain, address: session.address };
+      const record = await store.getTransfer(owner, session.network, String(args.transferId));
+      if (!record) throw new MosaicMcpError('NOT_FOUND', `transfer not found: ${String(args.transferId)}`);
+      if (record.status !== 'awaiting_signature') return ok({ transfer: publicTransfer(record) });
+      if (Date.parse(record.expiresAt) <= Date.now()) {
+        return ok({ transfer: publicTransfer(await store.updateTransfer(owner, session.network, record.id, { status: 'expired', signedPayload: undefined })) });
+      }
+      const signed = args.signed as
+        | { kind: 'xrpl'; txBlob: string } | { kind: 'stellar'; signedXdr: string } | { kind: 'xaman'; payloadUuid: string }
+        | { kind: 'evm-raw'; serializedTransaction: `0x${string}` } | { kind: 'evm-wallet'; transactionHash: string };
+      let payload: string | undefined;
+      let transactionHash: string;
+      if (signed.kind === 'xaman') {
+        if (record.signingRequest.kind !== 'xaman' || record.signingRequest.uuid !== signed.payloadUuid || !opts.xaman) {
+          throw new MosaicMcpError('VALIDATION_FAILED', 'Xaman payload does not belong to this transfer');
+        }
+        const result = await opts.xaman.getPayloadResult(signed.payloadUuid);
+        if (!result.resolved || !result.signed || !result.hex) throw new MosaicMcpError('AUTH_INVALID', 'Xaman transfer payload is not signed');
+        payload = result.hex;
+        assertTransferXrplMatches(record, payload, xrplSourceTag);
+        transactionHash = xrplTransactionHash(payload);
+      } else if (signed.kind === 'xrpl') {
+        payload = signed.txBlob;
+        assertTransferXrplMatches(record, payload, xrplSourceTag);
+        transactionHash = xrplTransactionHash(payload);
+      } else if (signed.kind === 'stellar') {
+        payload = signed.signedXdr;
+        assertTransferStellarMatches(record, payload);
+        transactionHash = stellarTransactionHash(payload, record.network);
+      } else if (signed.kind === 'evm-raw') {
+        if (record.signingRequest.kind !== 'evm') throw new MosaicMcpError('VALIDATION_FAILED', 'transfer does not expect an EVM signature');
+        await verifyEvmTransfer(signed.serializedTransaction, record.signingRequest.transaction as unknown as EvmTransactionRequest);
+        payload = signed.serializedTransaction;
+        transactionHash = evmTransactionHash(signed.serializedTransaction);
+      } else {
+        if (record.signingRequest.kind !== 'evm' || record.sourceKind !== 'root') throw new MosaicMcpError('VALIDATION_FAILED', 'transfer does not expect a root EVM wallet transaction');
+        const visible = await verifyWalletEvmTransfer(record.network, signed.transactionHash, record.signingRequest.transaction as unknown as EvmTransactionRequest);
+        if (!visible) throw new MosaicMcpError('VALIDATION_FAILED', 'wallet transaction is not visible yet; retry submission');
+        transactionHash = signed.transactionHash;
+      }
+      const submittedAt = new Date().toISOString();
+      let submitted = await store.updateTransfer(owner, session.network, record.id, {
+        status: 'submitted', signedPayload: payload, submittedAt, ...(transactionHash ? { transactionHash } : {}),
+      });
+      try {
+        if (record.chain === 'evm' && payload) {
+          const result = await submitEvmTransfer(record.network, payload as `0x${string}`);
+          submitted = await store.updateTransfer(owner, session.network, record.id, { transactionHash: result.hash, resultCode: result.resultCode, status: 'submitted' });
+          return ok({ transfer: publicTransfer(submitted) });
+        }
+        if (record.chain === 'evm') return ok({ transfer: publicTransfer(await reconcileTransfer(store, submitted, xrplSourceTag)) });
+        const result = record.chain === 'xrpl'
+          ? await submitXrplTransaction(record.network, payload!, xrplSourceTag)
+          : await submitStellarTransaction(record.network, payload!);
+        const successful = isSuccessfulTransaction(result.resultCode);
+        const next = await store.updateTransfer(owner, session.network, record.id, {
+          status: successful ? 'confirmed' : 'failed', transactionHash: result.hash, ledger: result.ledger,
+          resultCode: result.resultCode, confirmedAt: new Date().toISOString(), signedPayload: undefined,
+          ...(successful ? { error: undefined } : { error: `Network rejected the transaction: ${result.resultCode}` }),
+        });
+        return ok({ transfer: publicTransfer(next) });
+      } catch (error) {
+        const next = await store.updateTransfer(owner, session.network, record.id, {
+          status: 'unknown', error: error instanceof Error ? error.message : String(error), signedPayload: payload,
+        });
+        return ok({ transfer: publicTransfer(next) });
+      }
+    },
+  );
+
+  reg(
     'dex_order_prepare',
     {
       description: 'Prepare one owner-bound XRPL or Stellar limit order for local wallet/vault signing.',
@@ -610,7 +870,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         throw new MosaicMcpError('VALIDATION_FAILED', error instanceof Error ? error.message : String(error));
       }
       const intent: DexOrderIntent = {
-        chain, network: session.network, sourceAddress: source.address, ...ownership,
+        kind: 'order', chain, network: session.network, sourceAddress: source.address, ...ownership,
         side: String(args.side) as 'buy' | 'sell', base, quote,
         baseSymbol: String(args.baseSymbol), quoteSymbol: String(args.quoteSymbol), amount, limitPrice,
       };
@@ -802,7 +1062,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       description: 'List Mosaic-submitted activity for the authenticated wallet and network.',
       inputSchema: {
         token: z.string(), after: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(250).optional(),
-        chain: z.enum(['xrpl', 'stellar']).optional(), status: orderStatusSchema.optional(), sourceAddress: z.string().optional(),
+        chain: z.enum(['xrpl', 'stellar', 'evm']).optional(), status: z.string().max(40).optional(), sourceAddress: z.string().optional(),
       },
     },
     async (args) => {
@@ -811,17 +1071,21 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         .filter((record) => record.owner.chain === session.chain && record.owner.address === session.address && record.network === session.network)
         .slice(0, 20);
       if (pending.length > 0) await Promise.allSettled(pending.map((record) => reconcileDexOrder(store, record, xrplSourceTag)));
+      const pendingTransfers = (await store.listNonterminalTransfers())
+        .filter((record) => record.owner.chain === session.chain && record.owner.address === session.address && record.network === session.network)
+        .slice(0, 20);
+      if (pendingTransfers.length > 0) await Promise.allSettled(pendingTransfers.map((record) => reconcileTransfer(store, record, xrplSourceTag)));
       let records = await store.listActivity(
         { chain: session.chain, address: session.address }, session.network,
         {
           after: args.after === undefined ? undefined : Number(args.after),
           limit: args.limit === undefined ? undefined : Number(args.limit),
-          chain: args.chain as 'xrpl' | 'stellar' | undefined,
-          status: args.status as OrderStatus | undefined,
+          chain: args.chain as AgentChain | undefined,
+          status: args.status === undefined ? undefined : String(args.status),
           sourceAddress: args.sourceAddress === undefined ? undefined : String(args.sourceAddress),
         },
       );
-      return ok({ activities: records.map(publicActivity) });
+      return ok({ activities: records.map((record) => record.kind === 'transfer' ? publicTransfer(record) : publicActivity(record)) });
     },
   );
 
@@ -830,9 +1094,12 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
     { description: 'Fetch one Mosaic activity record.', inputSchema: { token: z.string(), id: z.string().uuid() } },
     async (args) => {
       const session = await requireSession(args);
-      const record = await store.getDexOrder({ chain: session.chain, address: session.address }, session.network, String(args.id));
-      if (!record) throw new MosaicMcpError('NOT_FOUND', `activity not found: ${String(args.id)}`);
-      return ok({ activity: publicActivity(record) });
+      const owner = { chain: session.chain, address: session.address };
+      const order = await store.getDexOrder(owner, session.network, String(args.id));
+      if (order) return ok({ activity: publicActivity(order) });
+      const transfer = await store.getTransfer(owner, session.network, String(args.id));
+      if (!transfer) throw new MosaicMcpError('NOT_FOUND', `activity not found: ${String(args.id)}`);
+      return ok({ activity: publicTransfer(transfer) });
     },
   );
 

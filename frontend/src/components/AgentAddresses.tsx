@@ -5,6 +5,7 @@ import type { ZoneChainSetting } from '../api';
 import { useBalances } from '../contexts/BalancesContext';
 import { formatAmount } from './balances/format';
 import type { DerivedVaultAddress } from '../zone/unlock';
+import AccountAddress from './address/AccountAddress';
 
 export default function AgentAddressCards({
   addresses,
@@ -76,7 +77,7 @@ export default function AgentAddressCards({
               <div className="address-item" key={item.id}>
                 <div className="address-item-head">
                   <span className="address-name">{item.name}</span>
-                  <code className="mono address-value">{item.address}</code>
+                  <AccountAddress chain={item.chain} network={group.network} address={item.address} className="mono address-value">{item.address}</AccountAddress>
                   <button type="button" className="address-copy" title="Copy address" aria-label={`Copy ${item.name} address`} onClick={() => void copy(item.id, item.address)}>
                     {copied === item.id ? <Check size={15} strokeWidth={2} className="copy-done" aria-hidden="true" /> : <Copy size={15} strokeWidth={1.75} aria-hidden="true" />}
                   </button>

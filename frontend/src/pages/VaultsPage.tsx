@@ -7,6 +7,7 @@ import Banner from '../components/ui/Banner';
 import StatusDot from '../components/ui/StatusDot';
 import { useSession } from '../contexts/SessionContext';
 import { useVaults, type VaultState } from '../contexts/VaultContext';
+import { vaultDisplayName } from '../vaultName';
 import { exportLatestVaultBackup } from '../zone/export';
 
 const CreateVaultModal = lazy(() => import('../components/ZonePanel').then((module) => ({ default: module.CreateVaultModal })));
@@ -92,7 +93,7 @@ export default function VaultsPage() {
                 <article className="zone-card vault-card" key={vault.zone}>
                   <button type="button" className="vault-toggle" aria-expanded={open} onClick={() => toggle(vault)}>
                     <ChevronRight size={16} strokeWidth={2} className={`chevron${open ? ' open' : ''}`} aria-hidden="true" />
-                    <span className="vault-name mono">{vault.zone === 'default' ? 'Default' : vault.zone}</span>
+                    <span className="vault-name mono">{vaultDisplayName(vault.zone)}</span>
                     <span className="vault-badges">
                       {activeVault?.zone === vault.zone && <span className="active-vault-badge">Active</span>}
                       <StatusDot tone={vault.status === 'unlocked' ? 'ok' : 'idle'}>{vault.status}</StatusDot>
@@ -166,7 +167,7 @@ export default function VaultsPage() {
       {createOpen && <Suspense fallback={null}><CreateVaultModal onClose={() => setCreateOpen(false)} /></Suspense>}
       {chainModalVault && (
         <ChainSettingsModal
-          title={`Chains · ${chainModalVault.zone === 'default' ? 'Default' : chainModalVault.zone}`}
+          title={`Chains · ${vaultDisplayName(chainModalVault.zone)}`}
           description="Copied from your global settings when the vault was created; changes here affect only this vault."
           options={chainModalVault.chains.map((chain) => ({
             key: chain.chainKey,

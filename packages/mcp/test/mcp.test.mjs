@@ -131,6 +131,32 @@ test('MemoryStore isolates immutable agent artifacts and versions encrypted agen
   assert.deepEqual(await store.listBlobKinds(zone.id), [{ kind: 'agent-secrets', version: 1 }]);
 });
 
+test('MemoryStore assigns one ordered activity cursor across orders and transfers', async () => {
+  const store = new MemoryStore();
+  const owner = { chain: 'evm', address: evmAccount.address };
+  const now = new Date().toISOString();
+  const orderId = crypto.randomUUID();
+  await store.createDexOrder({
+    kind: 'order', id: orderId, orderId, owner, network: 'testnet', chain: 'stellar', sourceAddress: stellarAddress,
+    sourceKind: 'vault', side: 'sell', action: 'sell', base: { kind: 'native' }, quote: { kind: 'native' },
+    baseSymbol: 'XLM', quoteSymbol: 'XLM', amount: '1', limitPrice: '1', quoteTotal: '1', fee: '0.00001',
+    feeSymbol: 'XLM', reserveImpact: null, expiresAt: new Date(Date.now() + 60_000).toISOString(), status: 'open',
+    filledAmount: '0', remainingAmount: '1', createdAt: now, updatedAt: now,
+    signingRequest: { kind: 'stellar', unsignedXdr: 'xdr', networkPassphrase: 'test' },
+  });
+  const transfer = await store.createTransfer({
+    kind: 'transfer', id: crypto.randomUUID(), owner, network: 'testnet', chain: 'evm', sourceAddress: evmAccount.address,
+    sourceKind: 'root', destinationAddress: '0x0000000000000000000000000000000000000001', assetId: 'eth',
+    asset: { kind: 'native' }, assetSymbol: 'ETH', amount: '1', fee: '0.001', feeSymbol: 'ETH', reserveImpact: null,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(), status: 'awaiting_signature', createdAt: now, updatedAt: now,
+    signingRequest: { kind: 'evm', transaction: {} },
+  });
+  const activity = await store.listActivity(owner, 'testnet');
+  assert.equal(activity[0].kind, 'transfer');
+  assert.ok(transfer.cursor > activity[1].cursor);
+  assert.equal((await store.listActivity(owner, 'testnet', { chain: 'evm' })).length, 1);
+});
+
 test('MemoryStore binds public vault addresses immutably and isolates paginated activity', async () => {
   const store = new MemoryStore();
   const owner = { chain: 'evm', address: evmAccount.address };

@@ -245,4 +245,35 @@ export const MIGRATIONS: string[] = [
     ON CONFLICT (root_chain, root_address)
     DO UPDATE SET chain_setup_completed = TRUE;
   `,
+  `
+  CREATE SEQUENCE wallet_activity_cursor_seq;
+  SELECT setval('wallet_activity_cursor_seq', COALESCE((SELECT MAX(cursor) FROM dex_activity_events), 0) + 1, false);
+  ALTER TABLE dex_activity_events ALTER COLUMN cursor SET DEFAULT nextval('wallet_activity_cursor_seq');
+
+  CREATE TABLE transfers (
+    id UUID PRIMARY KEY,
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    chain TEXT NOT NULL CHECK (chain IN ('evm','xrpl','stellar')),
+    source_address TEXT NOT NULL,
+    status TEXT NOT NULL,
+    record JSONB NOT NULL,
+    signed_payload TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    activity_cursor BIGINT NOT NULL UNIQUE
+  );
+  CREATE INDEX transfers_owner_cursor_idx ON transfers (root_chain, root_address, network, activity_cursor DESC);
+  CREATE INDEX transfers_nonterminal_idx ON transfers (status, updated_at) WHERE status IN ('submitted','unknown');
+
+  CREATE TABLE transfer_activity_events (
+    cursor BIGINT PRIMARY KEY DEFAULT nextval('wallet_activity_cursor_seq'),
+    transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    record JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX transfer_activity_events_transfer_idx ON transfer_activity_events (transfer_id, cursor DESC);
+  `,
 ];

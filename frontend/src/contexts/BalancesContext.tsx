@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -58,6 +59,7 @@ interface BalancesValue {
   families: FamilyBalances[];
   /** Per-account balances for any address in the current portfolio request. */
   accountBalances: (chain: AgentChain, address: string) => AccountBalances | null;
+  refresh: () => Promise<void>;
 }
 
 const BalancesContext = createContext<BalancesValue | null>(null);
@@ -77,6 +79,7 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
   const { assets, chains } = useCatalog();
   const { network } = useSettings();
   const [state, setState] = useState<Partial<Record<AgentChain, FamilyState>>>({});
+  const feedsRef = useRef<Partial<Record<AgentChain, { refresh(): Promise<unknown> }>>>({});
 
   const configs = useMemo((): FamilyConfig[] => {
     const unlocked = vaults.filter((vault) => vault.status === 'unlocked');
@@ -153,6 +156,7 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
         try {
           const { createBalancesFeed } = await loadChainModule(chain);
           const feed = createBalancesFeed(request);
+          feedsRef.current[chain] = feed;
           const unsubscribe = feed.subscribe((event) => {
             if (event.type === 'balances') {
               update(chain, { snapshot: event.balances, error: null });
@@ -165,6 +169,7 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
           if (cancelled) {
             unsubscribe();
             feed.stop();
+            delete feedsRef.current[chain];
             return;
           }
           cleanups.push(() => {
@@ -216,7 +221,11 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
     [accounts],
   );
 
-  const value = useMemo(() => ({ families, accountBalances }), [families, accountBalances]);
+  const refresh = useCallback(async () => {
+    await Promise.allSettled(Object.values(feedsRef.current).map((feed) => feed?.refresh()));
+  }, []);
+
+  const value = useMemo(() => ({ families, accountBalances, refresh }), [families, accountBalances, refresh]);
   return <BalancesContext.Provider value={value}>{children}</BalancesContext.Provider>;
 }
 

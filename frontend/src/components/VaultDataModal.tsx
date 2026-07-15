@@ -4,6 +4,8 @@ import type { ZoneAddressItem } from '../api';
 import Banner from './ui/Banner';
 import Modal from './ui/Modal';
 import { readVaultData, type VaultDataSnapshot } from '../zone/vaultData';
+import AccountAddress from './address/AccountAddress';
+import { vaultDisplayName } from '../vaultName';
 
 type LoadState =
   | { phase: 'loading' }
@@ -42,11 +44,15 @@ export default function VaultDataModal({
   }, [commitment, network, rootAddress, rootChain, token, zone]);
 
   return (
-    <Modal title={<>Vault data · <span className="mono">{zone === 'default' ? 'Default' : zone}</span></>} onClose={onClose}>
+    <Modal title={<>Vault data · <span className="mono">{vaultDisplayName(zone)}</span></>} onClose={onClose}>
       <section className="vault-data-section">
         <h4>Registered addresses</h4>
         <p className="tile-note">Public address records allocated for this vault. Derived addresses are calculated locally while the vault is unlocked.</p>
-        <pre className="vault-data-json" aria-label="Registered addresses JSON">{JSON.stringify(registeredAddresses, null, 2)}</pre>
+        <div className="vault-data-addresses">
+          {registeredAddresses.map((item) => <div key={item.id}><span>{item.name} · {item.chain.toUpperCase()}</span>{item.address
+            ? <AccountAddress chain={item.chain} network={network} address={item.address} className="mono">{item.address}</AccountAddress>
+            : <span className="tile-note">Not bound</span>}</div>)}
+        </div>
       </section>
       <section className="vault-data-section">
         <h4>Encrypted vault data</h4>

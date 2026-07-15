@@ -13,6 +13,17 @@ import type {
 import { fetchBalances } from './balances.js';
 
 export { EVM_RPC_ENDPOINTS, fetchBalances } from './balances.js';
+export {
+  evmTransactionHash,
+  lookupEvmTransfer,
+  prepareEvmTransfer,
+  signEvmTransfer,
+  submitEvmTransfer,
+  verifyEvmTransfer,
+  verifyWalletEvmTransfer,
+  type EvmTransactionRequest,
+  type PreparedEvmTransfer,
+} from './transfers.js';
 
 /** EVM DEX order books are not supported yet. */
 export function createAdapter(): DexAdapter {

@@ -19,6 +19,7 @@ import { WalletSettingsProvider } from './contexts/WalletSettingsContext';
 import { ActivityProvider } from './contexts/ActivityContext';
 import SettingsLayout from './pages/SettingsLayout';
 import VaultsPage from './pages/VaultsPage';
+import TransferPage from './pages/TransferPage';
 
 if (import.meta.env.DEV) {
   console.info(
@@ -62,6 +63,7 @@ const router = createBrowserRouter([
       { path: 'dex/:chain/:pair', element: <DexPage /> },
       { path: 'activity', element: <ActivityPage /> },
       { path: 'assets', element: <AssetsPage /> },
+      { path: 'transfer', element: <TransferPage /> },
       { path: 'agents', element: <AgentsPage /> },
       { path: 'vaults', element: <VaultsPage /> },
       {

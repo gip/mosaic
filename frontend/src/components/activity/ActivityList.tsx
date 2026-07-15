@@ -1,15 +1,19 @@
-import type { ActivityRecord } from '@mosaic/chain-core';
+import type { WalletActivityRecord } from '@mosaic/chain-core';
 import { ActivityStatus } from './ActivityTable';
 import { activityExplorerUrl, activityIntent, activityStatusLabel, shortTransactionId } from './activityPresentation';
+import { explorerName } from '../address/explorers';
+import AccountAddress from '../address/AccountAddress';
 
-export default function ActivityList({ activities }: { activities: ActivityRecord[] }) {
-  if (activities.length === 0) return <p className="activity-empty">No Mosaic trading activity yet.</p>;
+export default function ActivityList({ activities }: { activities: WalletActivityRecord[] }) {
+  if (activities.length === 0) return <p className="activity-empty">No Mosaic activity yet.</p>;
 
   return <div className="activity-groups">
     {activities.map((activity) => {
-      const intent = activityIntent(activity);
+      const intent = activity.kind === 'transfer'
+        ? { title: `Transfer ${activity.amount} ${activity.assetSymbol}`, detail: `To ${activity.destinationAddress}` }
+        : activityIntent(activity);
       const explorerUrl = activityExplorerUrl(activity);
-      const explorerName = activity.chain === 'xrpl' ? 'XRPL Explorer' : 'Stellar Expert';
+      const explorer = explorerName(activity.chain);
       const status = `${activityStatusLabel(activity.status)} · ${networkLabel(activity)}`;
       return <article className="activity-group" key={activity.id}>
         <div className="activity-row">
@@ -21,6 +25,7 @@ export default function ActivityList({ activities }: { activities: ActivityRecor
               <ActivityStatus activity={activity} />
             </div>
             <span className="activity-summary-text">{intent.detail}</span>
+            <span className="activity-summary-text">From <AccountAddress chain={activity.chain} network={activity.network} address={activity.sourceAddress} className="mono">{activity.sourceAddress}</AccountAddress></span>
             {activity.error && <span className="activity-summary-error">{activity.error}</span>}
           </div>
           <div className="activity-tx-list">
@@ -32,11 +37,11 @@ export default function ActivityList({ activities }: { activities: ActivityRecor
                     href={explorerUrl}
                     target="_blank"
                     rel="noreferrer"
-                    title={`View ${activity.transactionHash} on ${explorerName}`}
+                    title={`View ${activity.transactionHash} on ${explorer}`}
                   >
                     {shortTransactionId(activity.transactionHash)}
                   </a>
-                  <span className="activity-tx-desc" title={`${status} · View on ${explorerName}`}>{status}</span>
+                  <span className="activity-tx-desc" title={`${status} · View on ${explorer}`}>{status}</span>
                 </div>
               : <div className="activity-tx-line">
                   <span className="activity-tx-pending">Pending</span>
@@ -49,8 +54,9 @@ export default function ActivityList({ activities }: { activities: ActivityRecor
   </div>;
 }
 
-function networkLabel(activity: ActivityRecord): string {
-  return `${activity.chain === 'xrpl' ? 'XRPL' : 'Stellar'} ${activity.network === 'mainnet' ? 'Mainnet' : 'Testnet'}`;
+function networkLabel(activity: WalletActivityRecord): string {
+  const chain = activity.chain === 'xrpl' ? 'XRPL' : activity.chain === 'stellar' ? 'Stellar' : 'Base';
+  return `${chain} ${activity.network === 'mainnet' ? 'Mainnet' : 'Testnet'}`;
 }
 
 function timeAgo(value: string): string {

@@ -22,6 +22,7 @@
     "@mosaic/catalog": "workspace:*",
     "@mosaic/chain-core": "workspace:*",
     "@mosaic/local-runtime": "workspace:*",
+    "@mosaic/evm": "workspace:*",
     "@mosaic/stellar": "workspace:*",
     "@mosaic/xrpl": "workspace:*",
     "@mosaic/zone-keys": "workspace:*",
