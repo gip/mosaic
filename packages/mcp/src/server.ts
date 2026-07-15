@@ -193,36 +193,53 @@ function subtractDecimals(left: string, right: string): string {
   return fraction ? `${text.slice(0, -scale)}.${fraction}` : text.slice(0, -scale);
 }
 
+function isSuccessfulTransaction(resultCode: string): boolean {
+  return resultCode === 'tesSUCCESS' || resultCode === 'success';
+}
+
+function isUnknownTransactionResult(resultCode: string): boolean {
+  return resultCode === 'unknown';
+}
+
 async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord, xrplSourceTag: number): Promise<DexOrderRecord> {
-  if (['submitted', 'unknown'].includes(record.status) && record.signedPayload) {
+  const signedPayload = record.signedPayload;
+  const canResubmit = ['submitted', 'unknown'].includes(record.status) && signedPayload !== undefined;
+  const legacyUnknownFailure = record.status === 'failed' && record.resultCode === 'unknown' && record.transactionHash !== undefined;
+  if (canResubmit || legacyUnknownFailure) {
     const known = record.transactionHash
       ? record.chain === 'xrpl'
         ? await lookupXrplTransaction(record.network, record.transactionHash)
         : await lookupStellarTransaction(record.network, record.transactionHash)
       : null;
     if (known) {
-      const successful = known.resultCode === 'tesSUCCESS' || known.resultCode === 'success';
+      const successful = isSuccessfulTransaction(known.resultCode);
+      const indeterminate = isUnknownTransactionResult(known.resultCode);
       const offerId = record.action === 'cancel'
         ? record.offerId
         : record.chain === 'xrpl' ? String(record.preparedTransaction?.Sequence ?? '') || undefined : record.offerId;
       const next = await store.updateDexOrder(record.owner, record.network, record.id, {
-        status: successful ? (record.action === 'cancel' ? 'cancelled' : offerId ? 'open' : 'confirmed') : 'failed',
+        status: successful
+          ? (record.action === 'cancel' ? 'cancelled' : offerId ? 'open' : 'confirmed')
+          : indeterminate ? 'unknown' : 'failed',
         ledger: known.ledger,
         resultCode: known.resultCode,
         offerId,
-        confirmedAt: new Date().toISOString(),
-        signedPayload: undefined,
-        ...(successful ? { error: undefined } : { error: `Network rejected the transaction: ${known.resultCode}` }),
+        confirmedAt: indeterminate ? record.confirmedAt : new Date().toISOString(),
+        signedPayload: indeterminate ? record.signedPayload : undefined,
+        ...(successful || indeterminate
+          ? { error: undefined }
+          : { error: `Network rejected the transaction: ${known.resultCode}` }),
       });
       if (successful && record.action === 'cancel' && record.orderId !== record.id) {
         await store.updateDexOrder(record.owner, record.network, record.orderId, { status: 'cancelled', confirmedAt: new Date().toISOString() });
       }
       return next;
     }
+    if (!canResubmit) return record;
     if (record.chain === 'xrpl') {
       try {
         assertPreparedXrplSourceTag(record, xrplSourceTag);
-        const signed = verifyXrplTransaction(record.signedPayload);
+        const signed = verifyXrplTransaction(signedPayload);
         if (signed.SourceTag !== xrplSourceTag) throw new XrplSourceTagMismatchError(xrplSourceTag);
       } catch (error) {
         if (error instanceof XrplSourceTagMismatchError) return failSourceTagRecord(store, record, error);
@@ -230,9 +247,10 @@ async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord, xrp
       }
     }
     const result = record.chain === 'xrpl'
-      ? await submitXrplTransaction(record.network, record.signedPayload, xrplSourceTag)
-      : await submitStellarTransaction(record.network, record.signedPayload);
-    const successful = result.resultCode === 'tesSUCCESS' || result.resultCode === 'success';
+      ? await submitXrplTransaction(record.network, signedPayload, xrplSourceTag)
+      : await submitStellarTransaction(record.network, signedPayload);
+    const successful = isSuccessfulTransaction(result.resultCode);
+    const indeterminate = isUnknownTransactionResult(result.resultCode);
     const stellarResult = record.chain === 'stellar'
       ? result as Awaited<ReturnType<typeof submitStellarTransaction>>
       : undefined;
@@ -244,16 +262,20 @@ async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord, xrp
     const fullyFilled = stellarResult?.fullyFilled ?? false;
     const remainingAmount = fullyFilled ? '0' : stellarResult?.remainingAmount ?? record.remainingAmount;
     const next = await store.updateDexOrder(record.owner, record.network, record.id, {
-      status: successful ? (record.action === 'cancel' ? 'cancelled' : fullyFilled ? 'filled' : 'open') : 'failed',
+      status: successful
+        ? (record.action === 'cancel' ? 'cancelled' : fullyFilled ? 'filled' : 'open')
+        : indeterminate ? 'unknown' : 'failed',
       transactionHash: result.hash,
       ledger: result.ledger,
       resultCode: result.resultCode,
       offerId,
       remainingAmount,
       filledAmount: subtractDecimals(record.amount, remainingAmount),
-      confirmedAt: new Date().toISOString(),
-      signedPayload: undefined,
-      ...(successful ? { error: undefined } : { error: `Network rejected the transaction: ${result.resultCode}` }),
+      confirmedAt: indeterminate ? record.confirmedAt : new Date().toISOString(),
+      signedPayload: indeterminate ? signedPayload : undefined,
+      ...(successful || indeterminate
+        ? { error: undefined }
+        : { error: `Network rejected the transaction: ${result.resultCode}` }),
     });
     if (successful && record.action === 'cancel' && record.orderId !== record.id) {
       await store.updateDexOrder(record.owner, record.network, record.orderId, {
@@ -683,7 +705,8 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         const stellarResult = record.chain === 'stellar'
           ? result as Awaited<ReturnType<typeof submitStellarTransaction>>
           : undefined;
-        const successful = result.resultCode === 'tesSUCCESS' || result.resultCode === 'success';
+        const successful = isSuccessfulTransaction(result.resultCode);
+        const indeterminate = isUnknownTransactionResult(result.resultCode);
         const expectedXrpl = record.preparedTransaction;
         const offerId = record.action === 'cancel'
           ? record.offerId
@@ -698,12 +721,15 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         const next = await store.updateDexOrder(owner, session.network, record.id, {
           status: successful
             ? (record.action === 'cancel' ? 'cancelled' : fullyFilled ? 'filled' : remainingAmount && remainingAmount !== record.amount ? 'partially_filled' : 'open')
-            : 'failed',
+            : indeterminate ? 'unknown' : 'failed',
           transactionHash: result.hash, ledger: result.ledger, resultCode: result.resultCode, offerId,
           filledAmount: stellarFilled ?? record.filledAmount,
           remainingAmount: fullyFilled ? '0' : remainingAmount ?? record.remainingAmount,
-          confirmedAt: new Date().toISOString(), signedPayload: undefined,
-          ...(successful ? {} : { error: `Network rejected the transaction: ${result.resultCode}` }),
+          confirmedAt: indeterminate ? record.confirmedAt : new Date().toISOString(),
+          signedPayload: indeterminate ? payload : undefined,
+          ...(successful || indeterminate
+            ? { error: undefined }
+            : { error: `Network rejected the transaction: ${result.resultCode}` }),
         });
         if (successful && record.action === 'cancel' && record.orderId !== record.id) {
           await store.updateDexOrder(owner, session.network, record.orderId, {

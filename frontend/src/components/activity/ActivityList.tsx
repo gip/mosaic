@@ -1,6 +1,6 @@
 import type { ActivityRecord } from '@mosaic/chain-core';
 import { ActivityStatus } from './ActivityTable';
-import { activityExplorerUrl, activityIntent, shortTransactionId } from './activityPresentation';
+import { activityExplorerUrl, activityIntent, activityStatusLabel, shortTransactionId } from './activityPresentation';
 
 export default function ActivityList({ activities }: { activities: ActivityRecord[] }) {
   if (activities.length === 0) return <p className="activity-empty">No Mosaic trading activity yet.</p>;
@@ -10,6 +10,7 @@ export default function ActivityList({ activities }: { activities: ActivityRecor
       const intent = activityIntent(activity);
       const explorerUrl = activityExplorerUrl(activity);
       const explorerName = activity.chain === 'xrpl' ? 'XRPL Explorer' : 'Stellar Expert';
+      const status = `${activityStatusLabel(activity.status)} · ${networkLabel(activity)}`;
       return <article className="activity-group" key={activity.id}>
         <div className="activity-row">
           <div className="activity-summary-main">
@@ -23,7 +24,7 @@ export default function ActivityList({ activities }: { activities: ActivityRecor
             {activity.error && <span className="activity-summary-error">{activity.error}</span>}
           </div>
           <div className="activity-tx-list">
-            <span className="activity-field-label">Transaction ID</span>
+            <span className="activity-field-label">Transaction ID / Status</span>
             {activity.transactionHash && explorerUrl
               ? <div className="activity-tx-line">
                   <a
@@ -35,11 +36,11 @@ export default function ActivityList({ activities }: { activities: ActivityRecor
                   >
                     {shortTransactionId(activity.transactionHash)}
                   </a>
-                  <span className="activity-tx-desc">{explorerName} · {networkLabel(activity)}</span>
+                  <span className="activity-tx-desc" title={`${status} · View on ${explorerName}`}>{status}</span>
                 </div>
               : <div className="activity-tx-line">
                   <span className="activity-tx-pending">Pending</span>
-                  <span className="activity-tx-desc">A transaction ID appears after submission</span>
+                  <span className="activity-tx-desc" title={status}>{status}</span>
                 </div>}
           </div>
         </div>

@@ -29,3 +29,8 @@ export function activityIntent(activity: ActivityRecord): { title: string; detai
 export function shortTransactionId(value: string): string {
   return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
+
+export function activityStatusLabel(status: ActivityRecord['status']): string {
+  const label = status.replaceAll('_', ' ');
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
+}

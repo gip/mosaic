@@ -175,8 +175,7 @@ export async function lookupXrplTransaction(
   await client.connect();
   try {
     const response = await client.request({ command: 'tx', transaction: hash });
-    const meta = response.result.meta;
-    const resultCode = typeof meta === 'object' && meta && 'TransactionResult' in meta ? String(meta.TransactionResult) : 'unknown';
+    const resultCode = transactionResult(response.result.meta ?? response.result.meta_blob);
     return { hash, ledger: response.result.ledger_index?.toString(), resultCode };
   } catch (error) {
     if ((error as { data?: { error?: string } }).data?.error === 'txnNotFound') return null;
@@ -199,16 +198,27 @@ export async function submitXrplTransaction(
   await client.connect();
   try {
     const result = await client.submitAndWait(txBlob);
-    const meta = result.result.meta;
-    const resultCode = typeof meta === 'object' && meta && 'TransactionResult' in meta
-      ? String(meta.TransactionResult)
-      : 'unknown';
+    const resultCode = transactionResult(result.result.meta ?? result.result.meta_blob);
     return { hash: String(result.result.hash), ledger: result.result.ledger_index?.toString(), resultCode };
   } finally { await client.disconnect(); }
 }
 
 function remainingAmount(amount: Amount): string {
   return typeof amount === 'string' ? dropsToXrp(amount) : amount.value;
+}
+
+function transactionResult(meta: unknown): string {
+  let decoded = meta;
+  if (typeof meta === 'string') {
+    try {
+      decoded = decode(meta);
+    } catch {
+      return 'unknown';
+    }
+  }
+  if (typeof decoded !== 'object' || decoded === null || !('TransactionResult' in decoded)) return 'unknown';
+  const result = decoded.TransactionResult;
+  return typeof result === 'string' ? result : 'unknown';
 }
 
 /** null means the validated ledger no longer contains the offer. */
