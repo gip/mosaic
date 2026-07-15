@@ -36,6 +36,7 @@ export {
   xrplTransactionHash,
   type PreparedXrplOrder,
 } from './orders.js';
+export { prepareXrplTransfer, type PreparedXrplTransfer } from './transfers.js';
 
 /** Streaming XRPL order-book feed (WS `subscribe` books + debounced `book_offers`). */
 export function createOrderBookFeed(

@@ -26,6 +26,7 @@ import { useSettings } from '../contexts/SettingsContext';
 import { useSession } from '../contexts/SessionContext';
 import { useVaults } from '../contexts/VaultContext';
 import { localBridge } from '../local/bridge';
+import AccountAddress from '../components/address/AccountAddress';
 
 const SERVICE_LABELS: Record<ServiceStatus['name'], string> = {
   'mosaic-guardian': 'Mosaic Guardian',
@@ -427,7 +428,7 @@ export default function AgentsPage() {
           {guardian?.detail && <p className="tile-note">{guardian.detail}</p>}
           {guardian?.evmAddress && (
             <div className="local-service-row">
-              <code className="mono address-value">{guardian.evmAddress}</code>
+              <AccountAddress chain="evm" network={network} address={guardian.evmAddress} className="mono address-value">{guardian.evmAddress}</AccountAddress>
               <button type="button" className="btn-sm" onClick={() => void copyGuardian()}><Copy size={14} /> {copied ? 'Copied' : 'Copy'}</button>
             </div>
           )}

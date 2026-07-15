@@ -4,6 +4,7 @@ import Modal from './ui/Modal';
 import { useSession } from '../contexts/SessionContext';
 import { useSettings } from '../contexts/SettingsContext';
 import { useVaults } from '../contexts/VaultContext';
+import { vaultDisplayName } from '../vaultName';
 import { useWalletSettings } from '../contexts/WalletSettingsContext';
 import { cachedZoneNames, dropCachedZoneSecretsForNetwork } from '../zone/cache';
 
@@ -120,7 +121,7 @@ export default function MainnetLockReminder() {
   }
   if (!prompt || !armed) return null;
 
-  const names = prompt.zones.map((zone) => (zone === 'default' ? 'Default' : zone)).join(', ');
+  const names = prompt.zones.map(vaultDisplayName).join(', ');
 
   return (
     <Modal title="Lock Mainnet vaults?" onClose={keepUnlocked}>

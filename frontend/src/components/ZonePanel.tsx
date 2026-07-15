@@ -19,6 +19,7 @@ import {
 import { directCeremonySigner, xamanCeremonySigner } from '../zone/signers';
 import { unlockWithPassphrase, unlockWithSignature } from '../zone/unlock';
 import { createTestnetVault, unlockServerTestnetVault, unlockTestnetVault } from '../zone/testnet';
+import { vaultDisplayName } from '../vaultName';
 
 const VAULT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -48,7 +49,7 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
     <section className="zone-panel">
       <div className="zone-head vault-page-head">
         <div>
-          <h2>{activeVault ? <>Vault <span className="mono">{activeVault.zone === 'default' ? 'Default' : activeVault.zone}</span> · {session.network}</> : 'Vaults'}</h2>
+          <h2>{activeVault ? <>Vault <span className="mono">{vaultDisplayName(activeVault.zone)}</span> · {session.network}</> : 'Vaults'}</h2>
         </div>
         <button type="button" onClick={onCreate}>Create vault</button>
       </div>
@@ -57,9 +58,9 @@ export default function ZonePanel({ onCreate }: { onCreate: () => void }) {
       {metadataWarning && <Banner tone="warn">{metadataWarning}</Banner>}
       {!loading && !error && !activeVault && (
         <div className="zone-card">
-          <h3>Create your first vault</h3>
-          <p>A vault generates deterministic agent addresses while its secret remains encrypted outside this browser.</p>
-          <button type="button" onClick={onCreate}>Create vault</button>
+          <h3>Create a vault to start trading</h3>
+          <p>Before placing your first trade, create a vault. It generates deterministic agent addresses while its secret remains encrypted outside this browser.</p>
+          <button type="button" onClick={onCreate}>Create trading vault</button>
         </div>
       )}
       {activeVault?.status === 'locked' && (
@@ -95,7 +96,7 @@ export function CreateVaultModal({ onClose }: { onClose: () => void }) {
   const { session } = useSession();
   const { chains } = useCatalog();
   const { vaults, registerCreated } = useVaults();
-  const [name, setName] = useState(vaults.length === 0 ? 'default' : '');
+  const [name, setName] = useState(vaults.length === 0 ? 'trading' : '');
   const [passphrase, setPassphrase] = useState('');
   const [confirm, setConfirm] = useState('');
   const [step, setStep] = useState<string | null>(null);
@@ -230,7 +231,7 @@ export function UnlockVaultModal({ vault, onClose }: { vault: VaultState; onClos
 
   return (
     <>
-      <Modal title={<>Unlock vault <span className="mono">{vault.zone === 'default' ? 'Default' : vault.zone}</span></>} onClose={onClose}>
+      <Modal title={<>Unlock vault <span className="mono">{vaultDisplayName(vault.zone)}</span></>} onClose={onClose}>
         {phase === 'signature' && <><ProgressSteps running step="One backup signature unlocks this vault" /><p className="tile-note">Waiting for wallet signature…</p></>}
         {phase !== 'signature' && (
           <>

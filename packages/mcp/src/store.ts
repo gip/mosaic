@@ -13,7 +13,7 @@ import {
 } from '@mosaic/catalog';
 import type { AgentChain, Network, RootChain } from '@mosaic/zone-keys';
 import type { AgentArtifactManifest } from '@mosaic/local-runtime';
-import type { ActivityRecord, OrderStatus } from '@mosaic/chain-core';
+import type { ActivityRecord, TransferActivityRecord } from '@mosaic/chain-core';
 import { MosaicMcpError } from './errors.js';
 import { MIGRATIONS } from './migrations.js';
 
@@ -89,7 +89,8 @@ export interface ZoneAddressRecord {
 export type SigningRequest =
   | { kind: 'xrpl'; unsignedTransaction: Record<string, unknown> }
   | { kind: 'stellar'; unsignedXdr: string; networkPassphrase: string }
-  | { kind: 'xaman'; uuid: string; qrPng: string; websocketStatus: string; deeplink: string };
+  | { kind: 'xaman'; uuid: string; qrPng: string; websocketStatus: string; deeplink: string }
+  | { kind: 'evm'; transaction: Record<string, unknown> };
 
 export interface DexOrderRecord extends ActivityRecord {
   owner: CatalogOwner;
@@ -100,11 +101,19 @@ export interface DexOrderRecord extends ActivityRecord {
   signedPayload?: string;
 }
 
+export interface TransferRecord extends TransferActivityRecord {
+  owner: CatalogOwner;
+  signingRequest: SigningRequest;
+  preparedTransaction?: Record<string, unknown>;
+  /** Present only while submission outcome is unresolved. */
+  signedPayload?: string;
+}
+
 export interface ActivityQuery {
   after?: number;
   limit?: number;
-  chain?: 'xrpl' | 'stellar';
-  status?: OrderStatus;
+  chain?: AgentChain;
+  status?: string;
   sourceAddress?: string;
 }
 
@@ -194,9 +203,13 @@ export interface MosaicStore {
   createDexOrder(record: Omit<DexOrderRecord, 'cursor'>): Promise<DexOrderRecord>;
   getDexOrder(owner: CatalogOwner, network: Network, id: string): Promise<DexOrderRecord | undefined>;
   updateDexOrder(owner: CatalogOwner, network: Network, id: string, patch: Partial<DexOrderRecord>): Promise<DexOrderRecord>;
-  listActivity(owner: CatalogOwner, network: Network, query?: ActivityQuery): Promise<DexOrderRecord[]>;
+  createTransfer(record: Omit<TransferRecord, 'cursor'>): Promise<TransferRecord>;
+  getTransfer(owner: CatalogOwner, network: Network, id: string): Promise<TransferRecord | undefined>;
+  updateTransfer(owner: CatalogOwner, network: Network, id: string, patch: Partial<TransferRecord>): Promise<TransferRecord>;
+  listActivity(owner: CatalogOwner, network: Network, query?: ActivityQuery): Promise<(DexOrderRecord | TransferRecord)[]>;
   /** Internal restart reconciliation queue; never exposed as an MCP tool. */
   listNonterminalDexOrders(): Promise<DexOrderRecord[]>;
+  listNonterminalTransfers(): Promise<TransferRecord[]>;
 
   putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }>;
   /** Latest version of the given kind. */
@@ -503,7 +516,7 @@ export class PostgresStore implements MosaicStore {
     const owner = normalizeCatalogOwner(record.owner);
     const stored = { ...record, owner, signedPayload: undefined };
     const cursor = await this.sql.begin(async (tx) => {
-      const [allocated] = await tx`SELECT nextval(pg_get_serial_sequence('dex_activity_events', 'cursor')) AS cursor`;
+      const [allocated] = await tx`SELECT nextval('wallet_activity_cursor_seq') AS cursor`;
       await tx`
         INSERT INTO dex_orders (id, root_chain, root_address, network, chain, source_address, status, record, signed_payload, created_at, updated_at, activity_cursor)
         VALUES (${record.id}, ${owner.chain}, ${owner.address}, ${record.network}, ${record.chain}, ${record.sourceAddress}, ${record.status},
@@ -553,18 +566,74 @@ export class PostgresStore implements MosaicStore {
     });
   }
 
-  async listActivity(ownerValue: CatalogOwner, network: Network, query: ActivityQuery = {}): Promise<DexOrderRecord[]> {
+  async createTransfer(record: Omit<TransferRecord, 'cursor'>): Promise<TransferRecord> {
+    const owner = normalizeCatalogOwner(record.owner);
+    const stored = { ...record, owner, signedPayload: undefined };
+    const cursor = await this.sql.begin(async (tx) => {
+      const [allocated] = await tx`SELECT nextval('wallet_activity_cursor_seq') AS cursor`;
+      await tx`
+        INSERT INTO transfers (id, root_chain, root_address, network, chain, source_address, status, record, signed_payload, created_at, updated_at, activity_cursor)
+        VALUES (${record.id}, ${owner.chain}, ${owner.address}, ${record.network}, ${record.chain}, ${record.sourceAddress}, ${record.status},
+          ${tx.json(stored as unknown as postgres.JSONValue)}, ${record.signedPayload ?? null}, ${record.createdAt}, ${record.updatedAt}, ${allocated!.cursor})`;
+      await tx`
+        INSERT INTO transfer_activity_events (cursor, transfer_id, status, record, created_at)
+        VALUES (${allocated!.cursor}, ${record.id}, ${record.status}, ${tx.json(stored as unknown as postgres.JSONValue)}, ${record.createdAt})`;
+      return Number(allocated!.cursor);
+    });
+    return { ...record, owner, cursor };
+  }
+
+  async getTransfer(ownerValue: CatalogOwner, network: Network, id: string): Promise<TransferRecord | undefined> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const [row] = await this.sql`
+      SELECT activity_cursor AS cursor, record, signed_payload FROM transfers
+      WHERE id = ${id} AND root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}`;
+    return row ? rowToTransfer(row) : undefined;
+  }
+
+  async updateTransfer(ownerValue: CatalogOwner, network: Network, id: string, patch: Partial<TransferRecord>): Promise<TransferRecord> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx`
+        SELECT activity_cursor AS cursor, record, signed_payload FROM transfers
+        WHERE id = ${id} AND root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}
+        FOR UPDATE`;
+      if (!row) throw new MosaicMcpError('NOT_FOUND', `transfer not found: ${id}`);
+      const current = rowToTransfer(row);
+      const next: TransferRecord = {
+        ...current, ...patch, id: current.id, cursor: current.cursor, owner: current.owner, network: current.network,
+        updatedAt: patch.updatedAt ?? new Date().toISOString(),
+      };
+      const json = { ...next, signedPayload: undefined };
+      const [event] = await tx`
+        INSERT INTO transfer_activity_events (transfer_id, status, record, created_at)
+        VALUES (${id}, ${next.status}, ${tx.json(json as unknown as postgres.JSONValue)}, ${next.updatedAt}) RETURNING cursor`;
+      await tx`
+        UPDATE transfers SET status = ${next.status}, record = ${tx.json(json as unknown as postgres.JSONValue)},
+          signed_payload = ${next.signedPayload ?? null}, updated_at = ${next.updatedAt}, activity_cursor = ${event!.cursor}
+        WHERE id = ${id}`;
+      return { ...next, cursor: Number(event!.cursor) };
+    });
+  }
+
+  async listActivity(ownerValue: CatalogOwner, network: Network, query: ActivityQuery = {}): Promise<(DexOrderRecord | TransferRecord)[]> {
     const owner = normalizeCatalogOwner(ownerValue);
     const limit = Math.min(Math.max(query.limit ?? 100, 1), 250);
     const rows = await this.sql`
-      SELECT activity_cursor AS cursor, record, signed_payload FROM dex_orders
+      SELECT * FROM (
+        SELECT 'order' AS entity_kind, activity_cursor AS cursor, record, signed_payload, chain, status, source_address,
+          root_chain, root_address, network FROM dex_orders
+        UNION ALL
+        SELECT 'transfer' AS entity_kind, activity_cursor AS cursor, record, signed_payload, chain, status, source_address,
+          root_chain, root_address, network FROM transfers
+      ) activity
       WHERE root_chain = ${owner.chain} AND root_address = ${owner.address} AND network = ${network}
-        AND activity_cursor > ${query.after ?? 0}
+        AND cursor > ${query.after ?? 0}
         AND (${query.chain ?? null}::text IS NULL OR chain = ${query.chain ?? null})
         AND (${query.status ?? null}::text IS NULL OR status = ${query.status ?? null})
         AND (${query.sourceAddress ?? null}::text IS NULL OR source_address = ${query.sourceAddress ?? null})
-      ORDER BY activity_cursor DESC LIMIT ${limit}`;
-    return rows.map(rowToDexOrder);
+      ORDER BY cursor DESC LIMIT ${limit}`;
+    return rows.map((row) => row.entity_kind === 'transfer' ? rowToTransfer(row) : rowToDexOrder(row));
   }
 
   async listNonterminalDexOrders(): Promise<DexOrderRecord[]> {
@@ -574,6 +643,13 @@ export class PostgresStore implements MosaicStore {
         OR (status = 'failed' AND record->>'resultCode' = 'unknown' AND record->>'transactionHash' IS NOT NULL)
       ORDER BY activity_cursor`;
     return rows.map(rowToDexOrder);
+  }
+
+  async listNonterminalTransfers(): Promise<TransferRecord[]> {
+    const rows = await this.sql`
+      SELECT activity_cursor AS cursor, record, signed_payload FROM transfers
+      WHERE status IN ('submitted','unknown') ORDER BY activity_cursor`;
+    return rows.map(rowToTransfer);
   }
 
   async putBlob(record: Omit<BlobRecord, 'version' | 'createdAt'> & { expectedVersion?: number }): Promise<{ version: number }> {
@@ -954,6 +1030,15 @@ function rowToDexOrder(row: postgres.Row): DexOrderRecord {
   };
 }
 
+function rowToTransfer(row: postgres.Row): TransferRecord {
+  const record = row.record as unknown as TransferRecord;
+  return {
+    ...record,
+    cursor: Number(row.cursor),
+    signedPayload: (row.signed_payload as string | null) ?? undefined,
+  };
+}
+
 // ------------------------------------------------------------------ Memory
 
 /** In-memory store with identical semantics — used by tests and stdio dev mode. */
@@ -967,6 +1052,7 @@ export class MemoryStore implements MosaicStore {
   private dexActivityEvents: DexOrderRecord[] = [];
   private zoneAddresses = new Map<string, ZoneAddressRecord[]>();
   private dexOrders = new Map<string, DexOrderRecord>();
+  private transfers = new Map<string, TransferRecord>();
   private activityCursor = 0;
   private nonces = new Set<string>();
   private customChains = new Map<string, CustomChainRecord>();
@@ -1120,10 +1206,35 @@ export class MemoryStore implements MosaicStore {
     return structuredClone(next);
   }
 
-  async listActivity(ownerValue: CatalogOwner, network: Network, query: ActivityQuery = {}): Promise<DexOrderRecord[]> {
+  async createTransfer(record: Omit<TransferRecord, 'cursor'>): Promise<TransferRecord> {
+    if (this.transfers.has(record.id)) throw new MosaicMcpError('CONFLICT', `transfer already exists: ${record.id}`);
+    const stored: TransferRecord = { ...structuredClone(record), owner: normalizeCatalogOwner(record.owner), cursor: ++this.activityCursor };
+    this.transfers.set(stored.id, stored);
+    return structuredClone(stored);
+  }
+
+  async getTransfer(ownerValue: CatalogOwner, network: Network, id: string): Promise<TransferRecord | undefined> {
+    const owner = normalizeCatalogOwner(ownerValue);
+    const record = this.transfers.get(id);
+    if (!record || record.owner.chain !== owner.chain || record.owner.address !== owner.address || record.network !== network) return undefined;
+    return structuredClone(record);
+  }
+
+  async updateTransfer(owner: CatalogOwner, network: Network, id: string, patch: Partial<TransferRecord>): Promise<TransferRecord> {
+    const current = await this.getTransfer(owner, network, id);
+    if (!current) throw new MosaicMcpError('NOT_FOUND', `transfer not found: ${id}`);
+    const next: TransferRecord = {
+      ...current, ...structuredClone(patch), id: current.id, cursor: ++this.activityCursor, owner: current.owner, network: current.network,
+      updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    };
+    this.transfers.set(id, next);
+    return structuredClone(next);
+  }
+
+  async listActivity(ownerValue: CatalogOwner, network: Network, query: ActivityQuery = {}): Promise<(DexOrderRecord | TransferRecord)[]> {
     const owner = normalizeCatalogOwner(ownerValue);
     const limit = Math.min(Math.max(query.limit ?? 100, 1), 250);
-    return [...this.dexOrders.values()]
+    return [...this.dexOrders.values(), ...this.transfers.values()]
       .filter((record) => record.owner.chain === owner.chain && record.owner.address === owner.address && record.network === network)
       .filter((record) => record.cursor > (query.after ?? 0))
       .filter((record) => query.chain === undefined || record.chain === query.chain)
@@ -1139,6 +1250,14 @@ export class MemoryStore implements MosaicStore {
       .filter((record) =>
         ['submitted', 'confirmed', 'open', 'partially_filled', 'unknown'].includes(record.status)
         || (record.status === 'failed' && record.resultCode === 'unknown' && record.transactionHash !== undefined))
+      .sort((left, right) => left.cursor - right.cursor)
+      .map((record) => structuredClone(record));
+  }
+
+
+  async listNonterminalTransfers(): Promise<TransferRecord[]> {
+    return [...this.transfers.values()]
+      .filter((record) => ['submitted', 'unknown'].includes(record.status))
       .sort((left, right) => left.cursor - right.cursor)
       .map((record) => structuredClone(record));
   }

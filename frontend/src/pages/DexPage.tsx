@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Asset, OrderBookLevel } from '@mosaic/chain-core';
+import type { ActivityRecord, Asset, OrderBookLevel } from '@mosaic/chain-core';
 import { deploymentFor } from '@mosaic/catalog';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ActivityTable from '../components/activity/ActivityTable';
@@ -23,6 +23,7 @@ import { useSession } from '../contexts/SessionContext';
 import { useSettings } from '../contexts/SettingsContext';
 import { useTradingAccounts, type TradingAccount } from '../hooks/useTradingAccounts';
 import { api, type DexOrderPrepareResult, type XamanRefs } from '../api';
+import AccountAddress from '../components/address/AccountAddress';
 
 const STATUS_TONES: Record<string, StatusTone> = { live: 'ok', connecting: 'busy', reconnecting: 'warn', idle: 'idle' };
 
@@ -190,7 +191,9 @@ function MarketWorkspace({ market, markets }: { market: TradingMarket; markets: 
   const bestAsk = book.snapshot?.asks[0]?.price;
   const midpoint = bestBid && bestAsk ? (Number(bestBid) + Number(bestAsk)) / 2 : undefined;
   const spread = bestBid && bestAsk ? Number(bestAsk) - Number(bestBid) : undefined;
-  const marketActivity = activities.filter((activity) => activity.chain === market.chain && activity.network === market.network && assetMatches(activity.base, market.base) && assetMatches(activity.quote, market.quote));
+  const marketActivity = activities.filter((activity): activity is ActivityRecord => activity.kind === 'order'
+    && activity.chain === market.chain && activity.network === market.network
+    && assetMatches(activity.base, market.base) && assetMatches(activity.quote, market.quote));
 
   function chooseMarket(id: string) {
     if (id === market.id) return;
@@ -203,7 +206,7 @@ function MarketWorkspace({ market, markets }: { market: TradingMarket; markets: 
     requestAnimationFrame(() => document.getElementById('dex-order-ticket')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
   }
 
-  async function prepareCancel(activity: (typeof activities)[number]) {
+  async function prepareCancel(activity: ActivityRecord) {
     if (!session) return;
     const account = accounts.find(({ address }) => address === activity.sourceAddress);
     if (!account) { setCancelError('Unlock the source vault, or reconnect the matching root wallet, before cancelling.'); return; }
@@ -249,7 +252,7 @@ function MarketWorkspace({ market, markets }: { market: TradingMarket; markets: 
       <OrderTicket market={market} book={book.snapshot} selection={ticketSelection} />
     </div>
     <section className="dex-activity"><div className="dex-section-heading"><div><span className="eyebrow">THIS MARKET</span><h3>Open orders and activity</h3></div>{cancelBusy && <span>Preparing cancellation…</span>}</div>{cancelError && <p className="activity-summary-error">{cancelError}</p>}<ActivityTable activities={marketActivity} onCancel={(activity) => void prepareCancel(activity)} /></section>
-    {cancelReview && <Modal title="Review order cancellation" onClose={() => !cancelBusy && setCancelReview(null)}><dl className="order-review"><div><dt>Offer</dt><dd>{cancelReview.prepared.order.offerId}</dd></div><div><dt>Pair</dt><dd>{cancelReview.prepared.order.baseSymbol}/{cancelReview.prepared.order.quoteSymbol}</dd></div><div><dt>Source</dt><dd>{cancelReview.account.label}<small className="mono">{cancelReview.account.address}</small></dd></div><div><dt>Fee</dt><dd>{cancelReview.prepared.order.fee} {cancelReview.prepared.order.feeSymbol}</dd></div></dl>{cancelError && <p className="activity-summary-error">{cancelError}</p>}<button type="button" className="btn-primary" disabled={cancelBusy} onClick={() => void submitCancel()}>{cancelBusy ? 'Waiting for signature…' : 'Sign and cancel'}</button></Modal>}
+    {cancelReview && <Modal title="Review order cancellation" onClose={() => !cancelBusy && setCancelReview(null)}><dl className="order-review"><div><dt>Offer</dt><dd>{cancelReview.prepared.order.offerId}</dd></div><div><dt>Pair</dt><dd>{cancelReview.prepared.order.baseSymbol}/{cancelReview.prepared.order.quoteSymbol}</dd></div><div><dt>Source</dt><dd>{cancelReview.account.label}<small><AccountAddress chain={cancelReview.prepared.order.chain} network={cancelReview.prepared.order.network} address={cancelReview.account.address} className="mono">{cancelReview.account.address}</AccountAddress></small></dd></div><div><dt>Fee</dt><dd>{cancelReview.prepared.order.fee} {cancelReview.prepared.order.feeSymbol}</dd></div></dl>{cancelError && <p className="activity-summary-error">{cancelError}</p>}<button type="button" className="btn-primary" disabled={cancelBusy} onClick={() => void submitCancel()}>{cancelBusy ? 'Waiting for signature…' : 'Sign and cancel'}</button></Modal>}
     {xaman && <XamanPromptModal prompt={{ refs: xaman.refs, label: 'Sign the cancellation in Xaman' }} onClose={() => { xaman.cancel(); setXaman(null); }} />}
   </section>;
 }

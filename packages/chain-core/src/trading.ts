@@ -16,6 +16,7 @@ export type OrderStatus =
   | 'unknown';
 
 export interface DexOrderIntent {
+  kind: 'order';
   chain: TradingChain;
   network: Network;
   sourceAddress: string;

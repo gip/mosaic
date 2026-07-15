@@ -13,6 +13,8 @@ import { useTheme } from './contexts/ThemeContext';
 import { useVaults, type VaultState } from './contexts/VaultContext';
 import { useWalletSettings } from './contexts/WalletSettingsContext';
 import { isLocalApp } from './local/bridge';
+import AccountAddress from './components/address/AccountAddress';
+import { vaultDisplayName } from './vaultName';
 
 const LoginModal = lazy(() => import('./components/LoginModal'));
 const UnlockVaultModal = lazy(() => import('./components/ZonePanel').then((module) => ({ default: module.UnlockVaultModal })));
@@ -31,7 +33,6 @@ export default function App() {
   const { vaults, activeVault, selectVault } = useVaults();
   const { chainSetupCompleted, loading: walletSettingsLoading } = useWalletSettings();
   const [loginOpen, setLoginOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [unlockVault, setUnlockVault] = useState<VaultState | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -43,6 +44,7 @@ export default function App() {
     { to: '/dex', label: 'DEX' },
     { to: '/activity', label: 'Activity' },
     { to: '/assets', label: 'Assets' },
+    { to: '/transfer', label: 'Transfer' },
     { to: '/vaults', label: 'Vaults' },
     ...(localApp ? [{ to: '/agents', label: 'Agents' }] : []),
   ];
@@ -62,17 +64,6 @@ export default function App() {
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [menuOpen]);
-
-  async function copyAddress() {
-    if (!session) return;
-    try {
-      await navigator.clipboard.writeText(session.address);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
 
   function switchVault(zone: string) {
     const vault = vaults.find((item) => item.zone === zone);
@@ -117,7 +108,7 @@ export default function App() {
         <StatusDot tone={activeVault?.status === 'unlocked' ? 'ok' : 'idle'}>
           <select aria-label="Active vault" value={activeVault?.zone ?? ''} disabled={vaults.length === 0} onChange={(event) => switchVault(event.target.value)}>
             {vaults.length === 0 && <option value="">No vaults</option>}
-            {vaults.map((vault) => <option value={vault.zone} key={vault.zone}>{vault.zone === 'default' ? 'Default' : vault.zone}</option>)}
+            {vaults.map((vault) => <option value={vault.zone} key={vault.zone}>{vaultDisplayName(vault.zone)}</option>)}
           </select>
         </StatusDot>
         {activeVault?.status === 'locked' && <button type="button" className="topbar-session-button" onClick={() => setUnlockVault(activeVault)}>Unlock</button>}
@@ -151,14 +142,15 @@ export default function App() {
               {session ? (
                 <>
                   <StatusDot tone="ok">
-                    <button
-                      type="button"
+                    <AccountAddress
+                      chain={session.chain}
+                      network={session.network}
+                      address={session.address}
                       className="address-button mono"
-                      onClick={copyAddress}
-                      title="Copy root address"
+                      title="Root account actions"
                     >
-                      {copied ? 'copied' : short(session.address)}
-                    </button>
+                      {short(session.address)}
+                    </AccountAddress>
                   </StatusDot>
                   <button type="button" className="topbar-session-button" onClick={() => void logout()}>
                     Log out

@@ -97,7 +97,7 @@ async function getWcProvider(projectId: string, chainId: number): Promise<WcEthe
         optionalChains: [1],
         showQrModal: false,
         methods: ['eth_signTypedData_v4'],
-        optionalMethods: ['wallet_switchEthereumChain', 'wallet_addEthereumChain'],
+        optionalMethods: ['wallet_switchEthereumChain', 'wallet_addEthereumChain', 'eth_sendTransaction'],
         events: ['accountsChanged', 'chainChanged'],
       });
     })().catch((err) => {

@@ -34,6 +34,8 @@ interface SessionValue {
   signZoneMessage: (message: ZoneMessage) => Promise<SignedZoneMessage>;
   /** Sign a prepared Stellar transaction with the authenticated root wallet. */
   signRootStellarTransaction: (xdr: string) => Promise<string>;
+  /** Submit a prepared Base transaction through the authenticated root wallet. */
+  sendRootEvmTransaction: (transaction: Record<string, unknown>) => Promise<string>;
 }
 
 const SessionContext = createContext<SessionValue | null>(null);
@@ -170,9 +172,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     throw new Error('Reconnect the Stellar root wallet before signing this order.');
   }, [session]);
 
+  const sendRootEvmTransaction = useCallback(async (transaction: Record<string, unknown>): Promise<string> => {
+    if (!session || session.chain !== 'evm') throw new Error('The authenticated root wallet is not an EVM account.');
+    let signer = signerRef.current;
+    if (!signer || signer.kind !== 'evm') {
+      const { discoverEvmExtensions, requestEvmAccount } = await import('@mosaic/web-connector/evm');
+      const details = await discoverEvmExtensions();
+      for (const detail of details) {
+        try {
+          const address = await requestEvmAccount(detail.provider);
+          if (address.toLowerCase() === session.address.toLowerCase()) {
+            signer = { kind: 'evm', provider: detail.provider };
+            break;
+          }
+        } catch { /* try the next provider */ }
+      }
+      if (!signer || signer.kind !== 'evm') throw new Error(`Reconnect your EVM wallet with account ${session.address} and retry.`);
+      signerRef.current = signer;
+    }
+    const { ensureEvmChain } = await import('@mosaic/web-connector/evm');
+    await ensureEvmChain(signer.provider, session.network);
+    const hash = await signer.provider.request({ method: 'eth_sendTransaction', params: [transaction] });
+    if (typeof hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new Error('wallet returned no transaction hash');
+    return hash;
+  }, [session]);
+
   const value = useMemo(
-    () => ({ session, login, logout, networkSwitching, networkSwitchError, signZoneMessage, signRootStellarTransaction }),
-    [session, login, logout, networkSwitching, networkSwitchError, signZoneMessage, signRootStellarTransaction],
+    () => ({ session, login, logout, networkSwitching, networkSwitchError, signZoneMessage, signRootStellarTransaction, sendRootEvmTransaction }),
+    [session, login, logout, networkSwitching, networkSwitchError, signZoneMessage, signRootStellarTransaction, sendRootEvmTransaction],
   );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

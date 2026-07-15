@@ -29,6 +29,7 @@ export {
   verifyStellarTransaction,
   type PreparedStellarOrder,
 } from './orders.js';
+export { prepareStellarTransfer, stellarTransferMode, type PreparedStellarTransfer } from './transfers.js';
 
 /** Streaming Stellar order-book feed (Horizon SSE over `fetch`). */
 export function createOrderBookFeed(

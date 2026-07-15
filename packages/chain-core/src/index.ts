@@ -50,6 +50,15 @@ export {
   type OrderStatus,
   type TradingChain,
 } from './trading.js';
+export type {
+  TransferActivityRecord,
+  TransferIntent,
+  TransferPreview,
+  TransferStatus,
+} from './transfers.js';
+import type { ActivityRecord } from './trading.js';
+import type { TransferActivityRecord } from './transfers.js';
+export type WalletActivityRecord = ActivityRecord | TransferActivityRecord;
 export {
   PRICE_DECIMALS,
   addDecimals,

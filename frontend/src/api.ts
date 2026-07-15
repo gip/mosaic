@@ -2,7 +2,7 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { AssetTrustState, AssetWithTrust, CatalogSnapshot, ChainFamily, ChainWithEnabled, NetworkTag } from '@mosaic/catalog';
 import type { AgentChain, Network, RootChain, SessionAuthMessage } from '@mosaic/zone-keys';
 import type { AgentArtifactManifest } from '@mosaic/local-runtime/contracts';
-import type { ActivityRecord, Asset, OrderSide, OrderStatus, TradingChain } from '@mosaic/chain-core';
+import type { ActivityRecord, Asset, OrderSide, OrderStatus, TradingChain, TransferActivityRecord, WalletActivityRecord } from '@mosaic/chain-core';
 import { MCP_URL } from './config';
 
 export type SignatureEnvelope =
@@ -81,7 +81,8 @@ export interface ZoneAddressItem {
 export type DexSigningRequest =
   | { kind: 'xrpl'; unsignedTransaction: Record<string, unknown> }
   | { kind: 'stellar'; unsignedXdr: string; networkPassphrase: string }
-  | ({ kind: 'xaman' } & XamanRefs);
+  | ({ kind: 'xaman' } & XamanRefs)
+  | { kind: 'evm'; transaction: Record<string, unknown> };
 
 export interface DexOrderPrepareArgs {
   token: string;
@@ -100,6 +101,27 @@ export interface DexOrderPrepareResult {
   order: ActivityRecord;
   signingRequest: DexSigningRequest;
 }
+
+export interface TransferPrepareArgs {
+  token: string;
+  chain: AgentChain;
+  source: { kind: 'root' | 'vault'; address: string; zone?: string; addressId?: string; name?: string };
+  destination: string;
+  assetId: string;
+  amount: string;
+}
+
+export interface TransferPrepareResult {
+  transfer: TransferActivityRecord;
+  signingRequest: DexSigningRequest;
+}
+
+export type TransferSigned =
+  | { kind: 'xrpl'; txBlob: string }
+  | { kind: 'stellar'; signedXdr: string }
+  | { kind: 'xaman'; payloadUuid: string }
+  | { kind: 'evm-raw'; serializedTransaction: `0x${string}` }
+  | { kind: 'evm-wallet'; transactionHash: string };
 
 export interface BlobGetResult {
   kind: 'sig' | 'pass' | 'device' | 'server' | 'data';
@@ -317,11 +339,19 @@ class MosaicApi {
     return this.call('dex_order_cancel_prepare', { token, orderId });
   }
 
-  activityList(token: string, query: { after?: number; limit?: number; chain?: TradingChain; status?: OrderStatus; sourceAddress?: string } = {}): Promise<{ activities: ActivityRecord[] }> {
+  transferPrepare(args: TransferPrepareArgs): Promise<TransferPrepareResult> {
+    return this.call('transfer_prepare', { ...args });
+  }
+
+  transferSubmit(token: string, transferId: string, signed: TransferSigned): Promise<{ transfer: TransferActivityRecord }> {
+    return this.call('transfer_submit', { token, transferId, signed });
+  }
+
+  activityList(token: string, query: { after?: number; limit?: number; chain?: AgentChain; status?: OrderStatus | string; sourceAddress?: string } = {}): Promise<{ activities: WalletActivityRecord[] }> {
     return this.call('activity_list', { token, ...query });
   }
 
-  activityGet(token: string, id: string): Promise<{ activity: ActivityRecord }> {
+  activityGet(token: string, id: string): Promise<{ activity: WalletActivityRecord }> {
     return this.call('activity_get', { token, id });
   }
 }

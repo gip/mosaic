@@ -10,6 +10,7 @@ import { useTradingAccounts, type TradingAccount } from '../../hooks/useTradingA
 import XamanPromptModal from '../XamanPromptModal';
 import Modal from '../ui/Modal';
 import { signAndSubmitOrder } from './signing';
+import AccountAddress from '../address/AccountAddress';
 
 interface PendingXamanPrompt {
   refs: XamanRefs;
@@ -90,7 +91,7 @@ function OrderReviewModal({
       <dl className="offer-review-details">
         <div className="offer-review-source">
           <dt>Source account</dt>
-          <dd><strong>{account.label}</strong><code title={account.address}>{shortAddress(account.address)}</code><small>{account.kind === 'root' ? 'Root wallet' : 'Vault'}</small></dd>
+          <dd><strong>{account.label}</strong><AccountAddress chain={order.chain} network={order.network} address={account.address} title={account.address}>{shortAddress(account.address)}</AccountAddress><small>{account.kind === 'root' ? 'Root wallet' : 'Vault'}</small></dd>
         </div>
         <div>
           <dt>Network fee</dt>

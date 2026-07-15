@@ -1,12 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ActivityRecord } from '@mosaic/chain-core';
+import type { WalletActivityRecord } from '@mosaic/chain-core';
 import { api } from '../api';
 import { useSession } from './SessionContext';
 
 const POLL_MS = 8_000;
 
 interface ActivityValue {
-  activities: ActivityRecord[];
+  activities: WalletActivityRecord[];
   loading: boolean;
   error: string | null;
   activeCount: number;
@@ -16,7 +16,7 @@ interface ActivityValue {
 const ActivityContext = createContext<ActivityValue | null>(null);
 const ACTIVE = new Set(['awaiting_signature', 'submitted', 'confirmed', 'open', 'partially_filled', 'unknown']);
 
-function mergeActivities(current: ActivityRecord[], incoming: ActivityRecord[]): ActivityRecord[] {
+function mergeActivities(current: WalletActivityRecord[], incoming: WalletActivityRecord[]): WalletActivityRecord[] {
   const records = new Map(current.map((record) => [record.id, record]));
   for (const record of incoming) records.set(record.id, record);
   return [...records.values()].sort((left, right) => right.cursor - left.cursor);
@@ -24,7 +24,7 @@ function mergeActivities(current: ActivityRecord[], incoming: ActivityRecord[]):
 
 export function ActivityProvider({ children }: { children: ReactNode }) {
   const { session } = useSession();
-  const [activities, setActivities] = useState<ActivityRecord[]>([]);
+  const [activities, setActivities] = useState<WalletActivityRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cursorRef = useRef(0);
