@@ -85,6 +85,12 @@ for Mainnet.
   shown in Electron and uses the same providers, MCP client, components, CSS,
   and assets as every other route.
 
+- `ios-app` — native SwiftUI companion app (iOS 17+, Xcode project +
+  `MosaicKit` SPM package): monitors zones/balances/activity and will approve
+  unlocks and agent actions as the attended Guardian companion from ADR 0001.
+  Never an agent host. Frozen crypto runs via the bundled JS bridge
+  (`@mosaic/mobile-bridge`, Phase B) — never a Swift reimplementation.
+
 ## Commands
 
 - `pnpm install` once at root. **Never `npm install`.**
@@ -97,6 +103,9 @@ for Mainnet.
 - `pnpm local:dev` — build and run the Electron local app.
 - Postgres tests run only when `MOSAIC_TEST_DATABASE_URL` is set; MemoryStore
   tests always run.
+- iOS: `cd ios-app/MosaicKit && swift test` (unit; add
+  `MOSAIC_MCP_URL=http://127.0.0.1:8788/mcp` for live-server smoke tests);
+  app builds via `ios-app/Mosaic.xcodeproj` (Xcode 16+).
 
 ## Conventions
 
