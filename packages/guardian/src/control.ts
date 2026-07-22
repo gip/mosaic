@@ -21,7 +21,9 @@ import {
   type RunnerEnrollmentPayload,
   type RuntimeAuditCheckpointPayload,
 } from '@mosaic/local-runtime';
+import type { CompanionEnvelope } from '@mosaic/local-runtime';
 import type { ControlTransport, ControlTransportMessage } from '@mosaic/local-runtime/control';
+import type { GuardianCompanionControl } from './companion.js';
 import { GuardianService, type UnlockCredential } from './service.js';
 
 interface PendingStart {
@@ -53,6 +55,7 @@ export class GuardianXmtpControl {
   private readonly pendingPrivileged = new Map<string, ControlEnvelope<PrivilegedRequestPayload>>();
   private readonly active = new Map<string, ActiveAgent>();
   private readonly approvalTimers = new Map<string, NodeJS.Timeout>();
+  private companion?: GuardianCompanionControl;
 
   constructor(
     private readonly guardian: GuardianService,
@@ -69,6 +72,9 @@ export class GuardianXmtpControl {
   }
 
   identity(): { address: string; inboxId: string } { return { address: this.transport.address, inboxId: this.transport.inboxId }; }
+
+  /** iOS companion (ADR 0002): forwards approvals, accepts signed decisions. */
+  attachCompanion(companion: GuardianCompanionControl): void { this.companion = companion; }
 
   pendingApprovals(): Array<{ requestId: string; operation: 'agent-start' | 'transaction.propose'; agentId?: string; grantId?: string }> {
     return [
@@ -110,12 +116,14 @@ export class GuardianXmtpControl {
       });
       this.active.set(agentId, { certificate: pending.certificate, grantId: execution.grant.grantId, expiresAt: execution.grant.expiresAt });
       await this.sendResult(pending.envelope, 'agent-start-result', { ok: true, execution } satisfies AgentStartResultPayload, execution.grant.grantId);
+      await this.companion?.sendResolved(requestId, 'approved');
     } catch (error) {
       this.guardian.lockAgent(agentId);
       await this.sendResult(pending.envelope, 'agent-start-result', {
         ok: false,
         error: { code: 'AGENT_START_REJECTED', message: error instanceof Error ? error.message : String(error) },
       } satisfies AgentStartResultPayload);
+      await this.companion?.sendResolved(requestId, 'failed', error instanceof Error ? error.message : String(error));
       throw error;
     }
   }
@@ -127,6 +135,7 @@ export class GuardianXmtpControl {
       this.clearApprovalTimer(requestId);
       this.state.setPendingApproval(requestId);
       await this.sendResult(start.envelope, 'agent-start-result', { ok: false, error: { code: 'USER_REJECTED', message: reason } } satisfies AgentStartResultPayload);
+      await this.companion?.sendResolved(requestId, 'rejected');
       return;
     }
     const privileged = this.pendingPrivileged.get(requestId);
@@ -136,6 +145,7 @@ export class GuardianXmtpControl {
     this.state.setPendingApproval(requestId);
     const result = this.guardian.proposeTransaction(privileged.payload.proposal);
     await this.sendResult(privileged, 'privileged-result', { operation: 'transaction.propose', result } satisfies PrivilegedResultPayload, privileged.grantId);
+    await this.companion?.sendResolved(requestId, 'rejected');
   }
 
   async resolvePrivileged(requestId: string): Promise<void> {
@@ -148,6 +158,7 @@ export class GuardianXmtpControl {
     // intent, then Vault Core returns TRANSACTION_BROKER_UNAVAILABLE.
     const result = this.guardian.proposeTransaction(envelope.payload.proposal);
     await this.sendResult(envelope, 'privileged-result', { operation: 'transaction.propose', result } satisfies PrivilegedResultPayload, envelope.grantId);
+    await this.companion?.sendResolved(requestId, 'approved');
   }
 
   async terminateAgent(agentId: string, mode: AgentTerminationMode, reason: string): Promise<string> {
@@ -190,6 +201,12 @@ export class GuardianXmtpControl {
     let envelope: ControlEnvelope;
     try { envelope = JSON.parse(message.content) as ControlEnvelope; } catch { return; }
     if (message.content !== canonicalJson(envelope)) return;
+    const kind = (envelope as { kind?: unknown }).kind;
+    if (kind === 'companion-enrollment' || kind === 'approval-decision') {
+      this.state.markMessage(message.id);
+      await this.companion?.receive(envelope as unknown as CompanionEnvelope, message);
+      return;
+    }
     if (!envelope || envelope.protocol !== AGENT_CONTROL_PROTOCOL || envelope.runnerControlInboxId !== message.senderInboxId || envelope.guardianControlInboxId !== this.transport.inboxId) return;
     if (envelope.kind === 'runner-enrollment') {
       await this.enroll(envelope as ControlEnvelope<RunnerEnrollmentPayload>, message);
@@ -270,6 +287,9 @@ export class GuardianXmtpControl {
     this.state.setPendingApproval(envelope.requestId, canonicalJson(envelope));
     this.scheduleApprovalExpiry(envelope.requestId, envelope.expiresAt, 'agent-start');
     this.emit({ type: 'approval-required', operation: 'agent-start', requestId: envelope.requestId, runnerId: envelope.runnerId, agentId: envelope.agentId });
+    await this.companion?.forwardApproval(envelope.requestId, 'agent-start', envelope.agentId, undefined, {
+      runnerId: envelope.runnerId, network: envelope.payload.network, expiresAt: envelope.expiresAt,
+    });
   }
 
   private async queuePrivileged(envelope: ControlEnvelope<PrivilegedRequestPayload>): Promise<void> {
@@ -283,6 +303,10 @@ export class GuardianXmtpControl {
     this.state.setPendingApproval(envelope.requestId, canonicalJson(envelope));
     this.scheduleApprovalExpiry(envelope.requestId, envelope.expiresAt, 'transaction.propose');
     this.emit({ type: 'approval-required', operation: 'transaction.propose', requestId: envelope.requestId, runnerId: envelope.runnerId, agentId: envelope.agentId, grantId: envelope.grantId });
+    await this.companion?.forwardApproval(envelope.requestId, 'transaction.propose', envelope.agentId, envelope.grantId, {
+      intentType: proposal.intentType, chain: proposal.chain, network: proposal.network,
+      deadline: proposal.deadline, expiresAt: envelope.expiresAt,
+    });
   }
 
   private recordCheckpoint(envelope: ControlEnvelope<RuntimeAuditCheckpointPayload>): void {
@@ -324,6 +348,7 @@ export class GuardianXmtpControl {
       this.approvalTimers.delete(requestId);
       if (operation === 'agent-start') this.pendingStarts.delete(requestId); else this.pendingPrivileged.delete(requestId);
       this.state.setPendingApproval(requestId);
+      void this.companion?.sendResolved(requestId, 'expired');
     }, Math.max(1, Date.parse(expiresAt) - Date.now()));
     timer.unref();
     this.approvalTimers.set(requestId, timer);

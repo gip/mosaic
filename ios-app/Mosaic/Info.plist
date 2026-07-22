@@ -38,6 +38,8 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan the desktop Guardian's QR code to pair this phone as a companion approver.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Dev only: the simulator talks to the host's plain-HTTP MCP server

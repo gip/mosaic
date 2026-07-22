@@ -1,0 +1,39 @@
+{
+  "name": "@mosaic/mobile-bridge",
+  "version": "0.0.0",
+  "description": "Single-file JS bundle of the frozen zone crypto and per-chain transfer signers for embedding in the iOS app's JavaScriptCore context. The exact audited JS from @mosaic/zone-keys runs on the phone; Swift only wraps calls.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "bundle": "tsc -b && node scripts/bundle.mjs",
+    "test": "tsc -b && node scripts/bundle.mjs && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mosaic/evm": "workspace:*",
+    "@mosaic/stellar": "workspace:*",
+    "@mosaic/xrpl": "workspace:*",
+    "@mosaic/zone-keys": "workspace:*",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.1.1",
+    "buffer": "^6.0.3",
+    "@mosaic/local-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "esbuild": "^0.25.0",
+    "hash-wasm": "^4.12.0",
+    "typescript": "~6.0.2",
+    "viem": "^2.53.1",
+    "@stellar/stellar-sdk": "^16.0.1"
+  }
+}

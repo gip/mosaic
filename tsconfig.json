@@ -9,6 +9,7 @@
     { "path": "./packages/mosaic-stellar" },
     { "path": "./packages/mosaic-evm" },
     { "path": "./packages/mcp" },
+    { "path": "./packages/mobile-bridge" },
     { "path": "./packages/local-runtime" },
     { "path": "./packages/agent-sdk" },
     { "path": "./packages/agent-compiler" },

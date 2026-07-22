@@ -3,16 +3,26 @@ name: ios
 on:
   push:
     branches: [main]
-    paths: ['ios-app/**']
+    paths: ['ios-app/**', 'packages/mobile-bridge/**', 'packages/zone-keys/vectors/**']
   pull_request:
-    paths: ['ios-app/**']
+    paths: ['ios-app/**', 'packages/mobile-bridge/**', 'packages/zone-keys/vectors/**']
 
 jobs:
   mosaickit:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Bridge bundle freshness
+        run: |
+          ios-app/scripts/sync-bridge.sh
+          git diff --exit-code ios-app/MosaicKit/Sources/ZoneCryptoJS/Resources ios-app/MosaicKit/Tests/MosaicKitTests/Fixtures/zone-vectors.json ios-app/MosaicKit/Tests/MosaicKitTests/Fixtures/argon2-kat.json
       - name: MosaicKit unit tests
         working-directory: ios-app/MosaicKit
         run: swift test

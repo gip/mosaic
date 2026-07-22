@@ -1,0 +1,51 @@
+{
+  "secretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "ref": {
+    "rootChain": "xrpl",
+    "rootAddress": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "zone": "top",
+    "network": "mainnet"
+  },
+  "commitment": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd",
+  "addresses0": {
+    "evm": "0x397B641eE531B74df352e6a124ce8b3566964d78",
+    "xrpl": "rNhnPaESvxbzmkpYfpecUDGUJPGxq8krHc",
+    "stellar": "GDI6V6XSIXSV7P43UER4L7IPU63PFGQINIFP6RLWH5AMPELQBC2JMTBJ"
+  },
+  "companion": {
+    "guardianAddress": "0x231a44547c7f1618C594F3BfED98d2a915848f96",
+    "authorityIndex": 5,
+    "expiredOfferJson": "{\"protocol\":\"MOSAIC_AGENT_CONTROL_V3\",\"kind\":\"companion-offer\",\"guardianId\":\"0x231a44547c7f1618C594F3BfED98d2a915848f96\",\"guardianControlInboxId\":\"guardian-inbox\",\"vault\":\"top\",\"authorityIndex\":5,\"network\":\"mainnet\",\"nonce\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\",\"issuedAt\":\"2026-07-22T00:21:14.589Z\",\"expiresAt\":\"2026-07-22T00:26:14.589Z\",\"signatureB64\":\"UHW2nUF1XrqIOajgUROQ4Iiqfw3msutuxQMOJb7lliNW3KIKl6yLiyQtqlJp3gF30T9Hzy3GjiXsKeqk0VB5Jhs=\"}",
+    "forwardJson": "{\"protocol\":\"MOSAIC_AGENT_CONTROL_V3\",\"kind\":\"approval-forward\",\"requestId\":\"fixture-req-1\",\"guardianId\":\"0x231a44547c7f1618C594F3BfED98d2a915848f96\",\"guardianControlInboxId\":\"guardian-inbox\",\"companionInboxId\":\"phone-inbox\",\"sequence\":2,\"issuedAt\":\"2026-07-22T00:31:14.591Z\",\"expiresAt\":\"2036-07-19T00:31:14.591Z\",\"idempotencyKey\":\"fixture-req-1\",\"payloadDigest\":\"26f4a5e303af8d007f36a424de5acc9ee1f44ed144ce7e4d4ce1b1bb9fd84b2b\",\"payload\":{\"operation\":\"transaction.propose\",\"requestId\":\"fixture-req-1\",\"network\":\"mainnet\",\"summary\":{\"chain\":\"xrpl\",\"intentType\":\"payment\"}},\"signatureB64\":\"Fv7r0trhkdq6FyuwIo20NsZQYVG73zWaKHEDVj4S6GMYi2//q/u1mcjmSPgcIbzP+FY8pwdfxaSXbzRLtE9Huhw=\"}"
+  },
+  "signatureBlob": {
+    "signatureHex": "ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+    "headerJson": "{\"v\":1,\"alg\":\"xchacha20poly1305\",\"nonce\":\"BvTfwl5t7JP4DRulOzDK+oN/7oKo56G+\",\"kdf\":{\"type\":\"sig-hkdf-v1\"}}",
+    "ciphertextB64": "aVLpFKDw2n1TxH8KaS2rPifWzW6H5YpprA3kq1n75urQfw1CNlbIkNJLamz4C6YI"
+  },
+  "passphraseBlob": {
+    "kekHex": "16a198da854d00cc154a22a4d3c3ee56c20715e1b4e21dc78fce0ebe89432020",
+    "passphrase": "correct horse battery staple",
+    "headerJson": "{\"v\":1,\"alg\":\"xchacha20poly1305\",\"nonce\":\"u2sDxAnLAaK1BISxdjWF9GnQNqGWIf+r\",\"kdf\":{\"type\":\"argon2id\",\"salt\":\"HyYtNDtCSVBXXmVsc3qBiA==\",\"m\":262144,\"t\":3,\"p\":1}}",
+    "ciphertextB64": "W68GVlpBegg6p/lXdnBUKxvNLzBW4zYL43EsEoTEEX51eiA4vpDEd2SJPADOK82h"
+  },
+  "xrplSignIn": {
+    "blobHex": "228000000024000000006840000000000000007321EDABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB7446304402201111111111111111111111111111111111111111111111111111111111111111022022222222222222222222222222222222222222222222222222222222222222228114B5F762798A53D543A014CAF8B297CFF8F2F937E8",
+    "txnSignatureHex": "30440220111111111111111111111111111111111111111111111111111111111111111102202222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "signing": {
+    "xrpl": {
+      "unsignedJson": "{\"TransactionType\":\"Payment\",\"Account\":\"rNhnPaESvxbzmkpYfpecUDGUJPGxq8krHc\",\"Destination\":\"rNhnPaESvxbzmkpYfpecUDGUJPGxq8krHc\",\"Amount\":\"1000000\",\"Fee\":\"12\",\"Sequence\":7,\"Flags\":2147483648,\"LastLedgerSequence\":1000}",
+      "expectedTxBlob": "12000022800000002400000007201B000003E86140000000000F424068400000000000000C732102ACB2DDA8CBF3FFCA85239780043F729D9F8F9935248036C072EA2F68DCE174757446304402205072696633C35449124846E783B0C32AEA20F4F425564482924DA1A07D9B315B02206FE8AAC1ABCE158A2099A7736CBDC4E09D7F4E49C1FF0299D8818D81BE72119181148F2E8A4023A388C4978C7D72D65115DB0708CA8F83148F2E8A4023A388C4978C7D72D65115DB0708CA8F"
+    },
+    "stellar": {
+      "unsignedXdr": "AAAAAgAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAGQAAAAAAAAACAAAAAEAAAAAAAAAAAAAAABqYBB+AAAAAAAAAAEAAAAAAAAAAQAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAAAAAAAAAJiWgAAAAAAAAAAA",
+      "network": "testnet",
+      "expectedSignedXdr": "AAAAAgAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAGQAAAAAAAAACAAAAAEAAAAAAAAAAAAAAABqYBB+AAAAAAAAAAEAAAAAAAAAAQAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAAAAAAAAAJiWgAAAAAAAAAABcAi0lgAAAEAXK5dL6V1yhVm8kl0F/KM8D+lFzfTAsO4PV6TUmIVYFhNS8PLWHZXstQcN0NOSaHOSf1+0zz1CF8OGjzV9+QwM"
+    },
+    "evm": {
+      "unsignedJson": "{\"from\":\"0x397B641eE531B74df352e6a124ce8b3566964d78\",\"to\":\"0x000000000000000000000000000000000000dEaD\",\"value\":\"0x2386f26fc10000\",\"chainId\":\"0x14a34\",\"gas\":\"0x5208\",\"maxFeePerGas\":\"0x3b9aca00\",\"maxPriorityFeePerGas\":\"0x3b9aca00\",\"nonce\":\"0x0\",\"type\":\"0x2\"}",
+      "expectedSerialized": "0x02f87483014a3480843b9aca00843b9aca0082520894000000000000000000000000000000000000dead872386f26fc1000080c080a028c3297d73037e3057ad9f6c8495547f8d039e2074f08a3fd69d31197685bee1a067089c6dca3f0dbedab9d6eb30715163e4aac77852601e80944ab4fa30be03c5"
+    }
+  }
+}

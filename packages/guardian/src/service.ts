@@ -96,6 +96,8 @@ export interface GuardianApi {
   blobPut(args: { token: string; zone: string; kind: 'data' | 'agent-secrets'; ciphertextB64: string; header: Record<string, unknown>; expectedVersion: number }): Promise<{ version: number }>;
   agentArtifactGet(token: string, artifactDigest: string): Promise<{ artifactDigest: string; manifest: AgentArtifactManifest; source: string }>;
   agentArtifactTicketCreate(token: string, artifactDigest: string, runnerCertificateDigest: string): Promise<{ ticket: string; expiresAt: string; maxReads: number }>;
+  /** Content-free APNs wake-up for registered companion devices (ADR 0002). */
+  pushNotify?(token: string, category: 'approval' | 'unlock' | 'activity'): Promise<void>;
 }
 
 export class McpGuardianApi implements GuardianApi {
@@ -170,6 +172,9 @@ export class McpGuardianApi implements GuardianApi {
   }
   agentArtifactTicketCreate(token: string, artifactDigestValue: string, runnerCertificateDigest: string): Promise<{ ticket: string; expiresAt: string; maxReads: number }> {
     return this.call('agent_artifact_ticket_create', { token, artifactDigest: artifactDigestValue, runnerCertificateDigest });
+  }
+  async pushNotify(token: string, category: 'approval' | 'unlock' | 'activity'): Promise<void> {
+    await this.call('push_notify', { token, category });
   }
   authChallenge(args: { chain: RootChain; network: Network; address?: string }): Promise<{
     challengeId: string;
@@ -258,6 +263,12 @@ export class GuardianService {
     if (!this.session || this.session.expiresAt <= Date.now()) throw new Error('Mosaic Guardian has no active MCP session');
     if (this.session.network !== network) throw new Error(`MCP session is for ${this.session.network}, not ${network}`);
     return this.session;
+  }
+
+  /** Content-free companion wake-up (ADR 0002); no-op without API support. */
+  async notifyCompanionPush(network: MosaicNetwork, category: 'approval' | 'unlock' | 'activity'): Promise<void> {
+    const session = this.requireSession(network);
+    await this.api.pushNotify?.(session.token, category);
   }
 
   async unlockVault(vault: string, network: MosaicNetwork, credential?: UnlockCredential): Promise<void> {

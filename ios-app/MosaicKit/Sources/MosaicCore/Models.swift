@@ -25,6 +25,40 @@ public enum Network: String, Codable, CaseIterable, Sendable, Identifiable {
   public var id: String { rawValue }
 }
 
+/// The frozen zone reference tuple from @mosaic/zone-keys — binds every
+/// derivation and blob operation to (root wallet, zone, network).
+public struct ZoneRef: Codable, Sendable, Equatable, Hashable {
+  public let rootChain: RootChain
+  public let rootAddress: String
+  public let zone: String
+  public let network: Network
+
+  public init(rootChain: RootChain, rootAddress: String, zone: String, network: Network) {
+    self.rootChain = rootChain
+    self.rootAddress = rootAddress
+    self.zone = zone
+    self.network = network
+  }
+
+  /// Stable JSON for the JS bridge (key order is irrelevant there — the
+  /// bridge re-parses into an object before any canonicalization).
+  public var jsonString: String {
+    let fields = [
+      "rootChain": rootChain.rawValue,
+      "rootAddress": rootAddress,
+      "zone": zone,
+      "network": network.rawValue,
+    ]
+    let data = try! JSONSerialization.data(withJSONObject: fields)
+    return String(decoding: data, as: UTF8.self)
+  }
+
+  /// Cache key used across Keychain items — same scheme as the web cache.
+  public var cacheKey: String {
+    "\(rootChain.rawValue)|\(rootAddress)|\(zone)|\(network.rawValue)"
+  }
+}
+
 public struct XamanRefs: Codable, Sendable, Equatable {
   public let uuid: String
   public let qrPng: String
@@ -92,6 +126,16 @@ public struct ZoneAddressItem: Codable, Sendable, Equatable, Identifiable {
   public let name: String
   public let address: String?
   public let createdAt: String
+
+  public init(id: String, zoneId: String, chain: AgentChain, index: Int, name: String, address: String?, createdAt: String) {
+    self.id = id
+    self.zoneId = zoneId
+    self.chain = chain
+    self.index = index
+    self.name = name
+    self.address = address
+    self.createdAt = createdAt
+  }
 }
 
 public enum ZoneMode: String, Codable, Sendable {
@@ -132,6 +176,83 @@ public struct ZoneGetResult: Codable, Sendable {
 public struct WalletSettingsResult: Codable, Sendable, Equatable {
   public let lockReminderMinutes: Int
   public let chainSetupCompleted: Bool
+}
+
+public struct BlobGetResult: Sendable {
+  public let kind: String
+  public let version: Int
+  /// Raw header JSON, passed to the crypto bridge verbatim.
+  public let headerJson: String
+  public let ciphertextB64: String
+  public let commitment: String
+
+  public init(kind: String, version: Int, headerJson: String, ciphertextB64: String, commitment: String) {
+    self.kind = kind
+    self.version = version
+    self.headerJson = headerJson
+    self.ciphertextB64 = ciphertextB64
+    self.commitment = commitment
+  }
+}
+
+public struct CatalogAssetDeployment: Codable, Sendable, Equatable {
+  public let chainId: String
+  public let symbol: String
+  public let kind: String
+  public let decimals: Int
+  public let address: String?
+  public let currencyCode: String?
+}
+
+public struct CatalogAsset: Codable, Sendable, Equatable, Identifiable {
+  public let id: String
+  public let name: String
+  public let deployments: [CatalogAssetDeployment]
+  public let trustState: String
+
+  public func deployment(chainId: String) -> CatalogAssetDeployment? {
+    deployments.first { $0.chainId == chainId }
+  }
+}
+
+/// The per-chain signing request returned by `transfer_prepare`.
+public enum SigningRequest: Sendable {
+  case xrpl(unsignedTransactionJson: String)
+  case stellar(unsignedXdr: String, networkPassphrase: String)
+  case xaman(XamanRefs)
+  case evm(transactionJson: String)
+
+  public init?(json: JSONValue) {
+    switch json["kind"]?.stringValue {
+    case "xrpl":
+      guard let tx = json["unsignedTransaction"],
+            let data = try? JSONEncoder().encode(tx) else { return nil }
+      self = .xrpl(unsignedTransactionJson: String(decoding: data, as: UTF8.self))
+    case "stellar":
+      guard let xdr = json["unsignedXdr"]?.stringValue,
+            let passphrase = json["networkPassphrase"]?.stringValue else { return nil }
+      self = .stellar(unsignedXdr: xdr, networkPassphrase: passphrase)
+    case "xaman":
+      guard let refs = try? json.decoded(XamanRefs.self) else { return nil }
+      self = .xaman(refs)
+    case "evm":
+      guard let tx = json["transaction"],
+            let data = try? JSONEncoder().encode(tx) else { return nil }
+      self = .evm(transactionJson: String(decoding: data, as: UTF8.self))
+    default:
+      return nil
+    }
+  }
+}
+
+public struct TransferPrepared: Sendable {
+  public let transfer: ActivityItem
+  public let signingRequest: SigningRequest
+
+  public init(transfer: ActivityItem, signingRequest: SigningRequest) {
+    self.transfer = transfer
+    self.signingRequest = signingRequest
+  }
 }
 
 /// One row of `activity_list`. The server returns a union of DEX-order and

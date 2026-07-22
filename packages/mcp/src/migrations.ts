@@ -276,4 +276,20 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX transfer_activity_events_transfer_idx ON transfer_activity_events (transfer_id, cursor DESC);
   `,
+  `
+  CREATE TABLE mobile_devices (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    root_chain TEXT NOT NULL CHECK (root_chain IN ('evm','xrpl','stellar')),
+    root_address TEXT NOT NULL,
+    network TEXT NOT NULL CHECK (network IN ('mainnet','testnet')),
+    platform TEXT NOT NULL DEFAULT 'ios',
+    apns_token TEXT NOT NULL CHECK (length(apns_token) BETWEEN 16 AND 256),
+    apns_environment TEXT NOT NULL DEFAULT 'production' CHECK (apns_environment IN ('development','production')),
+    device_name TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (root_chain, root_address, apns_token)
+  );
+  CREATE INDEX mobile_devices_owner_idx ON mobile_devices (root_chain, root_address);
+  `,
 ];

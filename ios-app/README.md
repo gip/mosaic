@@ -15,6 +15,13 @@ attended Guardian companion, never an agent host.
     `frontend/src/api.ts`. The bearer token is a tool argument, like web.
   - `WalletLink` — Xaman deeplink/QR payload watching (payloads are always
     server-created). WalletConnect (EVM/Stellar) lands next.
+  - `ZoneCryptoJS` — the frozen `@mosaic/zone-keys` crypto running as the
+    exact `@mosaic/mobile-bridge` JS inside a networkless JSContext, plus
+    Argon2id via libsodium. Golden-vector conformance runs in XCTest against
+    the real JavaScriptCore.
+  - `GuardianKit` — the ADR 0002 companion: XMTP transport (xmtp-ios),
+    pairing, approvals inbox models. Decisions are signed by the
+    vault-derived guardian key behind Face ID.
   - `ChainFeeds` — native polled balances (XRPL JSON-RPC, Horizon, Base RPC);
     amounts are decimal strings, never floats.
   - `VaultKeychain` — Keychain storage. Phase A keeps only the session token;
@@ -33,7 +40,7 @@ loopback); change it under Settings → Server.
 
 ## Custody rules (do not weaken)
 
-Phase A holds no key material. From Phase B on: the `zoneRootSecret` is
+The `zoneRootSecret` is
 unwrapped client-side only, cached in the Keychain behind Face ID
 (`biometryCurrentSet`, `WhenUnlockedThisDeviceOnly`); the backend only ever
 sees ciphertext and signed transaction blobs. `backup-wrap` signatures are

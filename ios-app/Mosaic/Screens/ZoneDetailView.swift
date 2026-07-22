@@ -6,18 +6,49 @@ struct ZoneDetailView: View {
   @Environment(AppModel.self) private var model
   let zone: ZoneListItem
 
+  @State private var showingUnlock = false
+
+  private var isUnlocked: Bool { model.vault.isUnlocked(zoneId: zone.zoneId) }
+
+  /// Prefer locally derived addresses (post-unlock) over server records.
+  private var addressEntries: [ZoneAddressItem] {
+    model.vault.unlocked[zone.zoneId]?.addresses ?? zone.addresses
+  }
+
   var body: some View {
     List {
       Section("Zone") {
         LabeledContent("Mode") { ZoneModeBadge(mode: zone.mode) }
+        LabeledContent("Status") {
+          Label(
+            isUnlocked ? "Unlocked" : "Locked",
+            systemImage: isUnlocked ? "lock.open.fill" : "lock.fill"
+          )
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(isUnlocked ? .green : .secondary)
+        }
         if let unlocked = zone.lastUnlockedAt {
           LabeledContent("Last unlocked", value: Formatting.timestamp(unlocked))
         }
         LabeledContent("Created", value: Formatting.timestamp(zone.createdAt))
+        if isUnlocked {
+          Button("Lock zone") { model.vault.lock(zoneId: zone.zoneId) }
+          if let auth = model.auth {
+            Button("Forget cached secret", role: .destructive) {
+              model.vault.forget(zone: zone, auth: auth)
+            }
+          }
+        } else {
+          Button {
+            showingUnlock = true
+          } label: {
+            Label("Unlock", systemImage: "faceid")
+          }
+        }
       }
 
       ForEach(RootChain.allCases) { chain in
-        let addresses = zone.addresses.filter { $0.chain == chain }
+        let addresses = addressEntries.filter { $0.chain == chain }
         if !addresses.isEmpty {
           Section(chain.displayName) {
             ForEach(addresses) { item in
@@ -46,6 +77,9 @@ struct ZoneDetailView: View {
     }
     .task {
       await model.refreshBalances(for: zone)
+    }
+    .sheet(isPresented: $showingUnlock) {
+      UnlockSheet(zone: zone)
     }
   }
 }

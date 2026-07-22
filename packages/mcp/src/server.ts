@@ -57,7 +57,8 @@ import { AuthService, validateChain, validateNetwork, type SignatureEnvelope, ty
 import { requireEnvUint32, validateUint32 } from './env.js';
 import { MosaicMcpError, mcpErrorContent } from './errors.js';
 import { createStderrLogger, type MosaicLogger } from './logging.js';
-import { MemoryStore, type BlobKind, type DexOrderRecord, type MosaicStore, type SigningRequest, type TransferRecord } from './store.js';
+import { apnsServiceFromEnv, type ApnsService } from './apns.js';
+import { MemoryStore, type BlobKind, type DexOrderRecord, type MobileDeviceRecord, type MosaicStore, type SigningRequest, type TransferRecord } from './store.js';
 import { openTestnetSecret, sealTestnetSecret, TESTNET_SERVER_POLICY } from './testnetVault.js';
 import type { XamanService } from './xaman.js';
 
@@ -70,6 +71,8 @@ export interface MosaicMcpOptions {
   xrplSourceTag?: number;
   /** Persistent server-side envelope key for the explicitly custodial Testnet sandbox mode. */
   testnetVaultKey?: Uint8Array;
+  /** APNs sender for mobile companion push. Defaults to env config (disabled when unset). */
+  apns?: ApnsService;
 }
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
@@ -423,6 +426,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   const store = opts.store ?? new MemoryStore();
   const auth = opts.auth ?? new AuthService(store, opts.xaman);
   const logger = opts.logger ?? createStderrLogger();
+  const apns = opts.apns ?? apnsServiceFromEnv();
 
   if (!reconciliationStarted.has(store as object)) {
     reconciliationStarted.add(store as object);
@@ -1664,6 +1668,121 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       await requireSession(args);
       if (!opts.xaman) throw new MosaicMcpError('XAMAN_UNAVAILABLE', 'Xaman is not configured');
       return ok(await opts.xaman.getPayloadResult(String(args.uuid)));
+    },
+  );
+
+  // --- Mobile companion devices (iOS): registration + content-free push ---
+
+  const publicDevice = (device: MobileDeviceRecord) => ({
+    id: device.id,
+    platform: device.platform,
+    deviceName: device.deviceName,
+    apnsEnvironment: device.apnsEnvironment,
+    createdAt: device.createdAt,
+    lastSeenAt: device.lastSeenAt,
+  });
+
+  reg(
+    'device_register',
+    {
+      description: 'Register (or refresh) this session’s mobile companion device for APNs push notifications.',
+      inputSchema: {
+        token: z.string(),
+        apnsToken: z.string().min(16).max(256).regex(/^[0-9a-fA-F]+$/),
+        deviceName: z.string().max(64).optional(),
+        platform: z.enum(['ios']).optional(),
+        apnsEnvironment: z.enum(['development', 'production']).optional(),
+      },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const device = await store.registerMobileDevice({
+        chain: session.chain,
+        address: session.address,
+        network: session.network,
+        platform: (args.platform as string | undefined) ?? 'ios',
+        apnsToken: String(args.apnsToken).toLowerCase(),
+        apnsEnvironment: (args.apnsEnvironment as 'development' | 'production' | undefined) ?? 'production',
+        deviceName: (args.deviceName as string | undefined) ?? '',
+      });
+      return ok({ device: publicDevice(device), pushConfigured: apns.configured });
+    },
+  );
+
+  reg(
+    'device_list',
+    {
+      description: 'List the mobile companion devices registered for the authenticated root wallet.',
+      inputSchema: { token: z.string() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const devices = await store.listMobileDevices({ chain: session.chain, address: session.address });
+      return ok({ devices: devices.map(publicDevice), pushConfigured: apns.configured });
+    },
+  );
+
+  reg(
+    'device_remove',
+    {
+      description: 'Remove a registered mobile companion device.',
+      inputSchema: { token: z.string(), deviceId: z.string().uuid() },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const removed = await store.removeMobileDevice(
+        { chain: session.chain, address: session.address },
+        String(args.deviceId),
+      );
+      if (!removed) throw new MosaicMcpError('NOT_FOUND', 'device not found');
+      return ok({ ok: true });
+    },
+  );
+
+  // Content-free wake-ups only: the phone learns WHAT changed over its
+  // authenticated channels (MCP / XMTP), never through APNs. Called by the
+  // desktop Guardian when it forwards an approval to the companion.
+  const pushWindow = new Map<string, number[]>();
+  const PUSH_WINDOW_MS = 60_000;
+  const PUSH_MAX_PER_WINDOW = 30;
+  const PUSH_TEXT: Record<string, { title: string; body: string }> = {
+    approval: { title: 'Mosaic', body: 'An approval is waiting in Mosaic.' },
+    unlock: { title: 'Mosaic', body: 'A zone unlock request is waiting in Mosaic.' },
+    activity: { title: 'Mosaic', body: 'There is new activity in Mosaic.' },
+  };
+
+  reg(
+    'push_notify',
+    {
+      description:
+        'Send a content-free wake-up push to the wallet’s registered companion devices (rate-limited; used by the desktop Guardian to surface waiting approvals).',
+      inputSchema: { token: z.string(), category: z.enum(['approval', 'unlock', 'activity']) },
+    },
+    async (args) => {
+      const session = await requireSession(args);
+      const ownerKey = `${session.chain}|${session.address}`;
+      const now = Date.now();
+      const recent = (pushWindow.get(ownerKey) ?? []).filter((at) => now - at < PUSH_WINDOW_MS);
+      if (recent.length >= PUSH_MAX_PER_WINDOW) {
+        throw new MosaicMcpError('RATE_LIMITED', 'too many push notifications; slow down');
+      }
+      recent.push(now);
+      pushWindow.set(ownerKey, recent);
+
+      const category = String(args.category);
+      const devices = await store.listMobileDevices({ chain: session.chain, address: session.address });
+      if (!apns.configured) return ok({ configured: false, delivered: 0, devices: devices.length });
+      let delivered = 0;
+      for (const device of devices) {
+        const text = PUSH_TEXT[category]!;
+        const result = await apns.send(device.apnsToken, device.apnsEnvironment, { ...text, category });
+        if (result.ok) delivered += 1;
+        else if (result.status === 410 || result.reason === 'BadDeviceToken' || result.reason === 'Unregistered') {
+          // Token is dead — drop the registration.
+          await store.removeMobileDevice({ chain: session.chain, address: session.address }, device.id);
+        }
+      }
+      return ok({ configured: true, delivered, devices: devices.length });
     },
   );
 

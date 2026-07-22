@@ -11,6 +11,7 @@ import {
   type ServiceStatus,
 } from '@mosaic/local-runtime';
 import { createXmtpControlTransport } from '@mosaic/local-runtime/control';
+import { GuardianCompanionControl } from './companion.js';
 import { GuardianXmtpControl } from './control.js';
 import { loginFromCli, promptSecret, type CliLogin } from './login.js';
 import { GuardianService, McpGuardianApi, type GuardianSession, type UnlockCredential } from './service.js';
@@ -34,6 +35,7 @@ const parentPort = (process as NodeJS.Process & { parentPort?: ParentPort }).par
 const send = (message: unknown): void => { if (parentPort) parentPort.postMessage(message); else process.send?.(message); };
 
 let control: GuardianXmtpControl | undefined;
+let companion: GuardianCompanionControl | undefined;
 let cliLogin: CliLogin | undefined;
 if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
   const transport = await createXmtpControlTransport({
@@ -41,6 +43,12 @@ if (process.env.MOSAIC_CONTROL_DISABLED !== '1') {
     directory: join(mosaicRuntimeDirectory(), 'control', `guardian-${options.network}`),
   });
   control = new GuardianXmtpControl(guardian, transport, options.network, (event) => send({ type: 'guardian-event', event }));
+  companion = new GuardianCompanionControl(
+    guardian, control, transport, options.network,
+    (event) => send({ type: 'guardian-event', event }),
+    (category) => guardian.notifyCompanionPush(options.network, category),
+  );
+  control.attachCompanion(companion);
   await control.start();
 }
 
@@ -68,6 +76,12 @@ async function handleAdmin(raw: unknown): Promise<void> {
         break;
       }
       case 'pairing.approve': await controlRequired().approvePairing(params.offer as unknown as PairingOffer); result = { approved: true }; break;
+      case 'companion.offer': {
+        if (!companion) throw new Error('Guardian XMTP control is disabled');
+        result = { offer: companion.createOffer() };
+        break;
+      }
+      case 'companion.status': result = { companion: companion?.companion() ?? {} }; break;
       case 'agent-start.approve': await controlRequired().approveAgentStart(String(params.requestId), credential(params)); result = { approved: true }; break;
       case 'approval.reject': await controlRequired().rejectApproval(String(params.requestId), typeof params.reason === 'string' ? params.reason : undefined); result = { rejected: true }; break;
       case 'privileged.approve': await controlRequired().resolvePrivileged(String(params.requestId)); result = { approved: true }; break;

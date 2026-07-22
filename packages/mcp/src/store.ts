@@ -86,6 +86,20 @@ export interface ZoneAddressRecord {
   createdAt: string;
 }
 
+/** A registered mobile companion device (APNs push target). */
+export interface MobileDeviceRecord {
+  id: string;
+  chain: RootChain;
+  address: string;
+  network: Network;
+  platform: string;
+  apnsToken: string;
+  apnsEnvironment: 'development' | 'production';
+  deviceName: string;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
 export type SigningRequest =
   | { kind: 'xrpl'; unsignedTransaction: Record<string, unknown> }
   | { kind: 'stellar'; unsignedXdr: string; networkPassphrase: string }
@@ -234,6 +248,11 @@ export interface MosaicStore {
   setZoneChainEnabled(zoneId: string, chainKey: string, enabled: boolean): Promise<ZoneChainSetting[]>;
   addZoneChain(zoneId: string, chainKey: string): Promise<ZoneChainAddResult>;
 
+  /** Upsert on (owner, apnsToken); re-registration refreshes metadata. */
+  registerMobileDevice(record: Omit<MobileDeviceRecord, 'id' | 'createdAt' | 'lastSeenAt'>): Promise<MobileDeviceRecord>;
+  listMobileDevices(owner: CatalogOwner): Promise<MobileDeviceRecord[]>;
+  removeMobileDevice(owner: CatalogOwner, deviceId: string): Promise<boolean>;
+
   getWalletSettings(owner: CatalogOwner): Promise<WalletSettings>;
   setWalletSettings(owner: CatalogOwner, settings: WalletSettings): Promise<WalletSettings>;
 
@@ -252,6 +271,21 @@ export function hashToken(token: string): string {
 
 export function newToken(): string {
   return randomBytes(32).toString('hex');
+}
+
+function mobileDeviceFromRow(row: Record<string, unknown>): MobileDeviceRecord {
+  return {
+    id: String(row.id),
+    chain: String(row.root_chain) as RootChain,
+    address: String(row.root_address),
+    network: String(row.network) as Network,
+    platform: String(row.platform),
+    apnsToken: String(row.apns_token),
+    apnsEnvironment: String(row.apns_environment) as 'development' | 'production',
+    deviceName: String(row.device_name),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    lastSeenAt: new Date(row.last_seen_at as string).toISOString(),
+  };
 }
 
 export function normalizeCatalogOwner(owner: CatalogOwner): CatalogOwner {
@@ -874,6 +908,36 @@ export class PostgresStore implements MosaicStore {
     return { ...asset, trustState: state };
   }
 
+  async registerMobileDevice(record: Omit<MobileDeviceRecord, 'id' | 'createdAt' | 'lastSeenAt'>): Promise<MobileDeviceRecord> {
+    const normalized = normalizeCatalogOwner({ chain: record.chain, address: record.address });
+    const [row] = await this.sql`
+      INSERT INTO mobile_devices (root_chain, root_address, network, platform, apns_token, apns_environment, device_name)
+      VALUES (${normalized.chain}, ${normalized.address}, ${record.network}, ${record.platform}, ${record.apnsToken}, ${record.apnsEnvironment}, ${record.deviceName})
+      ON CONFLICT (root_chain, root_address, apns_token)
+      DO UPDATE SET network = EXCLUDED.network, platform = EXCLUDED.platform,
+        apns_environment = EXCLUDED.apns_environment, device_name = EXCLUDED.device_name, last_seen_at = now()
+      RETURNING *`;
+    return mobileDeviceFromRow(row!);
+  }
+
+  async listMobileDevices(owner: CatalogOwner): Promise<MobileDeviceRecord[]> {
+    const normalized = normalizeCatalogOwner(owner);
+    const rows = await this.sql`
+      SELECT * FROM mobile_devices
+      WHERE root_chain = ${normalized.chain} AND root_address = ${normalized.address}
+      ORDER BY created_at`;
+    return rows.map(mobileDeviceFromRow);
+  }
+
+  async removeMobileDevice(owner: CatalogOwner, deviceId: string): Promise<boolean> {
+    const normalized = normalizeCatalogOwner(owner);
+    const rows = await this.sql`
+      DELETE FROM mobile_devices
+      WHERE id = ${deviceId} AND root_chain = ${normalized.chain} AND root_address = ${normalized.address}
+      RETURNING id`;
+    return rows.length > 0;
+  }
+
   async getWalletSettings(owner: CatalogOwner): Promise<WalletSettings> {
     const normalized = normalizeCatalogOwner(owner);
     const [row] = await this.sql`
@@ -1062,6 +1126,8 @@ export class MemoryStore implements MosaicStore {
   private walletSettings = new Map<string, WalletSettings>();
   /** zone id → chain id → enabled */
   private zoneChainSettings = new Map<string, Map<string, boolean>>();
+  /** owner key → registered companion devices */
+  private mobileDevices = new Map<string, MobileDeviceRecord[]>();
 
   async init(): Promise<void> {}
   async healthCheck(): Promise<{ ok: true }> {
@@ -1392,6 +1458,50 @@ export class MemoryStore implements MosaicStore {
     const normalized = normalizeCatalogOwner(owner);
     this.assetPreferences.get(`${normalized.chain}|${normalized.address}`)!.set(assetId, state);
     return { ...asset, trustState: state };
+  }
+
+  async registerMobileDevice(record: Omit<MobileDeviceRecord, 'id' | 'createdAt' | 'lastSeenAt'>): Promise<MobileDeviceRecord> {
+    const normalized = normalizeCatalogOwner({ chain: record.chain, address: record.address });
+    const key = `${normalized.chain}|${normalized.address}`;
+    const devices = this.mobileDevices.get(key) ?? [];
+    const now = new Date().toISOString();
+    const existing = devices.find((device) => device.apnsToken === record.apnsToken);
+    if (existing) {
+      const updated: MobileDeviceRecord = {
+        ...existing,
+        network: record.network,
+        platform: record.platform,
+        apnsEnvironment: record.apnsEnvironment,
+        deviceName: record.deviceName,
+        lastSeenAt: now,
+      };
+      this.mobileDevices.set(key, devices.map((device) => (device.id === existing.id ? updated : device)));
+      return { ...updated };
+    }
+    const created: MobileDeviceRecord = {
+      ...record,
+      chain: normalized.chain,
+      address: normalized.address,
+      id: randomUUID(),
+      createdAt: now,
+      lastSeenAt: now,
+    };
+    this.mobileDevices.set(key, [...devices, created]);
+    return { ...created };
+  }
+
+  async listMobileDevices(owner: CatalogOwner): Promise<MobileDeviceRecord[]> {
+    const normalized = normalizeCatalogOwner(owner);
+    return (this.mobileDevices.get(`${normalized.chain}|${normalized.address}`) ?? []).map((device) => ({ ...device }));
+  }
+
+  async removeMobileDevice(owner: CatalogOwner, deviceId: string): Promise<boolean> {
+    const normalized = normalizeCatalogOwner(owner);
+    const key = `${normalized.chain}|${normalized.address}`;
+    const devices = this.mobileDevices.get(key) ?? [];
+    const remaining = devices.filter((device) => device.id !== deviceId);
+    this.mobileDevices.set(key, remaining);
+    return remaining.length !== devices.length;
   }
 
   async getWalletSettings(owner: CatalogOwner): Promise<WalletSettings> {

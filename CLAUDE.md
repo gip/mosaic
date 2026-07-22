@@ -85,11 +85,19 @@ for Mainnet.
   shown in Electron and uses the same providers, MCP client, components, CSS,
   and assets as every other route.
 
+- `packages/mobile-bridge` — `@mosaic/mobile-bridge`: esbuild IIFE of the
+  frozen zone crypto + per-chain signers + the companion protocol for the iOS
+  app's JavaScriptCore. Never reimplement frozen crypto in Swift — extend this
+  bundle. `pnpm --filter @mosaic/mobile-bridge bundle`; the vm conformance
+  test runs the built bundle against the golden vectors in CI. After changing
+  it, run `ios-app/scripts/sync-bridge.sh` (CI enforces freshness).
 - `ios-app` — native SwiftUI companion app (iOS 17+, Xcode project +
-  `MosaicKit` SPM package): monitors zones/balances/activity and will approve
-  unlocks and agent actions as the attended Guardian companion from ADR 0001.
-  Never an agent host. Frozen crypto runs via the bundled JS bridge
-  (`@mosaic/mobile-bridge`, Phase B) — never a Swift reimplementation.
+  `MosaicKit` SPM package): zone/balance/activity monitor, on-device unlock +
+  transfer signing (browser-zone custody: Keychain + Face ID, backend sees
+  ciphertext only), and the attended Guardian companion from ADR 0002 —
+  approval forwards over XMTP, decisions signed by the vault-derived guardian
+  key, content-free APNs push via the MCP device registry. Never an agent
+  host.
 
 ## Commands
 

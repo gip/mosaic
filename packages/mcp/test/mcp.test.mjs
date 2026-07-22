@@ -1030,3 +1030,92 @@ test('PostgresStore serializes concurrent activity updates for one order', { ski
     await store.close();
   }
 });
+
+// ------------------------------------------------------- Mobile companions
+
+class FakeApns {
+  constructor() {
+    this.configured = true;
+    this.sent = [];
+    this.deadTokens = new Set();
+  }
+
+  async send(deviceToken, environment, alert) {
+    this.sent.push({ deviceToken, environment, alert });
+    if (this.deadTokens.has(deviceToken)) return { ok: false, status: 410, reason: 'Unregistered' };
+    return { ok: true, status: 200 };
+  }
+}
+
+test('MemoryStore upserts mobile devices per owner and isolates owners', async () => {
+  const store = new MemoryStore();
+  const ownerA = { chain: 'evm', address: '0xAAA0000000000000000000000000000000000001' };
+  const ownerB = { chain: 'xrpl', address: xrplAddress };
+  const base = { network: 'testnet', platform: 'ios', apnsEnvironment: 'production' };
+
+  const first = await store.registerMobileDevice({ ...base, chain: ownerA.chain, address: ownerA.address, apnsToken: 'aa'.repeat(16), deviceName: 'iPhone' });
+  const again = await store.registerMobileDevice({ ...base, chain: ownerA.chain, address: ownerA.address, apnsToken: 'aa'.repeat(16), deviceName: 'iPhone 17' });
+  assert.equal(first.id, again.id);
+  assert.equal(again.deviceName, 'iPhone 17');
+  await store.registerMobileDevice({ ...base, chain: ownerB.chain, address: ownerB.address, apnsToken: 'bb'.repeat(16), deviceName: 'other' });
+
+  assert.equal((await store.listMobileDevices(ownerA)).length, 1);
+  assert.equal((await store.listMobileDevices(ownerB)).length, 1);
+  // EVM owner addresses normalize case like the rest of the catalog surface.
+  assert.equal((await store.listMobileDevices({ chain: 'evm', address: ownerA.address.toUpperCase().replace('0X', '0x') })).length, 1);
+
+  assert.equal(await store.removeMobileDevice(ownerB, first.id), false);
+  assert.equal(await store.removeMobileDevice(ownerA, first.id), true);
+  assert.equal((await store.listMobileDevices(ownerA)).length, 0);
+});
+
+test('device registry + content-free push over HTTP', async () => {
+  const store = new MemoryStore();
+  const auth = new AuthService(store);
+  const apns = new FakeApns();
+  const server = await startHttpServer({ store, auth, apns, xrplSourceTag: 77, testnetVaultKey, bind: '127.0.0.1:0' });
+  const client = await connectClient(server.url);
+  try {
+    const challenge = await call(client, 'auth_challenge', { chain: 'evm', network: 'testnet', address: evmAccount.address });
+    const loginSig = await evmSign(challenge.message);
+    const { token } = await call(client, 'auth_verify', { challengeId: challenge.challengeId, signature: { type: 'evm', signature: loginSig } });
+
+    // Register, then refresh the same token (upsert).
+    const registered = await call(client, 'device_register', { token, apnsToken: 'ab'.repeat(16), deviceName: 'Test iPhone', apnsEnvironment: 'development' });
+    assert.equal(registered.pushConfigured, true);
+    assert.equal(registered.device.apnsEnvironment, 'development');
+    await call(client, 'device_register', { token, apnsToken: 'ab'.repeat(16), deviceName: 'Renamed' });
+    const list = await call(client, 'device_list', { token });
+    assert.equal(list.devices.length, 1);
+    assert.equal(list.devices[0].deviceName, 'Renamed');
+
+    // Push is content-free and fans out to registered devices.
+    const push = await call(client, 'push_notify', { token, category: 'approval' });
+    assert.deepEqual({ configured: push.configured, delivered: push.delivered }, { configured: true, delivered: 1 });
+    assert.equal(apns.sent.length, 1);
+    assert.equal(apns.sent[0].alert.category, 'approval');
+    assert.ok(!JSON.stringify(apns.sent[0].alert).includes('zone'), 'push payload must stay content-free');
+
+    // Dead tokens are dropped on delivery failure.
+    await call(client, 'device_register', { token, apnsToken: 'cd'.repeat(16), deviceName: 'Old phone' });
+    apns.deadTokens.add('cd'.repeat(16));
+    const second = await call(client, 'push_notify', { token, category: 'activity' });
+    assert.equal(second.delivered, 1);
+    assert.equal((await call(client, 'device_list', { token })).devices.length, 1);
+
+    // Rate limiting: 30/minute per owner.
+    for (let i = 2; i < 30; i++) await call(client, 'push_notify', { token, category: 'activity' });
+    await assert.rejects(call(client, 'push_notify', { token, category: 'activity' }), /too many push/);
+
+    // Removal round-trip.
+    const removed = await call(client, 'device_remove', { token, deviceId: list.devices[0].id });
+    assert.equal(removed.ok, true);
+    await assert.rejects(call(client, 'device_remove', { token, deviceId: list.devices[0].id }), /device not found/);
+
+    // Session required.
+    await assert.rejects(call(client, 'device_list', { token: 'bogus' }), /invalid or expired session/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});

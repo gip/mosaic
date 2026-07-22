@@ -1,0 +1,38 @@
+{
+  "reduced": [
+    {
+      "passphrase": "correct horse battery staple",
+      "saltHex": "1f262d343b424950575e656c737a8188",
+      "m": 8192,
+      "t": 2,
+      "p": 1,
+      "kekHex": "16a198da854d00cc154a22a4d3c3ee56c20715e1b4e21dc78fce0ebe89432020"
+    },
+    {
+      "passphrase": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "saltHex": "3e454c535a61686f767d848b9299a0a7",
+      "m": 8192,
+      "t": 2,
+      "p": 1,
+      "kekHex": "7aec8141576f961270952a03e8cc09564a74b7333d8d9e4de505d40f66545c19"
+    },
+    {
+      "passphrase": "päss-phrasé 🔑",
+      "saltHex": "5d646b727980878e959ca3aab1b8bfc6",
+      "m": 8192,
+      "t": 2,
+      "p": 1,
+      "kekHex": "fa01ef1a4e9acf73daa79796b9f5495be63c82882fc29d5054fb87a724cffdc1"
+    }
+  ],
+  "full": [
+    {
+      "passphrase": "mosaic zone passphrase",
+      "saltHex": "7c838a91989fa6adb4bbc2c9d0d7dee5",
+      "m": 262144,
+      "t": 3,
+      "p": 1,
+      "kekHex": "f112e3f9807e59deebeae8cfe3d1b80d593c4056603f2cbcda53c727a7cb6b1b"
+    }
+  ]
+}

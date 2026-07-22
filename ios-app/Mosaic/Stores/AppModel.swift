@@ -18,6 +18,8 @@ final class AppModel {
   }
 
   let api: MosaicAPI
+  let vault = VaultStore()
+  let companion = CompanionStore()
   private let tokenItem = KeychainItem(account: "mcp-session-token")
   private static let sessionDefaultsKey = "mosaic.session"
 
@@ -90,6 +92,7 @@ final class AppModel {
     zones = []
     activity = []
     balances = [:]
+    vault.lockAll()
     try? tokenItem.delete()
     UserDefaults.standard.removeObject(forKey: Self.sessionDefaultsKey)
   }

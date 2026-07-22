@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../zone-keys"
+    },
+    {
+      "path": "../mosaic-xrpl"
+    },
+    {
+      "path": "../mosaic-stellar"
+    },
+    {
+      "path": "../mosaic-evm"
+    },
+    {
+      "path": "../local-runtime"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ export * from './digest.js';
 export * from './keyLease.js';
 export * from './operationArguments.js';
 export * from './controlProtocol.js';
+export * from './companionProtocol.js';
 
 export function mosaicRuntimeDirectory(): string {
   return process.env.MOSAIC_RUNTIME_DIR || join(homedir(), '.mosaic', 'run');

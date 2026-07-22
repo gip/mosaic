@@ -31,7 +31,7 @@ least one zone created from web/desktop.
 11. **Logout**: Settings → Log out → back to login; relaunching does not
     restore the session.
 
-## Phase B — unlock + transfers (pending)
+## Phase B — unlock + transfers
 
 - Unlock via one `backup-wrap` re-signature (Xaman deeplink round trip).
 - Unlock fallback via passphrase (Argon2id) with wrong-passphrase rejection.
@@ -40,7 +40,7 @@ least one zone created from web/desktop.
   `transfer_submit`; activity row reaches `confirmed`.
 - Device wipe → recover the zone from layer 1.
 
-## Phase C — companion Guardian + push (pending)
+## Phase C — companion Guardian + push
 
 - Pair with the desktop Guardian via companion QR.
 - Agent start request on desktop → push arrives with the app killed →
