@@ -191,6 +191,23 @@ public actor ZoneCryptoEngine {
     try callString("guardianSignText", [secretHex, ref.jsonString, index, text])
   }
 
+  // MARK: Root-wallet signing payloads (WalletConnect)
+
+  /// Raw eth_signTypedData_v4 payload for a canonical zone message.
+  public func evmSignTypedDataPayload(messageJson: String, network: Network) throws -> String {
+    try callString("evmSignTypedDataPayload", [messageJson, network.rawValue])
+  }
+
+  /// Canonical JSON bytes Stellar wallets sign via stellar_signMessage.
+  public func canonicalZoneMessageJson(messageJson: String) throws -> String {
+    try callString("canonicalZoneMessageJson", [messageJson])
+  }
+
+  /// The frozen, timeless backup-wrap message for a zone (layer-1 unlock).
+  public func backupWrapMessageJson(ref: ZoneRef) throws -> String {
+    try callString("backupWrapMessageJson", [ref.jsonString])
+  }
+
   // MARK: Companion protocol (ADR 0002) — same pure JS the desktop runs
 
   /// Validates a scanned pairing offer; throws on tamper. Returns offer JSON.

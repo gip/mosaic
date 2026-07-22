@@ -1,8 +1,12 @@
 import './polyfills.js';
 
 import {
+  EVM_CHAIN_IDS,
+  backupWrapMessage,
+  canonicalJson,
   decodeBackupBlob,
   deriveAgentAddresses,
+  eip712TypedData,
   deriveEvmAgentKey,
   deriveStellarAgentKey,
   deriveXrplAgentKey,
@@ -272,6 +276,41 @@ const bridge = {
       key?.privateKey.fill(0);
       key?.publicKey.fill(0);
     }
+  },
+
+  // MARK: root-wallet signing payloads (WalletConnect)
+
+  /** Full eth_signTypedData_v4 payload JSON for a canonical zone message —
+   * the raw RPC form (EIP712Domain included), mirroring
+   * web-connector's evmSignTypedDataPayload. */
+  evmSignTypedDataPayload(messageJson: string, network: string): string {
+    const message = JSON.parse(messageJson) as Parameters<typeof eip712TypedData>[0];
+    const typed = eip712TypedData(message, EVM_CHAIN_IDS[network as Network]);
+    return JSON.stringify({
+      domain: typed.domain,
+      types: {
+        EIP712Domain: [
+          { name: 'name', type: 'string' },
+          { name: 'version', type: 'string' },
+          { name: 'chainId', type: 'uint256' },
+        ],
+        ...typed.types,
+      },
+      primaryType: typed.primaryType,
+      message,
+    });
+  },
+
+  /** Canonical JSON of a zone message — the exact bytes Stellar wallets sign
+   * via stellar_signMessage (SEP-53 handled wallet-side). */
+  canonicalZoneMessageJson(messageJson: string): string {
+    return canonicalJson(JSON.parse(messageJson));
+  },
+
+  /** The frozen, timeless backup-wrap message for a zone — the byte-identical
+   * request wallets re-sign to unwrap the layer-1 blob. */
+  backupWrapMessageJson(refJson: string): string {
+    return JSON.stringify(backupWrapMessage(parseRef(refJson)));
   },
 
   // MARK: guardian companion (Phase C)

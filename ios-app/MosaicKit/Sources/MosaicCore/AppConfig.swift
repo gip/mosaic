@@ -22,4 +22,19 @@ public enum AppConfig {
   public static func resetMCPURL() {
     UserDefaults.standard.removeObject(forKey: mcpURLKey)
   }
+
+  /// WalletConnect Cloud project id (public identifier, not a secret).
+  /// Settings override wins; falls back to the MosaicWalletConnectProjectID
+  /// Info.plist key baked at build time.
+  private static let wcProjectIdKey = "mosaic.walletConnectProjectId"
+
+  public static var walletConnectProjectId: String {
+    get {
+      if let stored = UserDefaults.standard.string(forKey: wcProjectIdKey), !stored.isEmpty {
+        return stored
+      }
+      return (Bundle.main.object(forInfoDictionaryKey: "MosaicWalletConnectProjectID") as? String) ?? ""
+    }
+    set { UserDefaults.standard.set(newValue, forKey: wcProjectIdKey) }
+  }
 }

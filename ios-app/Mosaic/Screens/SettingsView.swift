@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsView: View {
   @Environment(AppModel.self) private var model
   @State private var serverURLText = AppConfig.mcpURL.absoluteString
+  @State private var wcProjectId = AppConfig.walletConnectProjectId
   @State private var showingLogoutConfirm = false
 
   var body: some View {
@@ -38,6 +39,20 @@ struct SettingsView: View {
         Text("Server")
       } footer: {
         Text("Changing the server ends the current session. Default: \(AppConfig.defaultMCPURL.absoluteString)")
+      }
+
+      Section {
+        TextField("WalletConnect project id", text: $wcProjectId)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .font(.callout.monospaced())
+          .onChange(of: wcProjectId) { _, newValue in
+            AppConfig.walletConnectProjectId = newValue
+          }
+      } header: {
+        Text("WalletConnect")
+      } footer: {
+        Text("Public project id from cloud.walletconnect.com — required for MetaMask and Stellar wallet login.")
       }
 
       Section {

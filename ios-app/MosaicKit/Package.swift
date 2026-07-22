@@ -17,11 +17,20 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
     .package(url: "https://github.com/xmtp/xmtp-ios.git", from: "4.0.0"),
+    .package(url: "https://github.com/WalletConnect/WalletConnectSwiftV2.git", from: "1.19.0"),
   ],
   targets: [
     .target(name: "MosaicCore"),
     .target(name: "MCPClient", dependencies: ["MosaicCore"]),
-    .target(name: "WalletLink", dependencies: ["MosaicCore", "MCPClient"]),
+    .target(
+      name: "WalletLink",
+      dependencies: [
+        "MosaicCore", "MCPClient", "ZoneCryptoJS",
+        .product(name: "WalletConnect", package: "WalletConnectSwiftV2", condition: .when(platforms: [.iOS])),
+        .product(name: "WalletConnectNetworking", package: "WalletConnectSwiftV2", condition: .when(platforms: [.iOS])),
+        .product(name: "WalletConnectPairing", package: "WalletConnectSwiftV2", condition: .when(platforms: [.iOS])),
+      ]
+    ),
     .target(name: "ChainFeeds", dependencies: ["MosaicCore"]),
     .target(name: "VaultKeychain"),
     .target(

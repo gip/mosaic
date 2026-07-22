@@ -48,6 +48,15 @@ struct UnlockSheet: View {
               }
               .buttonStyle(.borderedProminent)
             }
+            if let auth = model.auth, auth.chain != .xrpl, hasSigBlob {
+              Button {
+                flow.unlockWithWalletConnect(model: model, zone: zone) { dismiss() }
+              } label: {
+                Label(auth.chain == .evm ? "Re-sign with MetaMask" : "Re-sign with Stellar wallet", systemImage: "signature")
+                  .frame(maxWidth: .infinity)
+              }
+              .buttonStyle(.bordered)
+            }
             if model.auth?.chain == .xrpl && hasSigBlob {
               let xamanButton = Button {
                 flow.unlockWithXaman(model: model, zone: zone, openURL: { openURL($0) }) { dismiss() }
@@ -81,6 +90,11 @@ struct UnlockSheet: View {
 
         case .xamanWaiting(let refs):
           XamanRequestView(refs: refs, status: "Sign the backup key request in Xaman…") {
+            flow.cancel()
+          }
+
+        case .wcPairing(let uri):
+          WalletConnectPairingView(uri: uri, chain: model.auth?.chain ?? .evm) {
             flow.cancel()
           }
 
@@ -121,6 +135,7 @@ final class UnlockFlow {
   enum Phase {
     case idle
     case xamanWaiting(XamanRefs)
+    case wcPairing(String)
     case working(String)
     case failed(String)
   }
@@ -168,6 +183,20 @@ final class UnlockFlow {
         return
       }
       try await model.vault.unlockWithXamanBlob(zone: zone, auth: auth, api: model.api, signedBlobHex: hex)
+      done()
+    }
+  }
+
+  func unlockWithWalletConnect(model: AppModel, zone: ZoneListItem, done: @escaping () -> Void) {
+    guard let auth = model.auth else { return }
+    run {
+      self.phase = .working("Connecting to the wallet…")
+      let ref = model.vault.ref(for: zone, auth: auth)
+      let signatureHex = try await WalletConnectBackupWrap.signatureHex(model: model, auth: auth, ref: ref) { uri in
+        Task { @MainActor in self.phase = .wcPairing(uri) }
+      }
+      self.phase = .working("Opening the recovery blob…")
+      try await model.vault.unlockWithSignatureBytes(zone: zone, auth: auth, api: model.api, signatureHex: signatureHex)
       done()
     }
   }

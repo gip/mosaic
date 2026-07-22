@@ -96,6 +96,24 @@ final class VaultStore {
     try await finishUnlock(zone: zone, ref: ref, secretHex: secretHex, auth: auth, api: api)
   }
 
+  /// Layer 1 for EVM/Stellar roots: the caller signed the byte-identical
+  /// backup-wrap message via WalletConnect and holds the raw signature bytes.
+  func unlockWithSignatureBytes(
+    zone: ZoneListItem, auth: AuthVerifyResult, api: MosaicAPI, signatureHex: String
+  ) async throws {
+    let ref = ref(for: zone, auth: auth)
+    let blob = try await api.blobGet(token: auth.token, zone: zone.zone, kind: "sig")
+    let secretHex = try await engine.openSignatureBlob(
+      signatureHex: signatureHex,
+      headerJson: blob.headerJson,
+      ciphertextB64: blob.ciphertextB64,
+      ref: ref,
+      commitment: zone.commitment
+    )
+    cacheSecret(secretHex: secretHex, ref: ref)
+    try await finishUnlock(zone: zone, ref: ref, secretHex: secretHex, auth: auth, api: api)
+  }
+
   /// Layer 2: passphrase → Argon2id (off-main; 256 MiB) → open.
   func unlockWithPassphrase(
     zone: ZoneListItem, auth: AuthVerifyResult, api: MosaicAPI, passphrase: String

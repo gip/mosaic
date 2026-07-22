@@ -14,7 +14,9 @@ attended Guardian companion, never an agent host.
     `tools/call`, SSE-framed responses) and typed wrappers mirroring
     `frontend/src/api.ts`. The bearer token is a tool argument, like web.
   - `WalletLink` — Xaman deeplink/QR payload watching (payloads are always
-    server-created). WalletConnect (EVM/Stellar) lands next.
+    server-created) plus WalletConnect v2 (MetaMask mobile for EVM, Stellar
+    wallets) for login and backup-wrap re-signing. Set the WC project id in
+    Settings (or the MosaicWalletConnectProjectID Info.plist key).
   - `ZoneCryptoJS` — the frozen `@mosaic/zone-keys` crypto running as the
     exact `@mosaic/mobile-bridge` JS inside a networkless JSContext, plus
     Argon2id via libsodium. Golden-vector conformance runs in XCTest against

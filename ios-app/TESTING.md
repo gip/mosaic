@@ -9,6 +9,9 @@ least one zone created from web/desktop.
 
 1. **Login (Xaman, this phone)**: pick Testnet → Continue with Xaman → tap
    "Open in Xaman" → sign. App lands on the Zones tab with the session active.
+1b. **Login (MetaMask)**: set the WalletConnect project id in Settings →
+   Continue with MetaMask → approve the session and signature in MetaMask
+   mobile. Same for a WC-capable Stellar wallet (Lobstr).
 2. **Login (Xaman, second device)**: same flow but scan the QR from Xaman on
    another phone. Resolution must arrive without touching the app.
 3. **Login rejection**: reject the payload in Xaman → app shows the rejection
@@ -33,7 +36,9 @@ least one zone created from web/desktop.
 
 ## Phase B — unlock + transfers
 
-- Unlock via one `backup-wrap` re-signature (Xaman deeplink round trip).
+- Unlock via one `backup-wrap` re-signature (Xaman deeplink round trip);
+  for EVM/Stellar roots the same via WalletConnect re-signing, including the
+  wrong-wallet rejection.
 - Unlock fallback via passphrase (Argon2id) with wrong-passphrase rejection.
 - Face ID cache hit on second unlock; commitment mismatch rejected.
 - Vault transfer on each chain (testnet), signed on-device, submitted via

@@ -15,19 +15,19 @@
   "companion": {
     "guardianAddress": "0x231a44547c7f1618C594F3BfED98d2a915848f96",
     "authorityIndex": 5,
-    "expiredOfferJson": "{\"protocol\":\"MOSAIC_AGENT_CONTROL_V3\",\"kind\":\"companion-offer\",\"guardianId\":\"0x231a44547c7f1618C594F3BfED98d2a915848f96\",\"guardianControlInboxId\":\"guardian-inbox\",\"vault\":\"top\",\"authorityIndex\":5,\"network\":\"mainnet\",\"nonce\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\",\"issuedAt\":\"2026-07-22T00:21:14.589Z\",\"expiresAt\":\"2026-07-22T00:26:14.589Z\",\"signatureB64\":\"UHW2nUF1XrqIOajgUROQ4Iiqfw3msutuxQMOJb7lliNW3KIKl6yLiyQtqlJp3gF30T9Hzy3GjiXsKeqk0VB5Jhs=\"}",
-    "forwardJson": "{\"protocol\":\"MOSAIC_AGENT_CONTROL_V3\",\"kind\":\"approval-forward\",\"requestId\":\"fixture-req-1\",\"guardianId\":\"0x231a44547c7f1618C594F3BfED98d2a915848f96\",\"guardianControlInboxId\":\"guardian-inbox\",\"companionInboxId\":\"phone-inbox\",\"sequence\":2,\"issuedAt\":\"2026-07-22T00:31:14.591Z\",\"expiresAt\":\"2036-07-19T00:31:14.591Z\",\"idempotencyKey\":\"fixture-req-1\",\"payloadDigest\":\"26f4a5e303af8d007f36a424de5acc9ee1f44ed144ce7e4d4ce1b1bb9fd84b2b\",\"payload\":{\"operation\":\"transaction.propose\",\"requestId\":\"fixture-req-1\",\"network\":\"mainnet\",\"summary\":{\"chain\":\"xrpl\",\"intentType\":\"payment\"}},\"signatureB64\":\"Fv7r0trhkdq6FyuwIo20NsZQYVG73zWaKHEDVj4S6GMYi2//q/u1mcjmSPgcIbzP+FY8pwdfxaSXbzRLtE9Huhw=\"}"
+    "expiredOfferJson": "{\"protocol\":\"MOSAIC_AGENT_CONTROL_V3\",\"kind\":\"companion-offer\",\"guardianId\":\"0x231a44547c7f1618C594F3BfED98d2a915848f96\",\"guardianControlInboxId\":\"guardian-inbox\",\"vault\":\"top\",\"authorityIndex\":5,\"network\":\"mainnet\",\"nonce\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\",\"issuedAt\":\"2026-07-22T00:35:44.459Z\",\"expiresAt\":\"2026-07-22T00:40:44.459Z\",\"signatureB64\":\"QzdXUKrlBppHsl0wjKZqBLoKSGgv5pPZiEecD0ZO1UxGx9d9UyXSn9PYOOYrHZhGC9iYQ2BaKWCrHaPdZWWD4Bs=\"}",
+    "forwardJson": "{\"protocol\":\"MOSAIC_AGENT_CONTROL_V3\",\"kind\":\"approval-forward\",\"requestId\":\"fixture-req-1\",\"guardianId\":\"0x231a44547c7f1618C594F3BfED98d2a915848f96\",\"guardianControlInboxId\":\"guardian-inbox\",\"companionInboxId\":\"phone-inbox\",\"sequence\":2,\"issuedAt\":\"2026-07-22T00:45:44.461Z\",\"expiresAt\":\"2036-07-19T00:45:44.461Z\",\"idempotencyKey\":\"fixture-req-1\",\"payloadDigest\":\"26f4a5e303af8d007f36a424de5acc9ee1f44ed144ce7e4d4ce1b1bb9fd84b2b\",\"payload\":{\"operation\":\"transaction.propose\",\"requestId\":\"fixture-req-1\",\"network\":\"mainnet\",\"summary\":{\"chain\":\"xrpl\",\"intentType\":\"payment\"}},\"signatureB64\":\"pj5Mzm4Ya0wvwY3dZ0Ai1ehErpXkwO2Gbyy2uCj3lTVAlosoDjoPtUq1HYdlg7M+ZPptC9KV09nJDOk9tr7E7hw=\"}"
   },
   "signatureBlob": {
     "signatureHex": "ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
-    "headerJson": "{\"v\":1,\"alg\":\"xchacha20poly1305\",\"nonce\":\"BvTfwl5t7JP4DRulOzDK+oN/7oKo56G+\",\"kdf\":{\"type\":\"sig-hkdf-v1\"}}",
-    "ciphertextB64": "aVLpFKDw2n1TxH8KaS2rPifWzW6H5YpprA3kq1n75urQfw1CNlbIkNJLamz4C6YI"
+    "headerJson": "{\"v\":1,\"alg\":\"xchacha20poly1305\",\"nonce\":\"IO1C8iMtDrvoHNClSKYKYh/MCUG8w7sh\",\"kdf\":{\"type\":\"sig-hkdf-v1\"}}",
+    "ciphertextB64": "1hKUbW7yXKVwNInbtA/XoTLmcNCo7yGuAO/omkGxxqCWPS8elZopHSUzQ+6IwAeK"
   },
   "passphraseBlob": {
     "kekHex": "16a198da854d00cc154a22a4d3c3ee56c20715e1b4e21dc78fce0ebe89432020",
     "passphrase": "correct horse battery staple",
-    "headerJson": "{\"v\":1,\"alg\":\"xchacha20poly1305\",\"nonce\":\"u2sDxAnLAaK1BISxdjWF9GnQNqGWIf+r\",\"kdf\":{\"type\":\"argon2id\",\"salt\":\"HyYtNDtCSVBXXmVsc3qBiA==\",\"m\":262144,\"t\":3,\"p\":1}}",
-    "ciphertextB64": "W68GVlpBegg6p/lXdnBUKxvNLzBW4zYL43EsEoTEEX51eiA4vpDEd2SJPADOK82h"
+    "headerJson": "{\"v\":1,\"alg\":\"xchacha20poly1305\",\"nonce\":\"U+bqZct7++Z3NWR4dDvVuwZ6cR30dMzG\",\"kdf\":{\"type\":\"argon2id\",\"salt\":\"HyYtNDtCSVBXXmVsc3qBiA==\",\"m\":262144,\"t\":3,\"p\":1}}",
+    "ciphertextB64": "bdYzLzUH3CRPSarZVNGqOt/GDE1KpmWsLaImdpNgFtVAMmh9oG049LLX0IPJhOnJ"
   },
   "xrplSignIn": {
     "blobHex": "228000000024000000006840000000000000007321EDABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB7446304402201111111111111111111111111111111111111111111111111111111111111111022022222222222222222222222222222222222222222222222222222222222222228114B5F762798A53D543A014CAF8B297CFF8F2F937E8",
@@ -39,9 +39,9 @@
       "expectedTxBlob": "12000022800000002400000007201B000003E86140000000000F424068400000000000000C732102ACB2DDA8CBF3FFCA85239780043F729D9F8F9935248036C072EA2F68DCE174757446304402205072696633C35449124846E783B0C32AEA20F4F425564482924DA1A07D9B315B02206FE8AAC1ABCE158A2099A7736CBDC4E09D7F4E49C1FF0299D8818D81BE72119181148F2E8A4023A388C4978C7D72D65115DB0708CA8F83148F2E8A4023A388C4978C7D72D65115DB0708CA8F"
     },
     "stellar": {
-      "unsignedXdr": "AAAAAgAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAGQAAAAAAAAACAAAAAEAAAAAAAAAAAAAAABqYBB+AAAAAAAAAAEAAAAAAAAAAQAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAAAAAAAAAJiWgAAAAAAAAAAA",
+      "unsignedXdr": "AAAAAgAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAGQAAAAAAAAACAAAAAEAAAAAAAAAAAAAAABqYBPkAAAAAAAAAAEAAAAAAAAAAQAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAAAAAAAAAJiWgAAAAAAAAAAA",
       "network": "testnet",
-      "expectedSignedXdr": "AAAAAgAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAGQAAAAAAAAACAAAAAEAAAAAAAAAAAAAAABqYBB+AAAAAAAAAAEAAAAAAAAAAQAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAAAAAAAAAJiWgAAAAAAAAAABcAi0lgAAAEAXK5dL6V1yhVm8kl0F/KM8D+lFzfTAsO4PV6TUmIVYFhNS8PLWHZXstQcN0NOSaHOSf1+0zz1CF8OGjzV9+QwM"
+      "expectedSignedXdr": "AAAAAgAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAGQAAAAAAAAACAAAAAEAAAAAAAAAAAAAAABqYBPkAAAAAAAAAAEAAAAAAAAAAQAAAADR6vryReVfv5uhI8X9D6e28poIagr/RXY/QMeRcAi0lgAAAAAAAAAAAJiWgAAAAAAAAAABcAi0lgAAAEAjn5xLWVsDcX5C5mtpxU1pmcHtwWlwXWGaB7arDRYUTqvSQ320dtYoy8YOVD5KDZi3aBFCHHoSq1WJ6V0HyNUF"
     },
     "evm": {
       "unsignedJson": "{\"from\":\"0x397B641eE531B74df352e6a124ce8b3566964d78\",\"to\":\"0x000000000000000000000000000000000000dEaD\",\"value\":\"0x2386f26fc10000\",\"chainId\":\"0x14a34\",\"gas\":\"0x5208\",\"maxFeePerGas\":\"0x3b9aca00\",\"maxPriorityFeePerGas\":\"0x3b9aca00\",\"nonce\":\"0x0\",\"type\":\"0x2\"}",

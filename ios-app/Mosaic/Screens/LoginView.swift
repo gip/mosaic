@@ -10,6 +10,7 @@ struct LoginView: View {
   @Environment(AppModel.self) private var model
   @State private var network: Network = .testnet
   @State private var flow = XamanLoginFlow()
+  @State private var wcFlow = WalletConnectLoginFlow()
 
   var body: some View {
     NavigationStack {
@@ -42,22 +43,31 @@ struct LoginView: View {
           }
           .buttonStyle(.borderedProminent)
 
-          Button {} label: {
-            Label("MetaMask (EVM) — coming soon", systemImage: "link")
+          Button {
+            wcFlow.start(model: model, chain: .evm, network: network)
+          } label: {
+            Label("Continue with MetaMask (EVM)", systemImage: "link")
               .frame(maxWidth: .infinity)
           }
           .buttonStyle(.bordered)
-          .disabled(true)
 
-          Button {} label: {
-            Label("Stellar wallet — coming soon", systemImage: "link")
+          Button {
+            wcFlow.start(model: model, chain: .stellar, network: network)
+          } label: {
+            Label("Continue with a Stellar wallet", systemImage: "link")
               .frame(maxWidth: .infinity)
           }
           .buttonStyle(.bordered)
-          .disabled(true)
         }
         .padding(.horizontal, 32)
 
+        if case .failed(let wcError) = wcFlow.phase {
+          Text(wcError)
+            .font(.footnote)
+            .foregroundStyle(.red)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal)
+        }
         if let error = flow.errorMessage {
           Text(error)
             .font(.footnote)
@@ -69,6 +79,22 @@ struct LoginView: View {
       }
       .sheet(isPresented: $flow.showingPayload) {
         XamanPayloadSheet(flow: flow)
+      }
+      .sheet(isPresented: Binding(
+        get: { if case .pairing = wcFlow.phase { return true }; return false },
+        set: { if !$0 { wcFlow.cancel() } }
+      )) {
+        if case .pairing(let uri, let chain) = wcFlow.phase {
+          WalletConnectPairingView(uri: uri, chain: chain) { wcFlow.cancel() }
+            .presentationDetents([.medium, .large])
+        }
+      }
+      .overlay {
+        if case .waitingSignature = wcFlow.phase {
+          ProgressView("Waiting for the wallet signature…")
+            .padding(20)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
       }
     }
   }
