@@ -124,6 +124,35 @@ async function readiness(store: NonNullable<MosaicMcpOptions['store']>, xamanCon
   return { ok, checks };
 }
 
+type Readiness = Awaited<ReturnType<typeof readiness>>;
+
+/**
+ * `/readyz` is unauthenticated and probes both Postgres and the XRPL RPC.
+ * Platform health checks and scanners poll it far faster than readiness can
+ * change, so cache the last probe and coalesce concurrent ones — otherwise an
+ * idle deployment with nobody logged in still runs a query per hit.
+ */
+function cachedReadiness(
+  store: NonNullable<MosaicMcpOptions['store']>,
+  xamanConfigured: boolean,
+  ttlMs: number,
+): () => Promise<Readiness> {
+  let cached: { at: number; result: Readiness } | undefined;
+  let inFlight: Promise<Readiness> | undefined;
+  return async () => {
+    if (cached && ttlMs > 0 && Date.now() - cached.at < ttlMs) return cached.result;
+    inFlight ??= readiness(store, xamanConfigured)
+      .then((result) => {
+        cached = { at: Date.now(), result };
+        return result;
+      })
+      .finally(() => {
+        inFlight = undefined;
+      });
+    return inFlight;
+  };
+}
+
 export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ close(): Promise<void>; url: string }> {
   const xrplSourceTag = resolveXrplSourceTag(opts.xrplSourceTag);
   const bind = opts.bind ?? envString('MOSAIC_BIND') ?? `127.0.0.1:${envNumber('MOSAIC_MCP_PORT', 8788)}`;
@@ -161,8 +190,22 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ c
   }, Math.max(transportTtlMs / 2, 30_000));
   cleanup.unref?.();
 
-  const sweep = setInterval(() => void store.sweepExpired().catch(() => {}), 10 * 60_000);
+  // Sessions, challenges and tickets only appear through `/mcp`, so a server
+  // nobody is using has nothing to expire. Sweeping on a bare timer would keep
+  // a scale-to-zero Postgres awake around the clock; sweep only when there has
+  // been MCP traffic since the last pass (the initial `true` clears whatever
+  // expired while the process was down).
+  const sweepIntervalMs = envNumber('MOSAIC_MCP_SWEEP_INTERVAL_MS', 10 * 60_000);
+  let mcpTrafficSinceSweep = true;
+  const sweep = setInterval(() => {
+    if (!mcpTrafficSinceSweep) return;
+    mcpTrafficSinceSweep = false;
+    void store.sweepExpired().catch(() => {});
+  }, sweepIntervalMs);
   sweep.unref?.();
+
+  const readyzTtlMs = envNumber('MOSAIC_MCP_READYZ_TTL_MS', 15_000, { allowZero: true });
+  const readyz = cachedReadiness(store, Boolean(xaman), readyzTtlMs);
 
   const http = createServer(async (req, res) => {
     const corsOk = writeCors(req, res, corsOrigins);
@@ -181,7 +224,7 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ c
       return;
     }
     if (path === '/readyz') {
-      const ready = await readiness(store, Boolean(xaman));
+      const ready = await readyz();
       sendJson(res, ready.ok ? 200 : 503, ready);
       return;
     }
@@ -189,6 +232,7 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<{ c
       sendJson(res, 404, { error: 'not found' });
       return;
     }
+    mcpTrafficSinceSweep = true;
     let parsedBody: unknown;
     try {
       parsedBody = req.method === 'POST' ? await readJson(req, maxBodyBytes) : undefined;

@@ -1030,3 +1030,60 @@ test('PostgresStore serializes concurrent activity updates for one order', { ski
     await store.close();
   }
 });
+
+/** Counts store calls so idle-server database traffic is observable in tests. */
+function countingStore(inner, counts) {
+  return new Proxy(inner, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function' || typeof prop !== 'string') return value;
+      return (...args) => {
+        counts[prop] = (counts[prop] ?? 0) + 1;
+        return value.apply(target, args);
+      };
+    },
+  });
+}
+
+test('an idle server does not hit the database: /readyz is cached and the sweep needs MCP traffic', async () => {
+  const counts = {};
+  const store = countingStore(new MemoryStore(), counts);
+  const previousSweep = process.env.MOSAIC_MCP_SWEEP_INTERVAL_MS;
+  process.env.MOSAIC_MCP_SWEEP_INTERVAL_MS = '100';
+  const server = await startHttpServer({ store, xrplSourceTag: 77, bind: '127.0.0.1:0' });
+  const origin = server.url.replace(/\/mcp$/, '');
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 500));
+  let client;
+  try {
+    // Health checks poll far faster than readiness can change; one probe serves all.
+    for (let i = 0; i < 5; i++) await fetch(`${origin}/readyz`);
+    assert.equal(counts.healthCheck, 1);
+
+    // The first tick clears whatever expired while the process was down; after
+    // that an untouched server must stop querying entirely.
+    await settle();
+    assert.equal(counts.sweepExpired, 1);
+    await settle();
+    assert.equal(counts.sweepExpired, 1);
+
+    // Real MCP traffic re-arms it — expiries only exist because someone called.
+    // Let the handshake's own requests land before counting, so a sweep tick
+    // landing between them cannot make this flaky.
+    client = await connectClient(server.url);
+    await settle();
+    counts.sweepExpired = 0;
+
+    await settle();
+    assert.equal(counts.sweepExpired, 0, 'an open transport is not traffic');
+    await client.listTools();
+    await settle();
+    assert.equal(counts.sweepExpired, 1);
+    await settle();
+    assert.equal(counts.sweepExpired, 1);
+  } finally {
+    if (previousSweep === undefined) delete process.env.MOSAIC_MCP_SWEEP_INTERVAL_MS;
+    else process.env.MOSAIC_MCP_SWEEP_INTERVAL_MS = previousSweep;
+    await client?.close();
+    await server.close();
+  }
+});
