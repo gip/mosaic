@@ -564,13 +564,18 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
   reg(
     'auth_network_switch',
     {
-      description: 'Exchange a valid session for the same wallet on another derivation network without another signature.',
+      description: 'Exchange an EVM/Stellar session for the same wallet on another network. XRPL requires a fresh session-auth login on the destination ledger.',
       inputSchema: { token: z.string(), network: z.enum(['mainnet', 'testnet']) },
     },
     async (args) => {
       const session = await requireSession(args);
       const network = String(args.network) as Network;
       if (network === session.network) return ok(session);
+      // Sessions do not retain the signing key, and XRPL master/regular-key
+      // authority can differ between ledgers. Never promote that authority.
+      if (session.chain === 'xrpl') {
+        throw new MosaicMcpError('AUTH_REAUTH_REQUIRED', 'Log in with Xaman again on the selected network to verify its signing authority.');
+      }
       const { token } = await store.createSession({
         chain: session.chain, address: session.address, network, expiresAt: session.expiresAt,
       });

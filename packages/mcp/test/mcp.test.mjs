@@ -20,6 +20,7 @@ import { AuthService } from '../dist/auth.js';
 import { MemoryStore, PostgresStore, hashToken } from '../dist/store.js';
 import { startHttpServer } from '../dist/http.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { AGENT_ARTIFACT_PROTOCOL, AGENT_RUNTIME_VERSION, artifactDigest, sha256Hex } from '@mosaic/local-runtime';
 import { XummXamanService } from '../dist/xaman.js';
@@ -237,6 +238,35 @@ function stellarSign(message) {
 }
 
 // ------------------------------------------------------------- AuthService
+
+test('XRPL network switching requires fresh destination-ledger authentication', async () => {
+  const store = new MemoryStore();
+  const xaman = new FakeXaman(xrplKeypair, xrplAddress);
+  const checkedNetworks = [];
+  const auth = new AuthService(store, xaman, { checkAuthority: async (_account, _signer, network) => {
+    checkedNetworks.push(network);
+    return { authoritative: network === 'testnet', reason: 'master disabled on mainnet' };
+  } });
+  const challenge = await auth.challenge({ chain: 'xrpl', network: 'testnet' });
+  const session = await auth.verify({ challengeId: challenge.challengeId });
+  const server = createMosaicMcpServer({ store, auth, xaman, xrplSourceTag: 77 });
+  const client = new Client({ name: 'network-switch-test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  try {
+    const same = await call(client, 'auth_network_switch', { token: session.token, network: 'testnet' });
+    assert.equal(same.token, session.token);
+    const rejected = await client.callTool({ name: 'auth_network_switch', arguments: { token: session.token, network: 'mainnet' } });
+    assert.equal(JSON.parse(rejected.content[0].text).error.code, 'AUTH_REAUTH_REQUIRED');
+    assert.equal((await auth.requireSession(session.token)).network, 'testnet');
+    const destination = await auth.challenge({ chain: 'xrpl', network: 'mainnet' });
+    await assert.rejects(() => auth.verify({ challengeId: destination.challengeId }), /not authoritative/);
+    assert.deepEqual(checkedNetworks, ['testnet', 'mainnet']);
+    const evm = await store.createSession({ chain: 'evm', address: evmAccount.address, network: 'testnet', expiresAt: Date.now() + 60000 });
+    const switched = await call(client, 'auth_network_switch', { token: evm.token, network: 'mainnet' });
+    assert.equal(switched.network, 'mainnet');
+  } finally { await client.close(); await server.close(); }
+});
 
 test('evm login: challenge → sign → verify → session', async () => {
   const store = new MemoryStore();

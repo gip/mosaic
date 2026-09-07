@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 export type MosaicMcpErrorCode =
   | 'AUTH_EXPIRED'
   | 'AUTH_INVALID'
+  | 'AUTH_REAUTH_REQUIRED'
   | 'VALIDATION_FAILED'
   | 'NOT_FOUND'
   | 'CONFLICT'
@@ -16,6 +17,7 @@ export type MosaicMcpErrorCode =
 const STATUS: Record<MosaicMcpErrorCode, number> = {
   AUTH_EXPIRED: 401,
   AUTH_INVALID: 401,
+  AUTH_REAUTH_REQUIRED: 401,
   VALIDATION_FAILED: 400,
   NOT_FOUND: 404,
   CONFLICT: 409,

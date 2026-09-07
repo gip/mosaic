@@ -61,3 +61,4 @@ export function createBalancesFeed(
 ): BalancesFeed {
   return new PollingBalancesFeed(fetchBalances, request, options);
 }
+export { assertReviewedXrplTransaction } from './review.js';

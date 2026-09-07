@@ -2,6 +2,7 @@ import { deriveStellarAgentKey, deriveXrplAgentKey, zoneSeed, type ZoneRef } fro
 import { api, type AuthVerifyResult, type DexOrderPrepareResult, type XamanRefs } from '../../api';
 import { readCachedZoneSecret } from '../../zone/cache';
 import type { TradingAccount } from '../../hooks/useTradingAccounts';
+import { validateTransactionReview } from '../transactionReview';
 
 export interface DexSigningUi {
   signRootStellarTransaction: (xdr: string) => Promise<string>;
@@ -57,6 +58,8 @@ export async function signAndSubmitOrder(
   session: AuthVerifyResult,
   ui: DexSigningUi,
 ) {
+  if (prepared.order.kind !== 'order') throw new Error('Expected an order review.');
+  await validateTransactionReview(prepared.order, prepared.signingRequest, account, session);
   if (prepared.signingRequest.kind === 'xaman') {
     const abort = new AbortController();
     ui.showXaman(prepared.signingRequest, () => abort.abort());

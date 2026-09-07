@@ -54,3 +54,4 @@ export function createBalancesFeed(
 ): BalancesFeed {
   return new PollingBalancesFeed(fetchBalances, request, options);
 }
+export { assertReviewedStellarTransaction } from './review.js';

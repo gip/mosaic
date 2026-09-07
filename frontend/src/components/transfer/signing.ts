@@ -2,6 +2,7 @@ import { deriveEvmAgentKey, deriveStellarAgentKey, deriveXrplAgentKey, zoneSeed,
 import { api, type AuthVerifyResult, type TransferPrepareResult, type XamanRefs } from '../../api';
 import { readCachedZoneSecret } from '../../zone/cache';
 import type { WalletAccount } from '../../hooks/useWalletAccounts';
+import { validateTransactionReview } from '../transactionReview';
 
 export interface TransferSigningUi {
   signRootStellarTransaction: (xdr: string) => Promise<string>;
@@ -53,6 +54,8 @@ export async function signAndSubmitTransfer(
   session: AuthVerifyResult,
   ui: TransferSigningUi,
 ) {
+  if (prepared.transfer.kind !== 'transfer') throw new Error('Expected a transfer review.');
+  await validateTransactionReview(prepared.transfer, prepared.signingRequest, account, session);
   if (prepared.signingRequest.kind === 'xaman') {
     const abort = new AbortController();
     ui.showXaman(prepared.signingRequest, () => abort.abort());

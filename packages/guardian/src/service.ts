@@ -14,6 +14,7 @@ import {
   openSignatureBlob,
   openVaultData,
   passphraseKdfParams,
+  verifyCommitment,
   sealVaultData,
   sealAgentSecretStore,
   zoneSeed,
@@ -242,6 +243,8 @@ function signEip191(privateKey: Uint8Array, message: string): Uint8Array {
 
 export class GuardianService {
   private session?: GuardianSession;
+  private custodyGeneration = 0;
+  private readonly pendingUnlocks = new Map<string, Promise<void>>();
   private readonly vaults = new Map<string, UnlockedVault>();
   private readonly runnerApprovals = new Map<string, number>();
   private guardianIdentity?: UnlockedIdentity;
@@ -250,7 +253,10 @@ export class GuardianService {
   constructor(private readonly api: GuardianApi = new McpGuardianApi()) {}
 
   attachSession(session: GuardianSession): void {
-    if (session.expiresAt <= Date.now()) throw new Error('MCP session is expired');
+    if (!Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now()) throw new Error('MCP session is expired');
+    if (this.session && (this.session.chain !== session.chain || this.session.address !== session.address || this.session.network !== session.network)) {
+      this.lockAll();
+    }
     this.session = { ...session };
   }
 
@@ -261,9 +267,28 @@ export class GuardianService {
   }
 
   async unlockVault(vault: string, network: MosaicNetwork, credential?: UnlockCredential): Promise<void> {
-    if (this.vaults.has(vault)) return;
     const session = this.requireSession(network);
+    if (this.vaults.has(vault)) { this.requireVault(vault); return; }
+    const generation = this.custodyGeneration;
+    const key = `${generation}|${vault}`;
+    const existing = this.pendingUnlocks.get(key);
+    if (existing) return existing;
+    const pending = this.openVault(vault, network, session, generation, credential);
+    this.pendingUnlocks.set(key, pending);
+    try { await pending; }
+    finally { if (this.pendingUnlocks.get(key) === pending) this.pendingUnlocks.delete(key); }
+  }
+
+  private assertCustodySession(session: GuardianSession, generation: number): void {
+    const current = this.requireSession(session.network);
+    if (generation !== this.custodyGeneration || current.chain !== session.chain || current.address !== session.address) {
+      throw new Error('Guardian wallet or network changed during the operation');
+    }
+  }
+
+  private async openVault(vault: string, network: MosaicNetwork, session: GuardianSession, generation: number, credential?: UnlockCredential): Promise<void> {
     const item = (await this.api.zoneList(session.token)).find((candidate) => candidate.zone === vault);
+    this.assertCustodySession(session, generation);
     if (!item) throw new Error(`vault not found: ${vault} (${network})`);
     const ref: ZoneRef = { rootChain: session.chain, rootAddress: session.address, zone: vault, network };
     let secret: Uint8Array;
@@ -298,15 +323,18 @@ export class GuardianService {
     } else {
       throw new Error(`vault ${vault} requires a backup-wrap signature or passphrase`);
     }
-    if (secret.length !== 32) { secret.fill(0); throw new Error('vault secret must be 32 bytes'); }
+    if (secret.length !== 32 || !verifyCommitment(secret, item.commitment)) { secret.fill(0); throw new Error('vault secret commitment mismatch'); }
 
     let data: VaultDataV1;
     let dataVersion: number;
     let secretStore: AgentSecretStoreV1;
     let secretStoreVersion: number;
     try {
+      this.assertCustodySession(session, generation);
       ({ data, version: dataVersion } = await this.fetchVaultData(session, ref, secret));
       ({ store: secretStore, version: secretStoreVersion } = await this.fetchAgentSecrets(session, ref, secret));
+      await this.api.zoneUnlocked(session.token, vault);
+      this.assertCustodySession(session, generation);
     } catch (error) {
       secret.fill(0);
       throw error;
@@ -315,7 +343,6 @@ export class GuardianService {
     const secretRecords = secretStore.secrets.map(({ materialB64: _material, ...metadata }) => metadata);
     secretStore.secrets = [];
     this.vaults.set(vault, { ref, item, secret, data, dataVersion, secretRecords, secretBuffers, secretStoreVersion, keys: new Map() });
-    await this.api.zoneUnlocked(session.token, vault);
   }
 
   /**
@@ -400,7 +427,15 @@ export class GuardianService {
   private requireVault(vault: string): UnlockedVault {
     const unlocked = this.vaults.get(vault);
     if (!unlocked) throw new Error(`vault is locked: ${vault}`);
+    const session = this.requireSession(unlocked.ref.network);
+    if (session.chain !== unlocked.ref.rootChain || session.address !== unlocked.ref.rootAddress) {
+      throw new Error('MCP session does not own the unlocked vault');
+    }
     return unlocked;
+  }
+
+  private assertCurrentVault(unlocked: UnlockedVault): void {
+    if (this.requireVault(unlocked.ref.zone) !== unlocked) throw new Error('vault changed during the operation');
   }
 
   async ensureIdentity(vault: string, name: string): Promise<UnlockedIdentity> {
@@ -409,6 +444,7 @@ export class GuardianService {
     let address = unlocked.item.addresses.find((candidate) => candidate.chain === 'evm' && candidate.name === name);
     if (!address) {
       address = await this.api.zoneAddressCreate(session.token, vault, 'evm', name);
+      this.assertCurrentVault(unlocked);
       unlocked.item.addresses.push(address);
     }
     const derived = deriveEvmAgentKey(zoneSeed(unlocked.secret, unlocked.ref), address.index);
@@ -434,6 +470,7 @@ export class GuardianService {
   private async saveData(unlocked: UnlockedVault, update: (data: VaultDataV1) => VaultDataV1): Promise<void> {
     const session = this.requireSession(unlocked.ref.network);
     for (let attempt = 0; ; attempt++) {
+      this.assertCurrentVault(unlocked);
       const next = update(unlocked.data);
       const sealed = sealVaultData(unlocked.secret, unlocked.ref, next, unlocked.dataVersion + 1);
       try {
@@ -445,6 +482,7 @@ export class GuardianService {
           header: sealed.header as unknown as Record<string, unknown>,
           expectedVersion: unlocked.dataVersion,
         });
+        this.assertCurrentVault(unlocked);
         unlocked.data = next;
         unlocked.dataVersion = saved.version;
         return;
@@ -452,6 +490,7 @@ export class GuardianService {
         const conflict = (error as { code?: string }).code === 'CONFLICT' || /version conflict/i.test(String(error));
         if (!conflict || attempt >= 1) throw error;
         const latest = await this.fetchVaultData(session, unlocked.ref, unlocked.secret);
+        this.assertCurrentVault(unlocked);
         unlocked.data = latest.data;
         unlocked.dataVersion = latest.version;
       }
@@ -459,6 +498,7 @@ export class GuardianService {
   }
 
   private async saveAgentSecrets(unlocked: UnlockedVault, records: AgentSecretMetadata[], materials: Map<string, Uint8Array>): Promise<void> {
+    this.assertCurrentVault(unlocked);
     const session = this.requireSession(unlocked.ref.network);
     const next: AgentSecretStoreV1 = {
       v: 1,
@@ -478,6 +518,7 @@ export class GuardianService {
       header: sealed.header as unknown as Record<string, unknown>,
       expectedVersion: unlocked.secretStoreVersion,
     });
+    this.assertCurrentVault(unlocked);
     for (const material of unlocked.secretBuffers.values()) material.fill(0);
     unlocked.secretRecords = records;
     unlocked.secretBuffers = materials;
@@ -632,8 +673,10 @@ export class GuardianService {
     if (!policy?.enabled) throw new Error(`agent is disabled or has no installation: ${params.agentId}`);
     const session = this.requireSession(unlocked.ref.network);
     const artifact = await this.fetchVerifiedArtifact(session.token, policy.artifactDigest);
+    this.assertCurrentVault(unlocked);
     assertInstallationPolicy(artifact.manifest, policy, unlocked.ref.network);
     await this.initializeAgentCommunicationKeys(params.agentId);
+    this.assertCurrentVault(unlocked);
     const ownerBytes = unlocked.secretBuffers.get('xmtp-owner')?.slice();
     if (!ownerBytes) throw new Error('XMTP owner key is unavailable');
     let xmtpAddress: string;
@@ -667,6 +710,7 @@ export class GuardianService {
     }, params.supervisorKeyLeasePublicKeyB64);
     for (const secret of secrets) secret.materialB64 = '';
     const ticket = await this.api.agentArtifactTicketCreate(session.token, policy.artifactDigest, grant.certificateDigest);
+    this.assertCurrentVault(unlocked);
     return { agentId: params.agentId, manifest: artifact.manifest, artifactTicket: ticket.ticket, grant, sealedKeyLease };
   }
 
@@ -777,6 +821,7 @@ export class GuardianService {
   }
 
   lockAll(): void {
+    this.custodyGeneration += 1;
     for (const vault of this.vaults.values()) {
       vault.secret.fill(0);
       for (const key of vault.keys.values()) key.fill(0);
