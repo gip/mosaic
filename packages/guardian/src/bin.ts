@@ -59,7 +59,11 @@ async function handleAdmin(raw: unknown): Promise<void> {
     let result: unknown;
     switch (message.method) {
       case 'status': result = { ...status, control: control?.identity(), pendingApprovals: control?.pendingApprovals() ?? [] }; break;
-      case 'session.attach': guardian.attachSession(params as unknown as LocalMcpSession); status = { ...status, phase: 'unlocking' }; result = { attached: true }; break;
+      case 'session.attach': {
+        if (params.network !== options.network) throw new Error('Restart Guardian to change its control network');
+        guardian.attachSession(params as unknown as LocalMcpSession);
+        status = { ...status, phase: 'unlocking' }; result = { attached: true }; break;
+      }
       case 'guardian.start': {
         status = { ...status, phase: 'unlocking', detail: 'Unlocking Guardian vault…' };
         const identity = await guardian.startGuardian(String(params.vault ?? options.vault), (params.network ?? options.network) as 'testnet' | 'mainnet', credential(params));

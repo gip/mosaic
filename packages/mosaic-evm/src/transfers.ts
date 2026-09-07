@@ -1,4 +1,4 @@
-import { formatScaled, type Network, type TransferIntent } from '@mosaic/chain-core';
+import { assertReviewFresh, assertReviewedFields, reviewedUnits, formatScaled, type Network, type TransferIntent, type TransferPreview } from '@mosaic/chain-core';
 import {
   createPublicClient,
   decodeFunctionData,
@@ -80,6 +80,29 @@ export async function prepareEvmTransfer(intent: TransferIntent, decimals: numbe
 
 function privateKeyHex(privateKey: Uint8Array): Hex {
   return `0x${Array.from(privateKey, (value) => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export function assertReviewedEvmTransfer(transaction: EvmTransactionRequest, review: TransferPreview, decimals: number): void {
+  assertReviewFresh(review, 'evm', 'ETH');
+  const chainId = review.network === 'mainnet' ? base.id : baseSepolia.id;
+  const quantity = reviewedUnits(review.amount, decimals);
+  if (quantity <= 0n) throw new Error('transfer amount must be positive');
+  for (const field of ['value', 'chainId', 'gas', 'maxFeePerGas', 'maxPriorityFeePerGas', 'nonce'] as const) {
+    if (typeof transaction[field] !== 'string' || !/^0x[0-9a-f]+$/i.test(transaction[field])) throw new Error(`invalid EVM ${field}`);
+  }
+  if (BigInt(transaction.chainId) !== BigInt(chainId) || BigInt(transaction.gas) <= 0n ||
+      BigInt(transaction.maxPriorityFeePerGas) > BigInt(transaction.maxFeePerGas) ||
+      BigInt(transaction.gas) * BigInt(transaction.maxFeePerGas) !== reviewedUnits(review.fee, 18)) {
+    throw new Error('EVM network or maximum fee differs from review');
+  }
+  const token = review.asset.kind === 'issued' ? review.asset.issuer as Address : undefined;
+  const data = token ? encodeFunctionData({ abi: ERC20_TRANSFER_ABI, functionName: 'transfer', args: [review.destinationAddress as Address, quantity] }) : undefined;
+  const { gas, maxFeePerGas, maxPriorityFeePerGas, nonce } = transaction;
+  assertReviewedFields({ ...transaction, from: transaction.from.toLowerCase(), to: transaction.to.toLowerCase(), ...(transaction.data ? { data: transaction.data.toLowerCase() } : {}) }, {
+    from: review.sourceAddress.toLowerCase(), to: (token ?? review.destinationAddress).toLowerCase(),
+    ...(data ? { data } : {}), value: token ? '0x0' : hex(quantity), chainId: hex(chainId),
+    gas, maxFeePerGas, maxPriorityFeePerGas, nonce, type: '0x2',
+  });
 }
 
 export async function signEvmTransfer(transaction: EvmTransactionRequest, privateKey: Uint8Array): Promise<Hex> {

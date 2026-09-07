@@ -61,7 +61,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [networkSwitchError, setNetworkSwitchError] = useState<string | null>(null);
 
   // Canonical session signatures remain network-bound. A valid live session
-  // can be exchanged server-side for the same wallet on another network.
+  // can be exchanged for EVM/Stellar; XRPL must authenticate on the new ledger.
   useEffect(() => {
     if (!session || session.network === network || switchingRef.current) return;
     switchingRef.current = true;
@@ -72,13 +72,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* memory-only */ }
         setSession(next);
       }).catch((cause: unknown) => {
-        if (cause instanceof ApiError && cause.code === 'AUTH_EXPIRED') {
+        if (cause instanceof ApiError && (cause.code === 'AUTH_EXPIRED' || cause.code === 'AUTH_REAUTH_REQUIRED')) {
           // The stored session is already dead server-side; drop it so pages
           // reflect reality instead of showing stale previous-network data.
           signerRef.current = null;
           sessionStorage.removeItem(SESSION_KEY);
           setSession(null);
-          setNetworkSwitchError('Your session has expired. Log in again to continue on the selected network.');
+          void clearZoneCache();
+          void api.authLogout(session.token).catch(() => {});
+          setNetworkSwitchError(cause.code === 'AUTH_REAUTH_REQUIRED' ? cause.message : 'Your session has expired. Log in again to continue on the selected network.');
           return;
         }
         setNetworkSwitchError(cause instanceof Error ? cause.message : String(cause));

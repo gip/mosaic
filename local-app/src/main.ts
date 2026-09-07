@@ -32,6 +32,7 @@ let window: BrowserWindow | null = null;
 let rendererServer: Server | null = null;
 let quitting = false;
 let supervisorEnrolled = false;
+let guardianSessionScope: string | undefined;
 const supervisorPending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
 const guardianPending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timeout: NodeJS.Timeout }>();
 const guardianApprovalEvents: Array<{ requestId: string; operation: string; agentId?: string }> = [];
@@ -109,6 +110,7 @@ function startService(name: ServiceName, packageName: string, args: string[] = [
     // A restarted process requires a new attended certificate pairing. There
     // is no reusable bearer/session credential.
     if (name === 'agent-runner' || name === 'mosaic-guardian') supervisorEnrolled = false;
+    if (name === 'mosaic-guardian') guardianSessionScope = undefined;
     const pendingRequests = name === 'mosaic-guardian' ? guardianPending : supervisorPending;
     for (const [requestId, pending] of pendingRequests) {
       pendingRequests.delete(requestId);
@@ -170,11 +172,22 @@ async function startGuardian(args: {
 }): Promise<ServiceStatus> {
   const vault = args.vault?.trim() || DEFAULT_GUARDIAN_VAULT;
   const network = args.network ?? 'testnet';
+  if (args.session.network !== network) throw new Error('Guardian network must match the wallet session');
+  const scope = JSON.stringify([args.session.chain, args.session.address, network]);
+  // Control transports and certificates are process/network scoped. A new
+  // wallet must not inherit a previous wallet's unlocked vaults or enrollment.
+  if ((guardianSessionScope !== undefined && guardianSessionScope !== scope) ||
+      (children.has('agent-runner') && statuses.get('agent-runner')?.network !== network)) {
+    await stopChildren();
+    guardianApprovalEvents.length = 0;
+    supervisorEnrolled = false;
+  }
   if (!children.has('mosaic-guardian')) {
     startService('mosaic-guardian', '@mosaic/guardian', [vault, '--network', network]);
     await waitForService('mosaic-guardian');
   }
   await guardianRequest('session.attach', args.session as unknown as Record<string, unknown>);
+  guardianSessionScope = scope;
   await guardianRequest('guardian.start', {
     vault,
     network,

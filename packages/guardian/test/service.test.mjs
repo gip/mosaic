@@ -5,7 +5,7 @@ import {
   AGENT_ARTIFACT_PROTOCOL, AGENT_CONTROL_PROTOCOL, AGENT_RUNTIME_VERSION, artifactDigest, contractDigest,
   generateKeyLeaseRecipient, openAgentKeyLease, sha256Hex,
 } from '@mosaic/local-runtime';
-import { openAgentSecretStore, openVaultData, sealVaultData, zoneRootCommitmentHex } from '@mosaic/zone-keys';
+import { openAgentSecretStore, openVaultData, sealSignatureBlob, sealVaultData, zoneRootCommitmentHex } from '@mosaic/zone-keys';
 import { GuardianService, McpGuardianApi } from '../dist/index.js';
 
 const rootAddress = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
@@ -74,6 +74,74 @@ class FakeApi {
 function session() {
   return { token: 'token', chain: 'evm', address: rootAddress, network: 'testnet', expiresAt: Date.now() + 60_000 };
 }
+
+test('Guardian invalidates custody on wallet/network changes and checks cached unlock sessions', async () => {
+  const api = new FakeApi();
+  const guardian = new GuardianService(api);
+  guardian.attachSession(session());
+  await guardian.startGuardian('mosaic-agent-guardian', 'testnet');
+  await guardian.unlockVault('second-agent', 'testnet');
+  const retainedSecret = guardian.vaults.get('second-agent').secret;
+  const retainedKey = guardian.vaults.get('mosaic-agent-guardian').keys.get('guardian');
+  guardian.attachSession({ ...session(), token: 'renewed' });
+  assert.equal(guardian.status().unlockedVaults.length, 2, 'same-owner token renewal preserves custody');
+  await assert.rejects(() => guardian.unlockVault('second-agent', 'mainnet'), /not mainnet/);
+  guardian.attachSession({ ...session(), address: '0x0000000000000000000000000000000000000001' });
+  assert.deepEqual(guardian.status().unlockedVaults, []);
+  assert.ok(retainedSecret.every((byte) => byte === 0));
+  assert.ok(retainedKey.every((byte) => byte === 0));
+  assert.throws(() => guardian.controlAuthority(), /not running/);
+  await guardian.unlockVault('second-agent', 'testnet');
+  guardian.attachSession({ ...session(), network: 'mainnet' });
+  assert.deepEqual(guardian.status().unlockedVaults, []);
+  await assert.rejects(() => guardian.unlockVault('second-agent', 'mainnet'), /Testnet-only/);
+  guardian.lockAll();
+});
+
+test('Guardian discards an in-flight unlock after custody scope changes', async () => {
+  const api = new FakeApi();
+  let release;
+  let started;
+  const waiting = new Promise((resolve) => { started = resolve; });
+  api.zoneTestnetUnlock = async () => {
+    started();
+    await new Promise((resolve) => { release = resolve; });
+    return { commitment, zoneRootSecretB64: Buffer.from(secret).toString('base64') };
+  };
+  const guardian = new GuardianService(api);
+  guardian.attachSession(session());
+  const unlocking = guardian.unlockVault('second-agent', 'testnet');
+  await waiting;
+  guardian.attachSession({ ...session(), address: 'another-wallet' });
+  release();
+  await assert.rejects(unlocking, /changed/);
+  assert.deepEqual(guardian.status().unlockedVaults, []);
+});
+
+test('a protected Mainnet vault cannot be reused by another wallet without recovery credentials', async () => {
+  const api = new FakeApi();
+  api.zones = [{ ...zone('protected'), mode: 'signed' }];
+  const signature = new Uint8Array(65).fill(9);
+  const wrapped = sealSignatureBlob(signature, secret, { rootChain: 'evm', rootAddress, zone: 'protected', network: 'mainnet' });
+  api.blobs.set('protected:sig', { kind: 'sig', version: 1, header: wrapped.header, ciphertextB64: Buffer.from(wrapped.ciphertext).toString('base64') });
+  const guardian = new GuardianService(api);
+  guardian.attachSession({ ...session(), network: 'mainnet' });
+  await guardian.unlockVault('protected', 'mainnet', { type: 'signature', signature });
+  guardian.attachSession({ ...session(), address: '0x0000000000000000000000000000000000000001', network: 'mainnet' });
+  await assert.rejects(() => guardian.unlockVault('protected', 'mainnet'), /requires a backup-wrap signature/);
+  await assert.rejects(() => guardian.unlockVault('protected', 'mainnet', { type: 'signature', signature }));
+  assert.deepEqual(guardian.status().unlockedVaults, []);
+});
+
+test('Guardian rejects a cached unlock after session expiry', async () => {
+  const guardian = new GuardianService(new FakeApi());
+  const current = { ...session(), expiresAt: Date.now() + 60000 };
+  guardian.attachSession(current);
+  await guardian.unlockVault('second-agent', 'testnet');
+  guardian.session.expiresAt = Date.now() - 1;
+  await assert.rejects(() => guardian.unlockVault('second-agent', 'testnet'), /active MCP session/);
+  guardian.lockAll();
+});
 
 test('Guardian unlocks default vaults, allocates named addresses, and encrypts links', async () => {
   process.env.MOSAIC_XMTP_DISABLED = '1';

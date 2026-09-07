@@ -14,6 +14,7 @@ import { fetchBalances } from './balances.js';
 
 export { EVM_RPC_ENDPOINTS, fetchBalances } from './balances.js';
 export {
+  assertReviewedEvmTransfer,
   evmTransactionHash,
   lookupEvmTransfer,
   prepareEvmTransfer,
