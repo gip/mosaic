@@ -150,6 +150,15 @@ header.topbar {
   background-color: var(--logo-fill);
   -webkit-mask: url(/mosaic-logo.png) center / contain no-repeat;
   mask: url(/mosaic-logo.png) center / contain no-repeat;
+  animation: intro-logo-spin 24s linear infinite;
+}
+@keyframes intro-logo-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .intro-logo {
+    animation: none;
+  }
 }
 .topnav {
   display: flex;
