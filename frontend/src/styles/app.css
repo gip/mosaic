@@ -1307,7 +1307,6 @@
 .dex-cost-intro { margin-bottom: var(--sp-3); }
 .dex-cost-intro p { margin: 0; color: var(--fg-muted); font-size: var(--fs-xs); }
 .dex-cost-intro span { display: block; margin-top: 3px; color: var(--warn); font-size: var(--fs-xs); }
-.dex-cost-view .dex-execution-table { min-width: 470px; }
 .dex-cost-view .dex-execution-table th,
 .dex-cost-view .dex-execution-table td { padding: 7px 5px; }
 
