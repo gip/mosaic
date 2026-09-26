@@ -14,5 +14,5 @@ export {
   type AgentArtifactRecord,
 } from './store.js';
 export { XummXamanService, xamanServiceFromEnv, type XamanService, type XamanPayloadRefs, type XamanPayloadResult } from './xaman.js';
-export { checkXrplSignerAuthority, xrplRpcUrl } from './xrplLedger.js';
+export { checkXrplSignerAuthority, xrplRpcUrl, xrplWsUrl } from './xrplLedger.js';
 export { MosaicMcpError, classifyMcpError, mcpErrorContent, errorMessage } from './errors.js';

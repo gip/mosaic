@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { FeedStatus, OrderBookRequest, OrderBookSnapshot } from '@mosaic/chain-core';
-import { loadChainModule } from '../../chains/load';
+import { feedEndpoints, loadChainModule } from '../../chains/load';
 
 export interface OrderBookFeedState {
   snapshot: OrderBookSnapshot | null;
@@ -38,7 +38,7 @@ export function useOrderBookFeed(request: OrderBookRequest, enabled = true): Ord
       try {
         const request = JSON.parse(requestKey) as OrderBookRequest;
         const { createOrderBookFeed } = await loadChainModule(request.chain);
-        const feed = createOrderBookFeed(request);
+        const feed = createOrderBookFeed(request, feedEndpoints(request.chain, request.network));
         const unsubscribe = feed.subscribe((event) => {
           if (event.type === 'snapshot') {
             setState((s) => ({ ...s, snapshot: event.snapshot, error: null }));

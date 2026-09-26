@@ -1,3 +1,4 @@
+import { XRPL_WS_ENDPOINTS, xrplClientFactory, type XrplClientFactory } from '@mosaic/xrpl';
 import type { Network } from '@mosaic/zone-keys';
 import { MosaicMcpError } from './errors.js';
 import { envString } from './env.js';
@@ -19,6 +20,17 @@ const LSF_DISABLE_MASTER = 0x00100000;
 export function xrplRpcUrl(network: Network): string {
   const override = envString(network === 'mainnet' ? 'MOSAIC_XRPL_RPC_MAINNET' : 'MOSAIC_XRPL_RPC_TESTNET');
   return override ?? DEFAULT_RPC[network];
+}
+
+/** WebSocket node for xrpl.js clients (order/transfer prep, submit, lookups). */
+export function xrplWsUrl(network: Network): string {
+  const override = envString(network === 'mainnet' ? 'MOSAIC_XRPL_WS_MAINNET' : 'MOSAIC_XRPL_WS_TESTNET');
+  return override ?? XRPL_WS_ENDPOINTS[network];
+}
+
+/** xrpl.js client factory bound to the configured WebSocket node for `network`. */
+export function xrplClient(network: Network): XrplClientFactory {
+  return xrplClientFactory(xrplWsUrl(network));
 }
 
 async function rpc(network: Network, method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {

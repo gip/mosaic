@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { FeedStatus, OrderBookRequest, QuoteSurface } from '@mosaic/chain-core';
-import { loadChainModule } from '../../chains/load';
+import { feedEndpoints, loadChainModule } from '../../chains/load';
 
 export interface QuoteSurfaceFeedState {
   surface: QuoteSurface | null;
@@ -40,7 +40,10 @@ export function useQuoteSurfaceFeed(
       try {
         const config = JSON.parse(requestKey) as { request: OrderBookRequest; quoteAmounts?: string[] };
         const { createQuoteSurfaceFeed } = await loadChainModule(config.request.chain);
-        const feed = createQuoteSurfaceFeed(config.request, { quoteAmounts: config.quoteAmounts });
+        const feed = createQuoteSurfaceFeed(config.request, {
+          quoteAmounts: config.quoteAmounts,
+          ...feedEndpoints(config.request.chain, config.request.network),
+        });
         const unsubscribe = feed.subscribe((event) => {
           if (event.type === 'surface') {
             setState((s) => ({ ...s, surface: event.surface, error: null }));

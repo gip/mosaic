@@ -18,7 +18,7 @@ import type {
   FeedStatus,
   KnownAsset,
 } from '@mosaic/chain-core';
-import { loadChainModule } from '../chains/load';
+import { feedEndpoints, loadChainModule } from '../chains/load';
 import { useCatalog } from './CatalogContext';
 import { useSession } from './SessionContext';
 import { useSettings } from './SettingsContext';
@@ -155,7 +155,7 @@ export function BalancesProvider({ children }: { children: ReactNode }) {
       void (async () => {
         try {
           const { createBalancesFeed } = await loadChainModule(chain);
-          const feed = createBalancesFeed(request);
+          const feed = createBalancesFeed(request, feedEndpoints(chain, request.network));
           feedsRef.current[chain] = feed;
           const unsubscribe = feed.subscribe((event) => {
             if (event.type === 'balances') {

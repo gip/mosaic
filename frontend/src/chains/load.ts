@@ -3,12 +3,14 @@ import type {
   BalancesFeedOptions,
   BalancesRequest,
   DexChain,
+  Network,
   OrderBookFeed,
   OrderBookFeedOptions,
   OrderBookRequest,
   QuoteSurfaceFeed,
   QuoteSurfaceFeedOptions,
 } from '@mosaic/chain-core';
+import { XRPL_WS_ENDPOINTS } from '../config';
 
 /** The factory surface every chain package exports. */
 export interface ChainModule {
@@ -36,4 +38,10 @@ export function loadChainModule(chain: DexChain): Promise<ChainModule> {
     case 'evm':
       return import('@mosaic/evm');
   }
+}
+
+/** Configured node overrides to spread into any feed's options for a chain. */
+export function feedEndpoints(chain: DexChain, network: Network): { streamEndpoint?: string } {
+  const streamEndpoint = chain === 'xrpl' ? XRPL_WS_ENDPOINTS[network] : undefined;
+  return streamEndpoint ? { streamEndpoint } : {};
 }
