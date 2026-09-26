@@ -689,6 +689,7 @@
   position: relative;
   display: grid;
   place-items: center;
+  --orbit-r: 77.5px;
   width: 156px;
   height: 156px;
   margin-bottom: clamp(36px, 5vw, 64px);
@@ -712,13 +713,29 @@
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+/* The dot orbits the outer ring: anchored at the centre, rotated, then pushed out
+   by --orbit-r (the outer border's centreline). */
 .intro-mark::after {
-  top: 18px;
-  right: 22px;
+  top: 50%;
+  left: 50%;
   width: 6px;
   height: 6px;
+  margin: -3px 0 0 -3px;
   background: var(--accent);
   box-shadow: 0 0 14px var(--accent);
+  transform: rotate(43deg) translateY(calc(-1 * var(--orbit-r)));
+  animation: intro-orbit 14s linear infinite;
+}
+
+@keyframes intro-orbit {
+  from { transform: rotate(43deg) translateY(calc(-1 * var(--orbit-r))); }
+  to { transform: rotate(403deg) translateY(calc(-1 * var(--orbit-r))); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-mark::after {
+    animation: none;
+  }
 }
 
 .intro-title {
@@ -748,6 +765,7 @@
   }
 
   .intro-mark {
+    --orbit-r: 63.5px;
     width: 128px;
     height: 128px;
     margin-bottom: var(--sp-8);

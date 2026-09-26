@@ -83,6 +83,16 @@ function endpoint(network: Network): string {
   return XRPL_WS_ENDPOINTS[network];
 }
 
+export type XrplClientFactory = (defaultUrl: string) => Client;
+
+/**
+ * Client factory pinned to one WebSocket node, ignoring the per-network
+ * public default. For callers (the MCP server) that run against their own node.
+ */
+export function xrplClientFactory(url: string): XrplClientFactory {
+  return () => new Client(url);
+}
+
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('').toUpperCase();
 }

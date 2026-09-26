@@ -60,6 +60,7 @@ import { createStderrLogger, type MosaicLogger } from './logging.js';
 import { MemoryStore, type BlobKind, type DexOrderRecord, type MosaicStore, type SigningRequest, type TransferRecord } from './store.js';
 import { openTestnetSecret, sealTestnetSecret, TESTNET_SERVER_POLICY } from './testnetVault.js';
 import type { XamanService } from './xaman.js';
+import { xrplClient } from './xrplLedger.js';
 
 export interface MosaicMcpOptions {
   store?: MosaicStore;
@@ -220,7 +221,7 @@ async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord, xrp
   if (canResubmit || legacyUnknownFailure) {
     const known = record.transactionHash
       ? record.chain === 'xrpl'
-        ? await lookupXrplTransaction(record.network, record.transactionHash)
+        ? await lookupXrplTransaction(record.network, record.transactionHash, xrplClient(record.network))
         : await lookupStellarTransaction(record.network, record.transactionHash)
       : null;
     if (known) {
@@ -259,7 +260,7 @@ async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord, xrp
       }
     }
     const result = record.chain === 'xrpl'
-      ? await submitXrplTransaction(record.network, signedPayload, xrplSourceTag)
+      ? await submitXrplTransaction(record.network, signedPayload, xrplSourceTag, xrplClient(record.network))
       : await submitStellarTransaction(record.network, signedPayload);
     const successful = isSuccessfulTransaction(result.resultCode);
     const indeterminate = isUnknownTransactionResult(result.resultCode);
@@ -298,7 +299,7 @@ async function reconcileDexOrder(store: MosaicStore, record: DexOrderRecord, xrp
   }
   if (record.action === 'cancel' || !record.offerId || !['open', 'partially_filled', 'confirmed'].includes(record.status)) return record;
   const remaining = record.chain === 'xrpl'
-    ? await getXrplOfferRemaining(record.network, record.sourceAddress, Number(record.offerId), record.side)
+    ? await getXrplOfferRemaining(record.network, record.sourceAddress, Number(record.offerId), record.side, xrplClient(record.network))
     : await getStellarOfferRemaining(record.network, record.offerId, record.side);
   const status: OrderStatus = remaining === null ? 'filled' : remaining === record.amount ? 'open' : 'partially_filled';
   const remainingAmount = remaining ?? '0';
@@ -377,7 +378,7 @@ function assertTransferStellarMatches(record: TransferRecord, signedXdr: string)
 async function reconcileTransfer(store: MosaicStore, record: TransferRecord, xrplSourceTag: number): Promise<TransferRecord> {
   const known = record.transactionHash
     ? record.chain === 'xrpl'
-      ? await lookupXrplTransaction(record.network, record.transactionHash)
+      ? await lookupXrplTransaction(record.network, record.transactionHash, xrplClient(record.network))
       : record.chain === 'stellar'
         ? await lookupStellarTransaction(record.network, record.transactionHash)
         : await lookupEvmTransfer(record.network, record.transactionHash)
@@ -403,7 +404,7 @@ async function reconcileTransfer(store: MosaicStore, record: TransferRecord, xrp
     });
   }
   const result = record.chain === 'xrpl'
-    ? await submitXrplTransaction(record.network, record.signedPayload, xrplSourceTag)
+    ? await submitXrplTransaction(record.network, record.signedPayload, xrplSourceTag, xrplClient(record.network))
     : await submitStellarTransaction(record.network, record.signedPayload);
   const successful = isSuccessfulTransaction(result.resultCode);
   const indeterminate = isUnknownTransactionResult(result.resultCode);
@@ -709,7 +710,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         destinationAddress, assetId, asset, assetSymbol: deployment.symbol, amount,
       };
       const prepared = chain === 'xrpl'
-        ? await prepareXrplTransfer(intent, xrplSourceTag)
+        ? await prepareXrplTransfer(intent, xrplSourceTag, xrplClient(intent.network))
         : chain === 'stellar'
           ? await prepareStellarTransfer(intent)
           : await prepareEvmTransfer(intent, deployment.decimals);
@@ -810,7 +811,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         }
         if (record.chain === 'evm') return ok({ transfer: publicTransfer(await reconcileTransfer(store, submitted, xrplSourceTag)) });
         const result = record.chain === 'xrpl'
-          ? await submitXrplTransaction(record.network, payload!, xrplSourceTag)
+          ? await submitXrplTransaction(record.network, payload!, xrplSourceTag, xrplClient(record.network))
           : await submitStellarTransaction(record.network, payload!);
         const successful = isSuccessfulTransaction(result.resultCode);
         const next = await store.updateTransfer(owner, session.network, record.id, {
@@ -880,7 +881,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
         baseSymbol: String(args.baseSymbol), quoteSymbol: String(args.quoteSymbol), amount, limitPrice,
       };
       const prepared = chain === 'xrpl'
-        ? await prepareXrplOrder(intent, quoteTotal, xrplSourceTag)
+        ? await prepareXrplOrder(intent, quoteTotal, xrplSourceTag, xrplClient(intent.network))
         : await prepareStellarOrder(intent, quoteTotal);
       let signingRequest: SigningRequest;
       let preparedTransaction: Record<string, unknown> | undefined;
@@ -965,7 +966,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       await store.updateDexOrder(owner, session.network, record.id, { status: 'submitted', signedPayload: payload, submittedAt, transactionHash });
       try {
         const result = record.chain === 'xrpl'
-          ? await submitXrplTransaction(record.network, payload, xrplSourceTag)
+          ? await submitXrplTransaction(record.network, payload, xrplSourceTag, xrplClient(record.network))
           : await submitStellarTransaction(record.network, payload);
         const stellarResult = record.chain === 'stellar'
           ? result as Awaited<ReturnType<typeof submitStellarTransaction>>
@@ -1026,7 +1027,7 @@ export function createMosaicMcpServer(opts: MosaicMcpOptions = {}): McpServer {
       }
       if (!original.offerId) throw new MosaicMcpError('VALIDATION_FAILED', 'the network offer id is not available yet');
       const prepared = original.chain === 'xrpl'
-        ? await prepareXrplCancel(original.network, original.sourceAddress, Number(original.offerId), xrplSourceTag)
+        ? await prepareXrplCancel(original.network, original.sourceAddress, Number(original.offerId), xrplSourceTag, xrplClient(original.network))
         : await prepareStellarCancel(
             original.network,
             original.sourceAddress,

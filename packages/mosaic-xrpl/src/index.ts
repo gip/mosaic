@@ -33,8 +33,10 @@ export {
   signXrplTransaction,
   submitXrplTransaction,
   verifyXrplTransaction,
+  xrplClientFactory,
   xrplTransactionHash,
   type PreparedXrplOrder,
+  type XrplClientFactory,
 } from './orders.js';
 export { prepareXrplTransfer, type PreparedXrplTransfer } from './transfers.js';
 
