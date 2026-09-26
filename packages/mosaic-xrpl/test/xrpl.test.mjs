@@ -243,6 +243,42 @@ test('normalization: funded rounding changes size, never the original offer pric
   assert.deepEqual(snapshot.bids, [{ price: '1', amount: '0.000001' }]);
 });
 
+test('normalization: quality prices partly consumed dust offers (mainnet XRP/RLUSD)', async () => {
+  // Captured from mainnet: a 1-drop remainder whose TakerPays/TakerGets ratio
+  // reads 0.03 RLUSD/XRP, though the offer was placed at ~1.5518.
+  const dustAsk = {
+    TakerGets: '1',
+    TakerPays: { currency: RLUSD_HEX, issuer: ISSUER, value: '0.00000003' },
+    quality: '0.000001551789989625176',
+  };
+  const bestAsk = {
+    TakerGets: '10956233',
+    TakerPays: { currency: RLUSD_HEX, issuer: ISSUER, value: '16.84631821045403' },
+    quality: '0.000001537601650394607',
+  };
+  const bestBid = {
+    TakerGets: { currency: RLUSD_HEX, issuer: ISSUER, value: '0.23646' },
+    TakerPays: '153800',
+    quality: '650427.1335532437',
+  };
+  const adapter = createAdapter();
+  const snapshot = await adapter.fetchOrderBook(REQ, {
+    depth: 20,
+    httpEndpoint: 'https://rpc.example.com',
+    fetch: async (_url, init) => {
+      const params = JSON.parse(init.body).params[0];
+      const offers = params.taker_gets.currency === 'XRP' ? [dustAsk, bestAsk] : [bestBid];
+      return new Response(JSON.stringify({ result: { status: 'success', offers } }));
+    },
+  });
+
+  assert.deepEqual(snapshot.asks, [
+    { price: '1.537601650394607', amount: '10.956233' },
+    { price: '1.551789989625176', amount: '0.000001' },
+  ]);
+  assert.deepEqual(snapshot.bids, [{ price: '1.537451235370611', amount: '0.1538' }]);
+});
+
 test('fetchOrderBook: HTTP endpoint override and RPC errors', async () => {
   const calls = [];
   const okFetch = async (url) => {
