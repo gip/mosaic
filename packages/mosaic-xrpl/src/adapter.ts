@@ -2,8 +2,11 @@ import {
   cmpDecimals,
   divDecimals,
   dropsToXrp,
+  formatScaled,
   isZeroDecimal,
   mulDecimals,
+  parseScaled,
+  PRICE_DECIMALS,
   xrpToDrops,
 } from '@mosaic/chain-core';
 import { isValidClassicAddress } from 'xrpl';
@@ -47,6 +50,8 @@ interface XrplOffer {
   TakerPays: XrplAmount;
   taker_gets_funded?: XrplAmount;
   taker_pays_funded?: XrplAmount;
+  /** TakerPays/TakerGets in native units (drops for XRP), as placed. */
+  quality?: string;
 }
 
 /**
@@ -101,6 +106,39 @@ function matchesSpec(amount: XrplAmount, spec: XrplAmountSpec): boolean {
   );
 }
 
+// Offer qualities are per-drop ratios, e.g. 0.0000015 RLUSD/drop; parse wide
+// enough that scaling by 10^6 keeps full PRICE_DECIMALS precision.
+const QUALITY_DECIMALS = 40;
+const DROPS_PER_XRP = 1_000_000n;
+
+/**
+ * Price in quote per base from rippled's `quality`, or null when the offer
+ * carries none (or it underflows). `quality` is fixed when the offer is placed
+ * and is the book's own sort key; the remaining TakerGets/TakerPays of a
+ * partly consumed offer are rounded (down to a single drop), so their ratio
+ * can be arbitrarily wrong.
+ */
+function qualityPrice(offer: XrplOffer, side: 'ask' | 'bid'): string | null {
+  if (offer.quality === undefined) return null;
+  let q: bigint;
+  try {
+    q = parseScaled(offer.quality, QUALITY_DECIMALS);
+  } catch {
+    return null;
+  }
+  if (q <= 0n) return null;
+  const getsScale = typeof offer.TakerGets === 'string' ? DROPS_PER_XRP : 1n;
+  const paysScale = typeof offer.TakerPays === 'string' ? DROPS_PER_XRP : 1n;
+  const one = 10n ** BigInt(QUALITY_DECIMALS);
+  const priceScale = 10n ** BigInt(PRICE_DECIMALS);
+  // ask: quote paid per base received = quality × getsScale / paysScale.
+  // bid: quote given per base paid is the inverse.
+  const scaled = side === 'ask'
+    ? (q * getsScale * priceScale) / (paysScale * one)
+    : (paysScale * one * priceScale) / (q * getsScale);
+  return scaled > 0n ? formatScaled(scaled, PRICE_DECIMALS) : null;
+}
+
 /**
  * Turn one offer into a level, oriented by which side of the pair the offer
  * is giving away. Uses funded amounts when rippled provides them. Returns
@@ -117,17 +155,24 @@ function offerToLevel(
   const fundedPaysValue = amountValue(offer.taker_pays_funded ?? offer.TakerPays);
   if (isZeroDecimal(fundedGetsValue) || isZeroDecimal(fundedPaysValue)) return null;
   if (matchesSpec(offer.TakerGets, base) && matchesSpec(offer.TakerPays, quote)) {
-    // Price always comes from the original offer ratio. Funded amounts are
-    // independently rounded and can wildly distort the ratio for dust offers.
+    // Price comes from the offer's quality, falling back to the TakerGets/
+    // TakerPays ratio. Never divide the funded amounts: they are independently
+    // rounded and can wildly distort the ratio for dust offers.
     return {
       side: 'ask',
-      level: { price: divDecimals(originalPaysValue, originalGetsValue), amount: fundedGetsValue },
+      level: {
+        price: qualityPrice(offer, 'ask') ?? divDecimals(originalPaysValue, originalGetsValue),
+        amount: fundedGetsValue,
+      },
     };
   }
   if (matchesSpec(offer.TakerGets, quote) && matchesSpec(offer.TakerPays, base)) {
     return {
       side: 'bid',
-      level: { price: divDecimals(originalGetsValue, originalPaysValue), amount: fundedPaysValue },
+      level: {
+        price: qualityPrice(offer, 'bid') ?? divDecimals(originalGetsValue, originalPaysValue),
+        amount: fundedPaysValue,
+      },
     };
   }
   return null;
